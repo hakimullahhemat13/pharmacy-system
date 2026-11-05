@@ -63,6 +63,34 @@ interface SaleRow {
   customer_name: string | null;
 }
 
+interface MedOption {
+  id: string;
+  name: string;
+}
+
+interface Supplier {
+  id: string;
+  name: string;
+  phone: string | null;
+}
+
+interface PurchaseRow {
+  id: string;
+  invoice_no: string | null;
+  purchase_date: string;
+  total_amount: number | string;
+  paid_amount: number | string;
+  supplier_name: string | null;
+}
+
+interface PurchaseItemDraft {
+  medicine_id: string;
+  batch_no: string;
+  expiry_date: string;
+  quantity: string;
+  purchase_price: string;
+}
+
 type Page = 'dashboard' | 'medicines' | 'sales' | 'purchases' | 'reports';
 
 const USER_KEY = 'pharmacy_user';
@@ -171,7 +199,8 @@ export default function App() {
         {page === 'dashboard' && <Dashboard lang={lang} />}
         {page === 'medicines' && <Medicines lang={lang} />}
         {page === 'sales' && <SalesPage lang={lang} />}
-        {page !== 'dashboard' && page !== 'medicines' && page !== 'sales' && (
+        {page === 'purchases' && <PurchasesPage lang={lang} />}
+        {page !== 'dashboard' && page !== 'medicines' && page !== 'sales' && page !== 'purchases' && (
           <>
             <h2>{menu.find((m) => m.key === page)?.label}</h2>
             <div className="panel">
@@ -809,6 +838,289 @@ function SalesPage({ lang }: { lang: Lang }) {
                   </td>
                   <td>{s.customer_name || t(lang, 'walkIn')}</td>
                   <td>{fmt(Number(s.net_total))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </>
+  );
+}
+
+function PurchasesPage({ lang }: { lang: Lang }) {
+  const [meds, setMeds] = useState<MedOption[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [purchases, setPurchases] = useState<PurchaseRow[]>([]);
+  const [supplierId, setSupplierId] = useState('');
+  const [invoiceNo, setInvoiceNo] = useState('');
+  const [paid, setPaid] = useState('');
+  const [rows, setRows] = useState<PurchaseItemDraft[]>([
+    { medicine_id: '', batch_no: '', expiry_date: '', quantity: '1', purchase_price: '' },
+  ]);
+  const [supName, setSupName] = useState('');
+  const [supPhone, setSupPhone] = useState('');
+  const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
+  const [supMsg, setSupMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const loadSuppliers = async () => {
+    const data = await api.get('/suppliers');
+    setSuppliers(data.suppliers as Supplier[]);
+  };
+  const loadPurchases = async () => {
+    const data = await api.get('/purchases');
+    setPurchases((data.purchases as PurchaseRow[]).slice(0, 8));
+  };
+
+  useEffect(() => {
+    api
+      .get('/medicines')
+      .then((data) => setMeds(data.medicines as MedOption[]))
+      .catch((err) => setError(err instanceof Error ? err.message : 'Error'));
+    loadSuppliers().catch(() => undefined);
+    loadPurchases().catch(() => undefined);
+  }, []);
+
+  const setRow = (idx: number, key: keyof PurchaseItemDraft, value: string) =>
+    setRows((rs) => rs.map((r, i) => (i === idx ? { ...r, [key]: value } : r)));
+
+  const addRow = () =>
+    setRows((rs) => [
+      ...rs,
+      { medicine_id: '', batch_no: '', expiry_date: '', quantity: '1', purchase_price: '' },
+    ]);
+
+  const removeRow = (idx: number) => setRows((rs) => rs.filter((_, i) => i !== idx));
+
+  const total = rows.reduce(
+    (sum, r) => sum + (Number(r.quantity) || 0) * (Number(r.purchase_price) || 0),
+    0
+  );
+
+  const addSupplier = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSupMsg('');
+    setError('');
+    if (!supName.trim()) return;
+    try {
+      await api.post('/suppliers', { name: supName.trim(), phone: supPhone.trim() || undefined });
+      setSupMsg(t(lang, 'supplierAdded'));
+      setSupName('');
+      setSupPhone('');
+      await loadSuppliers();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setMsg('');
+    setBusy(true);
+    try {
+      const data = await api.post('/purchases', {
+        supplier_id: supplierId || undefined,
+        invoice_no: invoiceNo.trim() || undefined,
+        paid_amount: paid === '' ? undefined : Number(paid),
+        items: rows.map((r) => ({
+          medicine_id: r.medicine_id,
+          batch_no: r.batch_no.trim(),
+          expiry_date: r.expiry_date,
+          quantity: Number(r.quantity),
+          purchase_price: r.purchase_price === '' ? 0 : Number(r.purchase_price),
+        })),
+      });
+      setMsg(
+        `✅ ${t(lang, 'purchaseDone')}: ${data.purchase.invoice_no || ''} — ${fmt(Number(data.purchase.total_amount))} ${t(lang, 'currency')}`
+      );
+      setRows([{ medicine_id: '', batch_no: '', expiry_date: '', quantity: '1', purchase_price: '' }]);
+      setInvoiceNo('');
+      setPaid('');
+      await loadPurchases();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
+    setBusy(false);
+  };
+
+  return (
+    <>
+      <h2>{t(lang, 'purchases')}</h2>
+
+      <div className="panel" style={{ marginTop: 0 }}>
+        <h3>🏭 {t(lang, 'addSupplier')}</h3>
+        <form onSubmit={addSupplier}>
+          <div className="form-grid">
+            <div className="field">
+              <label>{t(lang, 'name')} *</label>
+              <input value={supName} onChange={(e) => setSupName(e.target.value)} />
+            </div>
+            <div className="field">
+              <label>{t(lang, 'phone')}</label>
+              <input value={supPhone} onChange={(e) => setSupPhone(e.target.value)} />
+            </div>
+          </div>
+          {supMsg && <div className="success-box">{supMsg}</div>}
+          <button className="btn-secondary" type="submit">
+            {t(lang, 'save')}
+          </button>
+        </form>
+      </div>
+
+      <div className="panel">
+        <h3>📦 {t(lang, 'newPurchase')}</h3>
+        <form onSubmit={submit}>
+          <div className="form-grid">
+            <div className="field">
+              <label>{t(lang, 'supplier')}</label>
+              <select
+                className="field-select"
+                value={supplierId}
+                onChange={(e) => setSupplierId(e.target.value)}
+              >
+                <option value="">—</option>
+                {suppliers.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label>{t(lang, 'invoiceNo')}</label>
+              <input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} />
+            </div>
+            <div className="field">
+              <label>{t(lang, 'paidAmount')}</label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={paid}
+                onChange={(e) => setPaid(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <table style={{ marginTop: 16 }}>
+            <thead>
+              <tr>
+                <th>{t(lang, 'name')}</th>
+                <th>{t(lang, 'batch')}</th>
+                <th>{t(lang, 'expiryDate')}</th>
+                <th>{t(lang, 'qty')}</th>
+                <th>{t(lang, 'purchasePrice')}</th>
+                <th>{t(lang, 'lineTotal')}</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, idx) => (
+                <tr key={idx}>
+                  <td style={{ minWidth: 170 }}>
+                    <select
+                      className="cell-select"
+                      value={r.medicine_id}
+                      onChange={(e) => setRow(idx, 'medicine_id', e.target.value)}
+                    >
+                      <option value="">{t(lang, 'selectMedicine')}</option>
+                      {meds.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td>
+                    <input
+                      className="cell-input"
+                      value={r.batch_no}
+                      onChange={(e) => setRow(idx, 'batch_no', e.target.value)}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      className="cell-input"
+                      type="date"
+                      value={r.expiry_date}
+                      onChange={(e) => setRow(idx, 'expiry_date', e.target.value)}
+                    />
+                  </td>
+                  <td style={{ width: 90 }}>
+                    <input
+                      className="cell-input"
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={r.quantity}
+                      onChange={(e) => setRow(idx, 'quantity', e.target.value)}
+                    />
+                  </td>
+                  <td style={{ width: 110 }}>
+                    <input
+                      className="cell-input"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={r.purchase_price}
+                      onChange={(e) => setRow(idx, 'purchase_price', e.target.value)}
+                    />
+                  </td>
+                  <td>{fmt((Number(r.quantity) || 0) * (Number(r.purchase_price) || 0))}</td>
+                  <td>
+                    <button type="button" className="btn-remove" onClick={() => removeRow(idx)}>
+                      ✕
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <button type="button" className="btn-secondary" onClick={addRow}>
+            ➕ {t(lang, 'addItem')}
+          </button>
+
+          <div className="total-row grand">
+            <span>{t(lang, 'lineTotal')}</span>
+            <span>
+              {fmt(total)} {t(lang, 'currency')}
+            </span>
+          </div>
+
+          {error && <div className="error-box">{error}</div>}
+          {msg && <div className="success-box">{msg}</div>}
+          <button className="btn-save" type="submit" disabled={busy} style={{ width: '100%' }}>
+            {busy ? t(lang, 'loading') : t(lang, 'completePurchase')}
+          </button>
+        </form>
+      </div>
+
+      <div className="panel">
+        <h3>📦 {t(lang, 'recentPurchases')}</h3>
+        {purchases.length === 0 ? (
+          <p className="muted">—</p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>{t(lang, 'invoiceNo')}</th>
+                <th>{t(lang, 'supplier')}</th>
+                <th>{t(lang, 'dateLabel')}</th>
+                <th>{t(lang, 'lineTotal')}</th>
+                <th>{t(lang, 'paidAmount')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {purchases.map((p) => (
+                <tr key={p.id}>
+                  <td>{p.invoice_no || '—'}</td>
+                  <td>{p.supplier_name || '—'}</td>
+                  <td>{String(p.purchase_date).slice(0, 10)}</td>
+                  <td>{fmt(Number(p.total_amount))}</td>
+                  <td>{fmt(Number(p.paid_amount))}</td>
                 </tr>
               ))}
             </tbody>

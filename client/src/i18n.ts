@@ -78,6 +78,20 @@ const ps: Dict = {
   invoice: 'بیل',
   available: 'شته سټاک',
   noResults: 'هېڅ درمل و نه موندل شو',
+  newPurchase: 'نوی پېرود',
+  supplier: 'عرضه کوونکی',
+  addSupplier: 'نوی عرضه کوونکی',
+  phone: 'تلیفون',
+  invoiceNo: 'د بیل شمېره',
+  paidAmount: 'ورکړل شوې پیسې',
+  purchasePrice: 'د پېرود بیه',
+  addItem: 'توکی ورزیات کړه',
+  completePurchase: 'پېرود ثبت کړه',
+  purchaseDone: 'پېرود ثبت شو',
+  recentPurchases: 'وروستي پېرودونه',
+  selectMedicine: 'درمل وټاکه',
+  supplierAdded: 'عرضه کوونکی ثبت شو ✅',
+  dateLabel: 'نېټه',
 };
 
 const fa: Dict = {
@@ -144,6 +158,20 @@ const fa: Dict = {
   invoice: 'بل',
   available: 'موجودی',
   noResults: 'دوایی یافت نشد',
+  newPurchase: 'خریداری جدید',
+  supplier: 'عرضه‌کننده',
+  addSupplier: 'عرضه‌کننده جدید',
+  phone: 'تلیفون',
+  invoiceNo: 'شماره بل',
+  paidAmount: 'مبلغ پرداختی',
+  purchasePrice: 'قیمت خرید',
+  addItem: 'قلم اضافه کن',
+  completePurchase: 'خرید را ثبت کن',
+  purchaseDone: 'خرید ثبت شد',
+  recentPurchases: 'خریداری‌های اخیر',
+  selectMedicine: 'دوا را انتخاب کنید',
+  supplierAdded: 'عرضه‌کننده ثبت شد ✅',
+  dateLabel: 'تاریخ',
 };
 
 const en: Dict = {
@@ -210,6 +238,20 @@ const en: Dict = {
   invoice: 'Invoice',
   available: 'In stock',
   noResults: 'No medicine found',
+  newPurchase: 'New purchase',
+  supplier: 'Supplier',
+  addSupplier: 'New supplier',
+  phone: 'Phone',
+  invoiceNo: 'Invoice no.',
+  paidAmount: 'Paid amount',
+  purchasePrice: 'Purchase price',
+  addItem: 'Add item',
+  completePurchase: 'Save purchase',
+  purchaseDone: 'Purchase saved',
+  recentPurchases: 'Recent purchases',
+  selectMedicine: 'Select medicine',
+  supplierAdded: 'Supplier saved ✅',
+  dateLabel: 'Date',
 };
 
 const DICTS: Record<Lang, Dict> = { ps, fa, en };
