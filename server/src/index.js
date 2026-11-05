@@ -11,6 +11,7 @@ const purchasesRoutes = require('./routes/purchases');
 const stockRoutes = require('./routes/stock');
 const customersRoutes = require('./routes/customers');
 const salesRoutes = require('./routes/sales');
+const reportsRoutes = require('./routes/reports');
 
 const app = express();
 app.use(cors());
@@ -40,6 +41,9 @@ app.use('/api/stock', stockRoutes);
 // Customers and sales (point of sale, FEFO)
 app.use('/api/customers', customersRoutes);
 app.use('/api/sales', salesRoutes);
+
+// Reports: daily, monthly, yearly (sales + profit)
+app.use('/api/reports', reportsRoutes);
 
 const PORT = Number(process.env.PORT) || 5000;
 app.listen(PORT, () => {
