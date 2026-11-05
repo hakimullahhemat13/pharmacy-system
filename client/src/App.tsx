@@ -32,7 +32,13 @@ interface Batch {
 interface StockRow {
   medicine_id: string;
   name: string;
+  generic_name: string | null;
+  barcode: string | null;
+  unit: string;
+  sale_price: number | string;
+  min_stock: number;
   total_quantity: number;
+  batch_count: number;
   low_stock: boolean;
 }
 
@@ -141,9 +147,9 @@ export default function App() {
         </button>
       </aside>
       <main className="main">
-        {page === 'dashboard' ? (
-          <Dashboard lang={lang} />
-        ) : (
+        {page === 'dashboard' && <Dashboard lang={lang} />}
+        {page === 'medicines' && <Medicines lang={lang} />}
+        {page !== 'dashboard' && page !== 'medicines' && (
           <>
             <h2>{menu.find((m) => m.key === page)?.label}</h2>
             <div className="panel">
@@ -320,6 +326,181 @@ function Dashboard({ lang }: { lang: Lang }) {
                   <td>{b.quantity_on_hand}</td>
                   <td>
                     <span className={`badge ${b.level}`}>{levelLabel(b.level)}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </>
+  );
+}
+
+function Medicines({ lang }: { lang: Lang }) {
+  const [rows, setRows] = useState<StockRow[]>([]);
+  const [query, setQuery] = useState('');
+  const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState({
+    name: '',
+    generic_name: '',
+    company: '',
+    barcode: '',
+    unit: 'tablet',
+    category: '',
+    sale_price: '',
+    min_stock: '10',
+  });
+
+  const load = async () => {
+    const data = await api.get('/stock');
+    setRows(data.stock as StockRow[]);
+  };
+
+  useEffect(() => {
+    load().catch((err) => setError(err instanceof Error ? err.message : 'Error'));
+  }, []);
+
+  const q = query.trim().toLowerCase();
+  const filtered = rows.filter(
+    (r) =>
+      !q ||
+      r.name.toLowerCase().includes(q) ||
+      (r.generic_name || '').toLowerCase().includes(q) ||
+      (r.barcode || '').toLowerCase().includes(q)
+  );
+  const barcodeExact = query.trim();
+
+  const set = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm((f) => ({ ...f, [key]: e.target.value }));
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setMsg('');
+    if (!form.name.trim()) {
+      setError(t(lang, 'nameRequired'));
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.post('/medicines', {
+        name: form.name.trim(),
+        generic_name: form.generic_name.trim() || undefined,
+        company: form.company.trim() || undefined,
+        barcode: form.barcode.trim() || undefined,
+        unit: form.unit.trim() || undefined,
+        category: form.category.trim() || undefined,
+        sale_price: form.sale_price === '' ? undefined : Number(form.sale_price),
+        min_stock: form.min_stock === '' ? undefined : Number(form.min_stock),
+      });
+      setMsg(t(lang, 'added'));
+      setForm({
+        name: '',
+        generic_name: '',
+        company: '',
+        barcode: '',
+        unit: 'tablet',
+        category: '',
+        sale_price: '',
+        min_stock: '10',
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
+    setBusy(false);
+  };
+
+  return (
+    <>
+      <h2>{t(lang, 'medicines')}</h2>
+
+      <div className="panel" style={{ marginTop: 0 }}>
+        <h3>➕ {t(lang, 'addMedicine')}</h3>
+        <form onSubmit={submit}>
+          <div className="form-grid">
+            <div className="field">
+              <label>{t(lang, 'name')} *</label>
+              <input value={form.name} onChange={set('name')} />
+            </div>
+            <div className="field">
+              <label>{t(lang, 'genericName')}</label>
+              <input value={form.generic_name} onChange={set('generic_name')} />
+            </div>
+            <div className="field">
+              <label>{t(lang, 'company')}</label>
+              <input value={form.company} onChange={set('company')} />
+            </div>
+            <div className="field">
+              <label>{t(lang, 'barcodeLabel')}</label>
+              <input value={form.barcode} onChange={set('barcode')} />
+            </div>
+            <div className="field">
+              <label>{t(lang, 'unit')}</label>
+              <input value={form.unit} onChange={set('unit')} />
+            </div>
+            <div className="field">
+              <label>{t(lang, 'category')}</label>
+              <input value={form.category} onChange={set('category')} />
+            </div>
+            <div className="field">
+              <label>{t(lang, 'salePrice')}</label>
+              <input type="number" min="0" step="0.01" value={form.sale_price} onChange={set('sale_price')} />
+            </div>
+            <div className="field">
+              <label>{t(lang, 'minStockLabel')}</label>
+              <input type="number" min="0" step="1" value={form.min_stock} onChange={set('min_stock')} />
+            </div>
+          </div>
+          {error && <div className="error-box">{error}</div>}
+          {msg && <div className="success-box">{msg}</div>}
+          <button className="btn-save" type="submit" disabled={busy}>
+            {busy ? t(lang, 'loading') : t(lang, 'save')}
+          </button>
+        </form>
+      </div>
+
+      <div className="panel">
+        <input
+          className="search-input"
+          placeholder={t(lang, 'search')}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        {filtered.length === 0 ? (
+          <p className="muted" style={{ fontSize: 15 }}>
+            {t(lang, 'noMedicines')}
+          </p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>{t(lang, 'name')}</th>
+                <th>{t(lang, 'genericName')}</th>
+                <th>{t(lang, 'barcodeLabel')}</th>
+                <th>{t(lang, 'unit')}</th>
+                <th>{t(lang, 'salePrice')}</th>
+                <th>{t(lang, 'stockQty')}</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((r) => (
+                <tr
+                  key={r.medicine_id}
+                  className={barcodeExact && r.barcode === barcodeExact ? 'highlight' : ''}
+                >
+                  <td>{r.name}</td>
+                  <td>{r.generic_name || '—'}</td>
+                  <td>{r.barcode || '—'}</td>
+                  <td>{r.unit}</td>
+                  <td>{fmt(Number(r.sale_price))}</td>
+                  <td>{fmt(r.total_quantity)}</td>
+                  <td>
+                    {r.low_stock && <span className="badge low">{t(lang, 'lowBadge')}</span>}
                   </td>
                 </tr>
               ))}

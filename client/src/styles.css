@@ -162,3 +162,47 @@ tr.row-expired td { background: #fff7f7; }
 
 .empty-note { color: #16a34a; font-size: 15px; padding: 8px 0 2px; }
 .muted { color: #94a3b8; font-size: 13px; }
+
+/* ---------- Medicines page ---------- */
+.search-input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 15px;
+  margin-bottom: 6px;
+}
+.search-input:focus { outline: 2px solid #22c55e; border-color: transparent; }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.field label { display: block; font-size: 13px; color: #475569; margin-bottom: 5px; }
+.field input {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 14.5px;
+}
+.field input:focus { outline: 2px solid #22c55e; border-color: transparent; }
+.btn-save {
+  margin-top: 14px;
+  padding: 10px 28px;
+  border: none;
+  border-radius: 8px;
+  background: #16a34a;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+}
+.btn-save:hover { background: #15803d; }
+.btn-save:disabled { background: #86c9a0; cursor: wait; }
+.success-box {
+  background: #f0fdf4;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 14px;
+  margin-top: 12px;
+}
+tr.highlight td { background: #ecfdf5; font-weight: 600; }
+.badge.low { background: #fee2e2; color: #b91c1c; }
