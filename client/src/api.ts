@@ -61,6 +61,28 @@ export const api = {
     URL.revokeObjectURL(url);
     return name;
   },
+  async put(path: string, body: unknown) {
+    const res = await fetch(BASE + path, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${getToken()}`,
+      },
+      body: JSON.stringify(body),
+    });
+    return handle(res);
+  },
+  async patch(path: string, body: unknown) {
+    const res = await fetch(BASE + path, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${getToken()}`,
+      },
+      body: JSON.stringify(body),
+    });
+    return handle(res);
+  },
   // POST a raw text body (used to upload a .sql backup for restore).
   async postText(path: string, text: string) {
     const res = await fetch(BASE + path, {

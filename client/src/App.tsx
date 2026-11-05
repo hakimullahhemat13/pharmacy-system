@@ -107,7 +107,7 @@ interface MonthRow {
   profit: number;
 }
 
-type Page = 'dashboard' | 'medicines' | 'sales' | 'purchases' | 'reports' | 'backup';
+type Page = 'dashboard' | 'medicines' | 'sales' | 'purchases' | 'reports' | 'backup' | 'settings';
 
 const USER_KEY = 'pharmacy_user';
 const LANG_KEY = 'pharmacy_lang';
@@ -186,6 +186,7 @@ export default function App() {
     { key: 'sales', label: t(lang, 'sales') },
     { key: 'purchases', label: t(lang, 'purchases') },
     { key: 'reports', label: t(lang, 'reports') },
+    { key: 'settings', label: t(lang, 'settings') },
     ...(user.role === 'admin' ? [{ key: 'backup' as Page, label: t(lang, 'backup') }] : []),
   ];
 
@@ -219,7 +220,8 @@ export default function App() {
         {page === 'purchases' && <PurchasesPage lang={lang} />}
         {page === 'reports' && <ReportsPage lang={lang} />}
         {page === 'backup' && <BackupPage lang={lang} onLogout={logout} />}
-        {page !== 'dashboard' && page !== 'medicines' && page !== 'sales' && page !== 'purchases' && page !== 'reports' && page !== 'backup' && (
+        {page === 'settings' && <SettingsPage lang={lang} user={user} setLang={setLang} />}
+        {page !== 'dashboard' && page !== 'medicines' && page !== 'sales' && page !== 'purchases' && page !== 'reports' && page !== 'backup' && page !== 'settings' && (
           <>
             <h2>{menu.find((m) => m.key === page)?.label}</h2>
             <div className="panel">
@@ -1496,6 +1498,331 @@ function BackupPage({ lang, onLogout }: { lang: Lang; onLogout: () => void }) {
           </div>
         )}
       </div>
+    </>
+  );
+}
+
+interface ManagedUser {
+  id: string;
+  full_name: string;
+  username: string;
+  role: string;
+  language: string;
+  is_active: number;
+  created_at: string;
+}
+
+interface BranchInfo {
+  id: string;
+  name: string;
+  address: string | null;
+  phone: string | null;
+}
+
+function SettingsPage({
+  lang,
+  user,
+  setLang,
+}: {
+  lang: Lang;
+  user: User;
+  setLang: (l: Lang) => void;
+}) {
+  const isAdmin = user.role === 'admin';
+  const [langMsg, setLangMsg] = useState('');
+  const [langError, setLangError] = useState('');
+
+  const [curPw, setCurPw] = useState('');
+  const [newPw, setNewPw] = useState('');
+  const [confirmPw, setConfirmPw] = useState('');
+  const [pwMsg, setPwMsg] = useState('');
+  const [pwError, setPwError] = useState('');
+  const [pwBusy, setPwBusy] = useState(false);
+
+  const [branch, setBranch] = useState<BranchInfo | null>(null);
+  const [brMsg, setBrMsg] = useState('');
+  const [brError, setBrError] = useState('');
+
+  const [users, setUsers] = useState<ManagedUser[]>([]);
+  const [nuName, setNuName] = useState('');
+  const [nuUsername, setNuUsername] = useState('');
+  const [nuPassword, setNuPassword] = useState('');
+  const [nuRole, setNuRole] = useState('cashier');
+  const [usMsg, setUsMsg] = useState('');
+  const [usError, setUsError] = useState('');
+
+  const roleLabel = (r: string) =>
+    r === 'admin'
+      ? t(lang, 'roleAdmin')
+      : r === 'pharmacist'
+        ? t(lang, 'rolePharmacist')
+        : t(lang, 'roleCashier');
+
+  const loadUsers = async () => {
+    const data = await api.get('/settings/users');
+    setUsers(data.users as ManagedUser[]);
+  };
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    api
+      .get('/settings/branch')
+      .then((data) => setBranch(data.branch as BranchInfo))
+      .catch((err) => setBrError(err instanceof Error ? err.message : 'Error'));
+    loadUsers().catch((err) => setUsError(err instanceof Error ? err.message : 'Error'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin]);
+
+  const chooseLang = async (l: Lang) => {
+    setLangError('');
+    setLangMsg('');
+    setLang(l);
+    try {
+      await api.put('/settings/language', { language: l });
+      setLangMsg(t(l, 'languageSaved'));
+    } catch (err) {
+      setLangError(err instanceof Error ? err.message : 'Error');
+    }
+  };
+
+  const changePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPwMsg('');
+    setPwError('');
+    if (newPw.length < 6) {
+      setPwError(t(lang, 'passwordTooShort'));
+      return;
+    }
+    if (newPw !== confirmPw) {
+      setPwError(t(lang, 'passwordMismatch'));
+      return;
+    }
+    setPwBusy(true);
+    try {
+      await api.post('/settings/password', {
+        current_password: curPw,
+        new_password: newPw,
+      });
+      setPwMsg(t(lang, 'passwordChanged'));
+      setCurPw('');
+      setNewPw('');
+      setConfirmPw('');
+    } catch (err) {
+      setPwError(err instanceof Error ? err.message : 'Error');
+    }
+    setPwBusy(false);
+  };
+
+  const saveBranch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!branch) return;
+    setBrMsg('');
+    setBrError('');
+    try {
+      await api.put('/settings/branch', {
+        name: branch.name,
+        address: branch.address || undefined,
+        phone: branch.phone || undefined,
+      });
+      setBrMsg(t(lang, 'saved'));
+    } catch (err) {
+      setBrError(err instanceof Error ? err.message : 'Error');
+    }
+  };
+
+  const addUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setUsMsg('');
+    setUsError('');
+    try {
+      await api.post('/settings/users', {
+        full_name: nuName.trim(),
+        username: nuUsername.trim(),
+        password: nuPassword,
+        role: nuRole,
+      });
+      setUsMsg(t(lang, 'userAdded'));
+      setNuName('');
+      setNuUsername('');
+      setNuPassword('');
+      setNuRole('cashier');
+      await loadUsers();
+    } catch (err) {
+      setUsError(err instanceof Error ? err.message : 'Error');
+    }
+  };
+
+  const toggleActive = async (u: ManagedUser) => {
+    setUsMsg('');
+    setUsError('');
+    try {
+      await api.patch(`/settings/users/${u.id}/active`, { is_active: !u.is_active });
+      await loadUsers();
+    } catch (err) {
+      setUsError(err instanceof Error ? err.message : 'Error');
+    }
+  };
+
+  return (
+    <>
+      <h2>{t(lang, 'settings')}</h2>
+
+      <div className="panel" style={{ marginTop: 0 }}>
+        <h3>🌐 {t(lang, 'languageLabel')}</h3>
+        <div className="lang-switch">
+          {(Object.keys(LANG_NAMES) as Lang[]).map((l) => (
+            <button key={l} className={l === lang ? 'active' : ''} onClick={() => chooseLang(l)}>
+              {LANG_NAMES[l]}
+            </button>
+          ))}
+        </div>
+        {langError && <div className="error-box">{langError}</div>}
+        {langMsg && <div className="success-box">{langMsg}</div>}
+      </div>
+
+      <div className="panel">
+        <h3>🔑 {t(lang, 'changePassword')}</h3>
+        <form onSubmit={changePassword}>
+          <div className="form-grid">
+            <div className="field">
+              <label>{t(lang, 'currentPassword')}</label>
+              <input type="password" value={curPw} onChange={(e) => setCurPw(e.target.value)} required />
+            </div>
+            <div className="field">
+              <label>{t(lang, 'newPassword')}</label>
+              <input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)} required />
+            </div>
+            <div className="field">
+              <label>{t(lang, 'confirmPassword')}</label>
+              <input
+                type="password"
+                value={confirmPw}
+                onChange={(e) => setConfirmPw(e.target.value)}
+                required
+              />
+            </div>
+          </div>
+          {pwError && <div className="error-box">{pwError}</div>}
+          {pwMsg && <div className="success-box">{pwMsg}</div>}
+          <button className="btn-save" type="submit" disabled={pwBusy}>
+            {pwBusy ? t(lang, 'loading') : t(lang, 'changePassword')}
+          </button>
+        </form>
+      </div>
+
+      {isAdmin && branch && (
+        <div className="panel">
+          <h3>🏥 {t(lang, 'pharmacyInfo')}</h3>
+          <form onSubmit={saveBranch}>
+            <div className="form-grid">
+              <div className="field">
+                <label>{t(lang, 'branchName')} *</label>
+                <input
+                  value={branch.name}
+                  onChange={(e) => setBranch({ ...branch, name: e.target.value })}
+                />
+              </div>
+              <div className="field">
+                <label>{t(lang, 'phone')}</label>
+                <input
+                  value={branch.phone || ''}
+                  onChange={(e) => setBranch({ ...branch, phone: e.target.value })}
+                />
+              </div>
+              <div className="field">
+                <label>{t(lang, 'address')}</label>
+                <input
+                  value={branch.address || ''}
+                  onChange={(e) => setBranch({ ...branch, address: e.target.value })}
+                />
+              </div>
+            </div>
+            {brError && <div className="error-box">{brError}</div>}
+            {brMsg && <div className="success-box">{brMsg}</div>}
+            <button className="btn-save" type="submit">
+              {t(lang, 'save')}
+            </button>
+          </form>
+        </div>
+      )}
+
+      {isAdmin && (
+        <div className="panel">
+          <h3>👥 {t(lang, 'users')}</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>{t(lang, 'fullName')}</th>
+                <th>{t(lang, 'username')}</th>
+                <th>{t(lang, 'role')}</th>
+                <th></th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((u) => (
+                <tr key={u.id}>
+                  <td>{u.full_name}</td>
+                  <td>{u.username}</td>
+                  <td>{roleLabel(u.role)}</td>
+                  <td>
+                    <span className={`badge ${u.is_active ? 'warning' : 'expired'}`}>
+                      {u.is_active ? t(lang, 'active') : t(lang, 'inactive')}
+                    </span>
+                  </td>
+                  <td>
+                    {u.id !== user.id && (
+                      <button className="btn-secondary" onClick={() => toggleActive(u)}>
+                        {u.is_active ? t(lang, 'deactivate') : t(lang, 'activate')}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <h3 style={{ marginTop: 20 }}>➕ {t(lang, 'addUser')}</h3>
+          <form onSubmit={addUser}>
+            <div className="form-grid">
+              <div className="field">
+                <label>{t(lang, 'fullName')} *</label>
+                <input value={nuName} onChange={(e) => setNuName(e.target.value)} required />
+              </div>
+              <div className="field">
+                <label>{t(lang, 'username')} *</label>
+                <input value={nuUsername} onChange={(e) => setNuUsername(e.target.value)} required />
+              </div>
+              <div className="field">
+                <label>{t(lang, 'password')} *</label>
+                <input
+                  type="password"
+                  value={nuPassword}
+                  onChange={(e) => setNuPassword(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="field">
+                <label>{t(lang, 'role')}</label>
+                <select
+                  className="field-select"
+                  value={nuRole}
+                  onChange={(e) => setNuRole(e.target.value)}
+                >
+                  <option value="cashier">{t(lang, 'roleCashier')}</option>
+                  <option value="pharmacist">{t(lang, 'rolePharmacist')}</option>
+                  <option value="admin">{t(lang, 'roleAdmin')}</option>
+                </select>
+              </div>
+            </div>
+            {usError && <div className="error-box">{usError}</div>}
+            {usMsg && <div className="success-box">{usMsg}</div>}
+            <button className="btn-save" type="submit">
+              {t(lang, 'addUser')}
+            </button>
+          </form>
+        </div>
+      )}
     </>
   );
 }

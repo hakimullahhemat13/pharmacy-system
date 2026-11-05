@@ -13,6 +13,7 @@ const customersRoutes = require('./routes/customers');
 const salesRoutes = require('./routes/sales');
 const reportsRoutes = require('./routes/reports');
 const backupRoutes = require('./routes/backup');
+const settingsRoutes = require('./routes/settings');
 
 const app = express();
 app.use(cors());
@@ -48,6 +49,9 @@ app.use('/api/reports', reportsRoutes);
 
 // Backup & restore (admin only)
 app.use('/api/backup', backupRoutes);
+
+// Settings: own password/language; admin: branch info + users
+app.use('/api/settings', settingsRoutes);
 
 const PORT = Number(process.env.PORT) || 5000;
 app.listen(PORT, () => {
