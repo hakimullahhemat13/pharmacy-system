@@ -1,0 +1,164 @@
+/* Pharmacy system — clean light theme. Layout uses CSS logical properties
+   (inline-start/end) so the same stylesheet works for RTL (ps/fa) and LTR (en). */
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+  background: #f2f5f3;
+  color: #1c2b24;
+}
+
+button { font-family: inherit; cursor: pointer; }
+input { font-family: inherit; }
+
+/* ---------- Login ---------- */
+.login-wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.login-card {
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 8px 30px rgba(20, 60, 40, 0.12);
+  padding: 32px 28px;
+  width: 100%;
+  max-width: 380px;
+  text-align: center;
+}
+.login-card .logo { font-size: 44px; }
+.login-card h1 { font-size: 20px; margin: 10px 0 22px; color: #14532d; }
+.login-card label {
+  display: block;
+  text-align: start;
+  font-size: 13px;
+  margin: 12px 0 5px;
+  color: #475569;
+}
+.login-card input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 15px;
+}
+.login-card input:focus { outline: 2px solid #22c55e; border-color: transparent; }
+.btn-primary {
+  width: 100%;
+  margin-top: 18px;
+  padding: 11px;
+  border: none;
+  border-radius: 8px;
+  background: #16a34a;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+}
+.btn-primary:hover { background: #15803d; }
+.btn-primary:disabled { background: #86c9a0; cursor: wait; }
+.error-box {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 13.5px;
+  margin-top: 14px;
+}
+
+/* ---------- Language switcher ---------- */
+.lang-switch { display: flex; gap: 6px; justify-content: center; margin-bottom: 14px; }
+.lang-switch button {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 13.5px;
+}
+.lang-switch button.active { background: #14532d; color: #fff; border-color: #14532d; }
+
+/* ---------- App layout ---------- */
+.app { display: flex; min-height: 100vh; }
+.sidebar {
+  width: 228px;
+  flex-shrink: 0;
+  background: #14532d;
+  color: #e7f5ec;
+  padding: 18px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sidebar .brand { font-size: 16.5px; font-weight: 700; padding: 4px 10px 16px; line-height: 1.5; }
+.sidebar button.nav {
+  display: block;
+  width: 100%;
+  text-align: start;
+  background: transparent;
+  border: none;
+  color: #e7f5ec;
+  font-size: 15px;
+  padding: 10px 12px;
+  border-radius: 8px;
+}
+.sidebar button.nav:hover { background: rgba(255, 255, 255, 0.12); }
+.sidebar button.nav.active { background: #16a34a; color: #fff; font-weight: 600; }
+.sidebar .spacer { flex: 1; }
+.sidebar .user-box { font-size: 13px; padding: 10px; opacity: 0.9; line-height: 1.7; }
+.sidebar button.logout {
+  width: 100%;
+  padding: 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: transparent;
+  color: #fff;
+  font-size: 14px;
+}
+.sidebar button.logout:hover { background: rgba(255, 255, 255, 0.12); }
+
+.main { flex: 1; padding: 22px 26px; min-width: 0; }
+.main h2 { margin: 2px 0 18px; font-size: 21px; color: #14532d; }
+
+/* ---------- Cards ---------- */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+.card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 16px 18px;
+  box-shadow: 0 2px 10px rgba(20, 60, 40, 0.06);
+}
+.card .card-label { font-size: 13.5px; color: #64748b; }
+.card .card-value { font-size: 26px; font-weight: 700; margin-top: 6px; }
+.card .card-sub { font-size: 12.5px; color: #94a3b8; margin-top: 2px; }
+.card.profit .card-value { color: #16a34a; }
+
+.panel {
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 2px 10px rgba(20, 60, 40, 0.06);
+  padding: 18px;
+  margin-top: 18px;
+}
+.panel h3 { margin: 0 0 12px; font-size: 16.5px; color: #14532d; }
+
+table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+th, td { padding: 8px 10px; text-align: start; border-bottom: 1px solid #eef2f0; }
+th { color: #64748b; font-weight: 600; font-size: 13px; }
+
+.badge {
+  display: inline-block;
+  padding: 2.5px 10px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.badge.expired { background: #fee2e2; color: #b91c1c; }
+.badge.critical { background: #ffedd5; color: #c2410c; }
+.badge.warning { background: #fef9c3; color: #a16207; }
+tr.row-expired td { background: #fff7f7; }
+
+.empty-note { color: #16a34a; font-size: 15px; padding: 8px 0 2px; }
+.muted { color: #94a3b8; font-size: 13px; }
