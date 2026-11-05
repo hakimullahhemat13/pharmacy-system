@@ -92,6 +92,15 @@ const ps: Dict = {
   selectMedicine: 'درمل وټاکه',
   supplierAdded: 'عرضه کوونکی ثبت شو ✅',
   dateLabel: 'نېټه',
+  daily: 'ورځنی',
+  monthly: 'میاشتنی',
+  yearly: 'کلنی',
+  year: 'کال',
+  month: 'میاشت',
+  cost: 'لګښت',
+  revenue: 'پلور (عاید)',
+  profit: 'ګټه',
+  salesCount: 'بیلونه',
 };
 
 const fa: Dict = {
@@ -172,6 +181,15 @@ const fa: Dict = {
   selectMedicine: 'دوا را انتخاب کنید',
   supplierAdded: 'عرضه‌کننده ثبت شد ✅',
   dateLabel: 'تاریخ',
+  daily: 'روزانه',
+  monthly: 'ماهانه',
+  yearly: 'سالانه',
+  year: 'سال',
+  month: 'ماه',
+  cost: 'مصرف',
+  revenue: 'فروش (عاید)',
+  profit: 'مفاد',
+  salesCount: 'بل‌ها',
 };
 
 const en: Dict = {
@@ -252,6 +270,15 @@ const en: Dict = {
   selectMedicine: 'Select medicine',
   supplierAdded: 'Supplier saved ✅',
   dateLabel: 'Date',
+  daily: 'Daily',
+  monthly: 'Monthly',
+  yearly: 'Yearly',
+  year: 'Year',
+  month: 'Month',
+  cost: 'Cost',
+  revenue: 'Revenue',
+  profit: 'Profit',
+  salesCount: 'Bills',
 };
 
 const DICTS: Record<Lang, Dict> = { ps, fa, en };

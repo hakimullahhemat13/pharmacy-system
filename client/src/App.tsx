@@ -91,6 +91,22 @@ interface PurchaseItemDraft {
   purchase_price: string;
 }
 
+interface DayRow {
+  day: string;
+  sales_count: number;
+  revenue: number;
+  cost_total: number;
+  profit: number;
+}
+
+interface MonthRow {
+  month: number;
+  sales_count: number;
+  revenue: number;
+  cost_total: number;
+  profit: number;
+}
+
 type Page = 'dashboard' | 'medicines' | 'sales' | 'purchases' | 'reports';
 
 const USER_KEY = 'pharmacy_user';
@@ -200,7 +216,8 @@ export default function App() {
         {page === 'medicines' && <Medicines lang={lang} />}
         {page === 'sales' && <SalesPage lang={lang} />}
         {page === 'purchases' && <PurchasesPage lang={lang} />}
-        {page !== 'dashboard' && page !== 'medicines' && page !== 'sales' && page !== 'purchases' && (
+        {page === 'reports' && <ReportsPage lang={lang} />}
+        {page !== 'dashboard' && page !== 'medicines' && page !== 'sales' && page !== 'purchases' && page !== 'reports' && (
           <>
             <h2>{menu.find((m) => m.key === page)?.label}</h2>
             <div className="panel">
@@ -925,13 +942,15 @@ function PurchasesPage({ lang }: { lang: Lang }) {
         supplier_id: supplierId || undefined,
         invoice_no: invoiceNo.trim() || undefined,
         paid_amount: paid === '' ? undefined : Number(paid),
-        items: rows.map((r) => ({
+        items: rows
+          .filter((r) => r.medicine_id)
+          .map((r) => ({
           medicine_id: r.medicine_id,
           batch_no: r.batch_no.trim(),
           expiry_date: r.expiry_date,
           quantity: Number(r.quantity),
-          purchase_price: r.purchase_price === '' ? 0 : Number(r.purchase_price),
-        })),
+            purchase_price: r.purchase_price === '' ? 0 : Number(r.purchase_price),
+          })),
       });
       setMsg(
         `✅ ${t(lang, 'purchaseDone')}: ${data.purchase.invoice_no || ''} — ${fmt(Number(data.purchase.total_amount))} ${t(lang, 'currency')}`
@@ -1127,6 +1146,240 @@ function PurchasesPage({ lang }: { lang: Lang }) {
           </table>
         )}
       </div>
+    </>
+  );
+}
+
+function todayStr(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+type ReportTab = 'daily' | 'monthly' | 'yearly';
+
+function ReportsPage({ lang }: { lang: Lang }) {
+  const now = new Date();
+  const [tab, setTab] = useState<ReportTab>('daily');
+  const [date, setDate] = useState(todayStr());
+  const [year, setYear] = useState(now.getFullYear());
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [summary, setSummary] = useState<Summary | null>(null);
+  const [daySales, setDaySales] = useState<SaleRow[]>([]);
+  const [days, setDays] = useState<DayRow[]>([]);
+  const [months, setMonths] = useState<MonthRow[]>([]);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        setError('');
+        if (tab === 'daily') {
+          const data = await api.get(`/reports/daily?date=${date}`);
+          if (!alive) return;
+          setSummary(data.summary as Summary);
+          setDaySales(data.sales as SaleRow[]);
+        } else if (tab === 'monthly') {
+          const data = await api.get(`/reports/monthly?year=${year}&month=${month}`);
+          if (!alive) return;
+          setSummary(data.summary as Summary);
+          setDays(data.days as DayRow[]);
+        } else {
+          const data = await api.get(`/reports/yearly?year=${year}`);
+          if (!alive) return;
+          setSummary(data.summary as Summary);
+          setMonths(data.months as MonthRow[]);
+        }
+      } catch (err) {
+        if (alive) setError(err instanceof Error ? err.message : 'Error');
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [tab, date, year, month]);
+
+  const tabs: { key: ReportTab; label: string }[] = [
+    { key: 'daily', label: t(lang, 'daily') },
+    { key: 'monthly', label: t(lang, 'monthly') },
+    { key: 'yearly', label: t(lang, 'yearly') },
+  ];
+
+  return (
+    <>
+      <h2>{t(lang, 'reports')}</h2>
+      <div className="tabs">
+        {tabs.map((tb) => (
+          <button
+            key={tb.key}
+            className={tab === tb.key ? 'active' : ''}
+            onClick={() => setTab(tb.key)}
+          >
+            {tb.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="report-controls">
+        {tab === 'daily' && (
+          <div className="field">
+            <label>{t(lang, 'dateLabel')}</label>
+            <input
+              className="cell-input"
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+            />
+          </div>
+        )}
+        {tab === 'monthly' && (
+          <>
+            <div className="field">
+              <label>{t(lang, 'year')}</label>
+              <input
+                className="cell-input"
+                type="number"
+                value={year}
+                onChange={(e) => setYear(Number(e.target.value))}
+              />
+            </div>
+            <div className="field">
+              <label>{t(lang, 'month')}</label>
+              <select
+                className="field-select"
+                value={month}
+                onChange={(e) => setMonth(Number(e.target.value))}
+              >
+                {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </>
+        )}
+        {tab === 'yearly' && (
+          <div className="field">
+            <label>{t(lang, 'year')}</label>
+            <input
+              className="cell-input"
+              type="number"
+              value={year}
+              onChange={(e) => setYear(Number(e.target.value))}
+            />
+          </div>
+        )}
+      </div>
+
+      {error && <div className="error-box">{error}</div>}
+      {!summary && !error && <p className="muted">{t(lang, 'loading')}</p>}
+      {summary && (
+        <div className="cards">
+          <div className="card">
+            <div className="card-label">{t(lang, 'revenue')}</div>
+            <div className="card-value">{fmt(summary.revenue)}</div>
+            <div className="card-sub">{t(lang, 'currency')}</div>
+          </div>
+          <div className="card profit">
+            <div className="card-label">{t(lang, 'profit')}</div>
+            <div className="card-value">{fmt(summary.profit)}</div>
+            <div className="card-sub">
+              {t(lang, 'cost')}: {fmt(summary.cost_total)}
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-label">{t(lang, 'salesCount')}</div>
+            <div className="card-value">{fmt(summary.sales_count)}</div>
+            <div className="card-sub">
+              {t(lang, 'itemsSold')}: {fmt(summary.items_sold)}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab === 'daily' && summary && (
+        <div className="panel">
+          <table>
+            <thead>
+              <tr>
+                <th>{t(lang, 'invoice')}</th>
+                <th>{t(lang, 'customer')}</th>
+                <th>{t(lang, 'lineTotal')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {daySales.map((s) => (
+                <tr key={s.id}>
+                  <td>
+                    {s.invoice_no}
+                    <span className="muted"> · {String(s.sale_date).slice(11, 16)}</span>
+                  </td>
+                  <td>{s.customer_name || t(lang, 'walkIn')}</td>
+                  <td>{fmt(Number(s.net_total))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {tab === 'monthly' && summary && (
+        <div className="panel">
+          <table>
+            <thead>
+              <tr>
+                <th>{t(lang, 'dateLabel')}</th>
+                <th>{t(lang, 'salesCount')}</th>
+                <th>{t(lang, 'revenue')}</th>
+                <th>{t(lang, 'cost')}</th>
+                <th>{t(lang, 'profit')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {days.map((d) => (
+                <tr key={d.day}>
+                  <td>{String(d.day).slice(0, 10)}</td>
+                  <td>{fmt(d.sales_count)}</td>
+                  <td>{fmt(d.revenue)}</td>
+                  <td>{fmt(d.cost_total)}</td>
+                  <td>{fmt(d.profit)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {tab === 'yearly' && summary && (
+        <div className="panel">
+          <table>
+            <thead>
+              <tr>
+                <th>{t(lang, 'month')}</th>
+                <th>{t(lang, 'salesCount')}</th>
+                <th>{t(lang, 'revenue')}</th>
+                <th>{t(lang, 'cost')}</th>
+                <th>{t(lang, 'profit')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {months.map((m) => (
+                <tr key={m.month}>
+                  <td>
+                    {year}-{String(m.month).padStart(2, '0')}
+                  </td>
+                  <td>{fmt(m.sales_count)}</td>
+                  <td>{fmt(m.revenue)}</td>
+                  <td>{fmt(m.cost_total)}</td>
+                  <td>{fmt(m.profit)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </>
   );
 }

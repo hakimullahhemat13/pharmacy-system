@@ -273,3 +273,16 @@ tr.highlight td { background: #ecfdf5; font-weight: 600; }
   font-weight: 600;
 }
 .btn-secondary:hover { background: #f0fdf4; }
+
+/* ---------- Reports page ---------- */
+.tabs { display: flex; gap: 6px; margin-bottom: 16px; }
+.tabs button {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  border-radius: 999px;
+  padding: 7px 20px;
+  font-size: 14.5px;
+}
+.tabs button.active { background: #14532d; color: #fff; border-color: #14532d; }
+.report-controls { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.report-controls .field { min-width: 160px; }
