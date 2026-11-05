@@ -12,6 +12,7 @@ const stockRoutes = require('./routes/stock');
 const customersRoutes = require('./routes/customers');
 const salesRoutes = require('./routes/sales');
 const reportsRoutes = require('./routes/reports');
+const backupRoutes = require('./routes/backup');
 
 const app = express();
 app.use(cors());
@@ -44,6 +45,9 @@ app.use('/api/sales', salesRoutes);
 
 // Reports: daily, monthly, yearly (sales + profit)
 app.use('/api/reports', reportsRoutes);
+
+// Backup & restore (admin only)
+app.use('/api/backup', backupRoutes);
 
 const PORT = Number(process.env.PORT) || 5000;
 app.listen(PORT, () => {

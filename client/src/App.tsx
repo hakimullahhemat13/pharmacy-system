@@ -107,7 +107,7 @@ interface MonthRow {
   profit: number;
 }
 
-type Page = 'dashboard' | 'medicines' | 'sales' | 'purchases' | 'reports';
+type Page = 'dashboard' | 'medicines' | 'sales' | 'purchases' | 'reports' | 'backup';
 
 const USER_KEY = 'pharmacy_user';
 const LANG_KEY = 'pharmacy_lang';
@@ -186,6 +186,7 @@ export default function App() {
     { key: 'sales', label: t(lang, 'sales') },
     { key: 'purchases', label: t(lang, 'purchases') },
     { key: 'reports', label: t(lang, 'reports') },
+    ...(user.role === 'admin' ? [{ key: 'backup' as Page, label: t(lang, 'backup') }] : []),
   ];
 
   return (
@@ -217,7 +218,8 @@ export default function App() {
         {page === 'sales' && <SalesPage lang={lang} />}
         {page === 'purchases' && <PurchasesPage lang={lang} />}
         {page === 'reports' && <ReportsPage lang={lang} />}
-        {page !== 'dashboard' && page !== 'medicines' && page !== 'sales' && page !== 'purchases' && page !== 'reports' && (
+        {page === 'backup' && <BackupPage lang={lang} onLogout={logout} />}
+        {page !== 'dashboard' && page !== 'medicines' && page !== 'sales' && page !== 'purchases' && page !== 'reports' && page !== 'backup' && (
           <>
             <h2>{menu.find((m) => m.key === page)?.label}</h2>
             <div className="panel">
@@ -1380,6 +1382,120 @@ function ReportsPage({ lang }: { lang: Lang }) {
           </table>
         </div>
       )}
+    </>
+  );
+}
+
+function BackupPage({ lang, onLogout }: { lang: Lang; onLogout: () => void }) {
+  const [dlBusy, setDlBusy] = useState(false);
+  const [dlMsg, setDlMsg] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [rsBusy, setRsBusy] = useState(false);
+  const [rsMsg, setRsMsg] = useState('');
+  const [error, setError] = useState('');
+
+  const download = async () => {
+    setError('');
+    setDlMsg('');
+    setDlBusy(true);
+    try {
+      const name = await api.download('/backup/download', 'pharmacy_db.sql');
+      setDlMsg(`${t(lang, 'backupDone')} — ${name}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
+    setDlBusy(false);
+  };
+
+  const startRestore = () => {
+    setError('');
+    setRsMsg('');
+    if (!file) {
+      setError(t(lang, 'noFile'));
+      return;
+    }
+    setConfirming(true);
+  };
+
+  const restore = async () => {
+    if (!file) return;
+    setError('');
+    setRsBusy(true);
+    try {
+      const text = await file.text();
+      await api.postText('/backup/restore', text);
+      setRsMsg(t(lang, 'restoreDone'));
+      setConfirming(false);
+      window.setTimeout(onLogout, 3500);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+      setRsBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <h2>{t(lang, 'backup')}</h2>
+      {error && <div className="error-box">{error}</div>}
+
+      <div className="panel" style={{ marginTop: 0 }}>
+        <h3>⬇️ {t(lang, 'downloadBackup')}</h3>
+        <p className="muted" style={{ fontSize: 15 }}>
+          {t(lang, 'backupDesc')}
+        </p>
+        {dlMsg && <div className="success-box">{dlMsg}</div>}
+        <button className="btn-save" onClick={download} disabled={dlBusy}>
+          {dlBusy ? t(lang, 'loading') : `⬇️ ${t(lang, 'downloadBackup')}`}
+        </button>
+      </div>
+
+      <div className="panel">
+        <h3>⬆️ {t(lang, 'restoreBackup')}</h3>
+        <p className="muted" style={{ fontSize: 15 }}>
+          {t(lang, 'restoreDesc')}
+        </p>
+        <div className="error-box">{t(lang, 'restoreWarning')}</div>
+        <div className="field" style={{ marginTop: 12 }}>
+          <label>{t(lang, 'chooseFile')}</label>
+          <input
+            type="file"
+            accept=".sql"
+            onChange={(e) => {
+              setFile(e.target.files && e.target.files[0] ? e.target.files[0] : null);
+              setConfirming(false);
+              setError('');
+            }}
+          />
+        </div>
+        {file && (
+          <p className="muted" style={{ fontSize: 14 }}>
+            📄 {file.name} — {fmt(Math.max(1, Math.round(file.size / 1024)))} KB
+          </p>
+        )}
+        {rsMsg && <div className="success-box">{rsMsg}</div>}
+        {!confirming ? (
+          <button className="btn-secondary" onClick={startRestore} disabled={rsBusy}>
+            ⬆️ {t(lang, 'restoreBackup')}
+          </button>
+        ) : (
+          <div style={{ marginTop: 10 }}>
+            <p style={{ fontWeight: 600 }}>{t(lang, 'areYouSure')}</p>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="btn-remove" style={{ padding: '8px 18px' }} onClick={restore} disabled={rsBusy}>
+                {rsBusy ? t(lang, 'loading') : t(lang, 'confirmRestore')}
+              </button>
+              <button
+                className="btn-secondary"
+                onClick={() => setConfirming(false)}
+                disabled={rsBusy}
+              >
+                {t(lang, 'cancel')}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </>
   );
 }

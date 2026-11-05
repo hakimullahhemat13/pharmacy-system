@@ -101,6 +101,19 @@ const ps: Dict = {
   revenue: 'پلور (عاید)',
   profit: 'ګټه',
   salesCount: 'بیلونه',
+  backup: 'بیک‌اپ',
+  backupDesc: 'د ټول ډیټابیس یوه بشپړه کاپي د .sql فایل په بڼه ستا کمپیوټر ته ښکته کېږي. دا فایل په خوندي ځای کې وساته — هره ورځ یو بیک‌اپ واخله.',
+  downloadBackup: 'بیک‌اپ ډاونلوډ کړه',
+  backupDone: 'بیک‌اپ ډاونلوډ شو ✅',
+  restoreBackup: 'له بیک‌اپ نه راګرځول',
+  restoreDesc: 'یو پخوانی بیک‌اپ فایل وټاکه — ډیټابیس به د هماغه وخت حالت ته وګرځي.',
+  restoreWarning: '⚠️ خبرداری: راګرځول ټوله اوسنۍ ډیټا ړنګوي او د بیک‌اپ فایل ډیټا پرې لیکي. لومړی د نن ورځې نوی بیک‌اپ واخله!',
+  chooseFile: 'د بیک‌اپ فایل وټاکه (.sql)',
+  noFile: 'لومړی یو .sql بیک‌اپ فایل وټاکه',
+  areYouSure: 'ایا ډاډه یې؟ دا کار بېرته نه راګرځي.',
+  confirmRestore: 'هو، راګرځول وکړه',
+  cancel: 'پرېږده',
+  restoreDone: 'ډیټابیس راګرځول شو ✅ اوس به ووځې — بیا ننوځه چې هر څه تازه شي.',
 };
 
 const fa: Dict = {
@@ -190,6 +203,19 @@ const fa: Dict = {
   revenue: 'فروش (عاید)',
   profit: 'مفاد',
   salesCount: 'بل‌ها',
+  backup: 'بک‌آپ',
+  backupDesc: 'یک کاپی کامل از تمام دیتابیس به شکل فایل .sql به کمپیوتر شما دانلود می‌شود. این فایل را در جای امن نگه دارید — هر روز یک بک‌آپ بگیرید.',
+  downloadBackup: 'دانلود بک‌آپ',
+  backupDone: 'بک‌آپ دانلود شد ✅',
+  restoreBackup: 'بازیابی از بک‌آپ',
+  restoreDesc: 'یک فایل بک‌آپ قبلی را انتخاب کنید — دیتابیس به حالت همان وقت برمی‌گردد.',
+  restoreWarning: '⚠️ هشدار: بازیابی تمام معلومات فعلی را حذف می‌کند و معلومات فایل بک‌آپ را جایش می‌نویسد. اول یک بک‌آپ تازه از امروز بگیرید!',
+  chooseFile: 'فایل بک‌آپ را انتخاب کنید (.sql)',
+  noFile: 'اول یک فایل بک‌آپ .sql انتخاب کنید',
+  areYouSure: 'آیا مطمئن هستید؟ این کار قابل برگشت نیست.',
+  confirmRestore: 'بلی، بازیابی کن',
+  cancel: 'لغو',
+  restoreDone: 'دیتابیس بازیابی شد ✅ حالا خارج می‌شوید — دوباره وارد شوید تا همه چیز تازه شود.',
 };
 
 const en: Dict = {
@@ -279,6 +305,19 @@ const en: Dict = {
   revenue: 'Revenue',
   profit: 'Profit',
   salesCount: 'Bills',
+  backup: 'Backup',
+  backupDesc: 'Downloads a complete copy of the whole database as a .sql file to your computer. Keep the file somewhere safe — take a backup every day.',
+  downloadBackup: 'Download backup',
+  backupDone: 'Backup downloaded ✅',
+  restoreBackup: 'Restore from backup',
+  restoreDesc: 'Choose an earlier backup file — the database will go back to exactly that state.',
+  restoreWarning: '⚠️ Warning: restoring deletes ALL current data and replaces it with the backup file. Download a fresh backup of today first!',
+  chooseFile: 'Choose the backup file (.sql)',
+  noFile: 'Choose a .sql backup file first',
+  areYouSure: 'Are you sure? This cannot be undone.',
+  confirmRestore: 'Yes, restore it',
+  cancel: 'Cancel',
+  restoreDone: 'Database restored ✅ You will be logged out — log in again so everything reloads.',
 };
 
 const DICTS: Record<Lang, Dict> = { ps, fa, en };

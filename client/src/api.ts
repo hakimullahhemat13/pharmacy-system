@@ -37,4 +37,40 @@ export const api = {
     });
     return handle(res);
   },
+  // Download a file from the API (needs the token, so a plain link won't do).
+  // Returns the file name the browser saved it under.
+  async download(path: string, fallbackName: string) {
+    const res = await fetch(BASE + path, {
+      headers: { Authorization: `Bearer ${getToken()}` },
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error((data && data.message) || `HTTP ${res.status}`);
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get('Content-Disposition') || '';
+    const match = /filename="([^"]+)"/.exec(cd);
+    const name = match ? match[1] : fallbackName;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    return name;
+  },
+  // POST a raw text body (used to upload a .sql backup for restore).
+  async postText(path: string, text: string) {
+    const res = await fetch(BASE + path, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${getToken()}`,
+        'Content-Type': 'application/sql',
+      },
+      body: text,
+    });
+    return handle(res);
+  },
 };
