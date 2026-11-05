@@ -6,6 +6,9 @@ require('dotenv').config();
 const pool = require('./db');
 const authRoutes = require('./routes/auth');
 const medicinesRoutes = require('./routes/medicines');
+const suppliersRoutes = require('./routes/suppliers');
+const purchasesRoutes = require('./routes/purchases');
+const stockRoutes = require('./routes/stock');
 
 const app = express();
 app.use(cors());
@@ -26,6 +29,11 @@ app.use('/api/auth', authRoutes);
 
 // Medicines: add, list, search, barcode lookup
 app.use('/api/medicines', medicinesRoutes);
+
+// Suppliers, purchases (stock in) and stock views
+app.use('/api/suppliers', suppliersRoutes);
+app.use('/api/purchases', purchasesRoutes);
+app.use('/api/stock', stockRoutes);
 
 const PORT = Number(process.env.PORT) || 5000;
 app.listen(PORT, () => {
