@@ -42,6 +42,27 @@ interface StockRow {
   low_stock: boolean;
 }
 
+interface Customer {
+  id: string;
+  name: string;
+  phone: string | null;
+}
+
+interface BillItem {
+  medicine_id: string;
+  name: string;
+  unit_price: number;
+  quantity: number;
+}
+
+interface SaleRow {
+  id: string;
+  invoice_no: string;
+  sale_date: string;
+  net_total: number | string;
+  customer_name: string | null;
+}
+
 type Page = 'dashboard' | 'medicines' | 'sales' | 'purchases' | 'reports';
 
 const USER_KEY = 'pharmacy_user';
@@ -149,7 +170,8 @@ export default function App() {
       <main className="main">
         {page === 'dashboard' && <Dashboard lang={lang} />}
         {page === 'medicines' && <Medicines lang={lang} />}
-        {page !== 'dashboard' && page !== 'medicines' && (
+        {page === 'sales' && <SalesPage lang={lang} />}
+        {page !== 'dashboard' && page !== 'medicines' && page !== 'sales' && (
           <>
             <h2>{menu.find((m) => m.key === page)?.label}</h2>
             <div className="panel">
@@ -502,6 +524,291 @@ function Medicines({ lang }: { lang: Lang }) {
                   <td>
                     {r.low_stock && <span className="badge low">{t(lang, 'lowBadge')}</span>}
                   </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </>
+  );
+}
+
+function SalesPage({ lang }: { lang: Lang }) {
+  const [stock, setStock] = useState<StockRow[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [recent, setRecent] = useState<SaleRow[]>([]);
+  const [query, setQuery] = useState('');
+  const [bill, setBill] = useState<BillItem[]>([]);
+  const [customerId, setCustomerId] = useState('');
+  const [discount, setDiscount] = useState('');
+  const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const loadStock = async () => {
+    const data = await api.get('/stock');
+    setStock(data.stock as StockRow[]);
+  };
+  const loadRecent = async () => {
+    const data = await api.get('/sales');
+    setRecent((data.sales as SaleRow[]).slice(0, 8));
+  };
+
+  useEffect(() => {
+    loadStock().catch((err) => setError(err instanceof Error ? err.message : 'Error'));
+    loadRecent().catch(() => undefined);
+    api
+      .get('/customers')
+      .then((data) => setCustomers(data.customers as Customer[]))
+      .catch(() => undefined);
+  }, []);
+
+  const q = query.trim().toLowerCase();
+  const results = q
+    ? stock.filter(
+        (r) =>
+          r.name.toLowerCase().includes(q) ||
+          (r.generic_name || '').toLowerCase().includes(q) ||
+          (r.barcode || '').toLowerCase().includes(q)
+      )
+    : [];
+
+  const addToBill = (med: StockRow) => {
+    setMsg('');
+    setBill((b) => {
+      const existing = b.find((i) => i.medicine_id === med.medicine_id);
+      if (existing) {
+        return b.map((i) =>
+          i.medicine_id === med.medicine_id ? { ...i, quantity: i.quantity + 1 } : i
+        );
+      }
+      return [
+        ...b,
+        {
+          medicine_id: med.medicine_id,
+          name: med.name,
+          unit_price: Number(med.sale_price),
+          quantity: 1,
+        },
+      ];
+    });
+  };
+
+  // A barcode scanner "types" the barcode and presses Enter — an exact
+  // barcode match on Enter adds that medicine straight to the bill.
+  const onSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const code = query.trim();
+    if (!code) return;
+    const exact = stock.find((r) => r.barcode === code);
+    if (exact) {
+      addToBill(exact);
+      setQuery('');
+    } else if (results.length === 1) {
+      addToBill(results[0]);
+      setQuery('');
+    }
+  };
+
+  const setQty = (medicineId: string, qty: number) => {
+    setBill((b) =>
+      b.map((i) =>
+        i.medicine_id === medicineId
+          ? { ...i, quantity: Number.isFinite(qty) && qty > 0 ? Math.floor(qty) : 1 }
+          : i
+      )
+    );
+  };
+
+  const removeItem = (medicineId: string) =>
+    setBill((b) => b.filter((i) => i.medicine_id !== medicineId));
+
+  const subtotal = bill.reduce((sum, i) => sum + i.unit_price * i.quantity, 0);
+  const discountNum = discount === '' ? 0 : Number(discount) || 0;
+  const net = Math.max(0, subtotal - discountNum);
+
+  const complete = async () => {
+    setError('');
+    setMsg('');
+    if (bill.length === 0) {
+      setError(t(lang, 'billEmpty'));
+      return;
+    }
+    setBusy(true);
+    try {
+      const data = await api.post('/sales', {
+        items: bill.map((i) => ({ medicine_id: i.medicine_id, quantity: i.quantity })),
+        discount: discountNum,
+        customer_id: customerId || undefined,
+      });
+      setMsg(
+        `✅ ${t(lang, 'saleDone')}: ${data.sale.invoice_no} — ${fmt(Number(data.sale.net_total))} ${t(lang, 'currency')}`
+      );
+      setBill([]);
+      setDiscount('');
+      setCustomerId('');
+      await Promise.all([loadStock(), loadRecent()]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
+    setBusy(false);
+  };
+
+  return (
+    <>
+      <h2>{t(lang, 'sales')}</h2>
+      <div className="pos-grid">
+        <div className="panel" style={{ marginTop: 0 }}>
+          <form onSubmit={onSearchSubmit}>
+            <input
+              className="search-input"
+              placeholder={t(lang, 'searchMedicine')}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              autoFocus
+            />
+          </form>
+          {q && results.length === 0 && (
+            <p className="muted" style={{ fontSize: 15 }}>
+              {t(lang, 'noResults')}
+            </p>
+          )}
+          {results.map((r) => (
+            <button key={r.medicine_id} className="result-row" onClick={() => addToBill(r)}>
+              <span>{r.name}</span>
+              <span className="r-stock">
+                {t(lang, 'available')}: {fmt(r.total_quantity)}
+              </span>
+              <span className="r-price">
+                {fmt(Number(r.sale_price))} {t(lang, 'currency')}
+              </span>
+            </button>
+          ))}
+        </div>
+
+        <div className="panel" style={{ marginTop: 0 }}>
+          <h3>🧾 {t(lang, 'bill')}</h3>
+          {bill.length === 0 ? (
+            <p className="muted" style={{ fontSize: 15 }}>
+              {t(lang, 'billEmpty')}
+            </p>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>{t(lang, 'name')}</th>
+                  <th>{t(lang, 'salePrice')}</th>
+                  <th>{t(lang, 'qty')}</th>
+                  <th>{t(lang, 'lineTotal')}</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {bill.map((i) => (
+                  <tr key={i.medicine_id}>
+                    <td>{i.name}</td>
+                    <td>{fmt(i.unit_price)}</td>
+                    <td>
+                      <input
+                        className="qty-input"
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={i.quantity}
+                        onChange={(e) => setQty(i.medicine_id, Number(e.target.value))}
+                      />
+                    </td>
+                    <td>{fmt(i.unit_price * i.quantity)}</td>
+                    <td>
+                      <button className="btn-remove" onClick={() => removeItem(i.medicine_id)}>
+                        ✕
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          <div style={{ marginTop: 14 }}>
+            <div className="field">
+              <label>{t(lang, 'customer')}</label>
+              <select
+                className="field-select"
+                value={customerId}
+                onChange={(e) => setCustomerId(e.target.value)}
+              >
+                <option value="">{t(lang, 'walkIn')}</option>
+                {customers.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="total-row" style={{ marginTop: 10 }}>
+            <span>{t(lang, 'subtotal')}</span>
+            <span>{fmt(subtotal)}</span>
+          </div>
+          <div className="total-row">
+            <span>{t(lang, 'discount')}</span>
+            <input
+              className="discount-input"
+              type="number"
+              min="0"
+              step="0.01"
+              value={discount}
+              onChange={(e) => setDiscount(e.target.value)}
+            />
+          </div>
+          <div className="total-row grand">
+            <span>{t(lang, 'netTotal')}</span>
+            <span>
+              {fmt(net)} {t(lang, 'currency')}
+            </span>
+          </div>
+
+          {error && <div className="error-box">{error}</div>}
+          {msg && <div className="success-box">{msg}</div>}
+          <button
+            className="btn-save"
+            style={{ width: '100%' }}
+            onClick={complete}
+            disabled={busy || bill.length === 0}
+          >
+            {busy ? t(lang, 'loading') : t(lang, 'completeSale')}
+          </button>
+        </div>
+      </div>
+
+      <div className="panel">
+        <h3>🧾 {t(lang, 'recentBills')}</h3>
+        {recent.length === 0 ? (
+          <p className="muted">—</p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>{t(lang, 'invoice')}</th>
+                <th>{t(lang, 'customer')}</th>
+                <th>{t(lang, 'lineTotal')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recent.map((s) => (
+                <tr key={s.id}>
+                  <td>
+                    {s.invoice_no}
+                    <span className="muted">
+                      {' '}
+                      · {String(s.sale_date).slice(0, 10)} {String(s.sale_date).slice(11, 16)}
+                    </span>
+                  </td>
+                  <td>{s.customer_name || t(lang, 'walkIn')}</td>
+                  <td>{fmt(Number(s.net_total))}</td>
                 </tr>
               ))}
             </tbody>

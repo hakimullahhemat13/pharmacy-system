@@ -206,3 +206,49 @@ tr.row-expired td { background: #fff7f7; }
 }
 tr.highlight td { background: #ecfdf5; font-weight: 600; }
 .badge.low { background: #fee2e2; color: #b91c1c; }
+
+/* ---------- Sales (POS) page ---------- */
+.pos-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+@media (max-width: 900px) { .pos-grid { grid-template-columns: 1fr; } }
+.result-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid #eef2f0;
+  font-size: 14.5px;
+  text-align: start;
+  color: inherit;
+}
+.result-row:hover { background: #f0fdf4; }
+.result-row .r-price { color: #14532d; font-weight: 600; white-space: nowrap; }
+.result-row .r-stock { color: #94a3b8; font-size: 12.5px; white-space: nowrap; }
+.qty-input {
+  width: 68px;
+  padding: 6px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 14px;
+}
+.btn-remove { background: none; border: none; color: #b91c1c; font-size: 16px; padding: 2px 6px; }
+.total-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; font-size: 15px; }
+.total-row.grand { font-weight: 700; font-size: 18px; border-top: 2px solid #e2e8f0; margin-top: 8px; padding-top: 10px; }
+.discount-input {
+  width: 110px;
+  padding: 6px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 14.5px;
+}
+.field-select {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 14.5px;
+  background: #fff;
+}
