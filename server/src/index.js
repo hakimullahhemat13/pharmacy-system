@@ -5,6 +5,7 @@ require('dotenv').config();
 
 const pool = require('./db');
 const authRoutes = require('./routes/auth');
+const medicinesRoutes = require('./routes/medicines');
 
 const app = express();
 app.use(cors());
@@ -22,6 +23,9 @@ app.get('/api/health', async (req, res) => {
 
 // Auth: login + current user
 app.use('/api/auth', authRoutes);
+
+// Medicines: add, list, search, barcode lookup
+app.use('/api/medicines', medicinesRoutes);
 
 const PORT = Number(process.env.PORT) || 5000;
 app.listen(PORT, () => {
