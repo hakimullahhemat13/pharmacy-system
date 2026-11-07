@@ -306,3 +306,7 @@ tr.highlight td { background: #ecfdf5; font-weight: 600; }
 .tabs button.active { background: #14532d; color: #fff; border-color: #14532d; }
 .report-controls { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
 .report-controls .field { min-width: 160px; }
+
+/* "Show password" checkbox under password fields (login + settings) */
+.show-pw { display: inline-flex; align-items: center; gap: 6px; font-size: 13.5px; color: #475569; margin-top: 6px; cursor: pointer; }
+.show-pw input { width: auto; margin: 0; }

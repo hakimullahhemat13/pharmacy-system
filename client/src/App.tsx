@@ -39,6 +39,7 @@ interface StockRow {
   category: string | null;
   sale_price: number | string;
   min_stock: number;
+  warn_months: number;
   created_at: string;
   total_quantity: number;
   batch_count: number;
@@ -288,6 +289,7 @@ function Login({
 }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -328,12 +330,16 @@ function Login({
         <label htmlFor="password">{t(lang, 'password')}</label>
         <input
           id="password"
-          type="password"
+          type={showPw ? 'text' : 'password'}
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           autoComplete="current-password"
           required
         />
+        <label className="show-pw">
+          <input type="checkbox" checked={showPw} onChange={(e) => setShowPw(e.target.checked)} />{' '}
+          {t(lang, 'showPassword')}
+        </label>
         {error && <div className="error-box">{error}</div>}
         <button className="btn-primary" type="submit" disabled={busy}>
           {busy ? t(lang, 'loading') : t(lang, 'login')}
@@ -355,7 +361,7 @@ function Dashboard({ lang }: { lang: Lang }) {
       try {
         const [daily, expiring, stockRes] = await Promise.all([
           api.get('/reports/daily'),
-          api.get('/stock/expiring?months=3'),
+          api.get('/stock/expiring'),
           api.get('/stock'),
         ]);
         if (!alive) return;
@@ -468,6 +474,7 @@ function Medicines({ lang }: { lang: Lang }) {
     category: '',
     sale_price: '',
     min_stock: '10',
+    warn_months: '3',
     init_qty: '',
     init_price: '',
     init_expiry: '',
@@ -490,6 +497,7 @@ function Medicines({ lang }: { lang: Lang }) {
       category: r.category || '',
       sale_price: String(r.sale_price ?? ''),
       min_stock: String(r.min_stock ?? 10),
+      warn_months: String(r.warn_months ?? 3),
     });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -609,6 +617,7 @@ function Medicines({ lang }: { lang: Lang }) {
     if (!form.category.trim()) missing.push(t(lang, 'category'));
     if (form.sale_price.trim() === '') missing.push(t(lang, 'salePrice'));
     if (form.min_stock.trim() === '') missing.push(t(lang, 'minStockLabel'));
+    if (form.warn_months.trim() === '') missing.push(t(lang, 'warnMonths'));
     if (missing.length > 0) {
       setError(`${t(lang, 'fillRequired')}: ${missing.join(', ')}`);
       return;
@@ -629,6 +638,7 @@ function Medicines({ lang }: { lang: Lang }) {
         category: form.category.trim() || undefined,
         sale_price: form.sale_price === '' ? undefined : Number(form.sale_price),
         min_stock: form.min_stock === '' ? undefined : Number(form.min_stock),
+        warn_months: form.warn_months === '' ? undefined : Number(form.warn_months),
       };
       if (editingId) {
         // Correcting an existing medicine — details only, stock untouched.
@@ -711,6 +721,10 @@ function Medicines({ lang }: { lang: Lang }) {
             <div className="field">
               <label>{t(lang, 'minStockLabel')} *</label>
               <input type="number" min="0" step="1" value={form.min_stock} onChange={set('min_stock')} />
+            </div>
+            <div className="field">
+              <label>{t(lang, 'warnMonths')} *</label>
+              <input type="number" min="0" max="24" step="1" value={form.warn_months} onChange={set('warn_months')} />
             </div>
           </div>
           {!editingId && (
@@ -2247,6 +2261,7 @@ function SettingsPage({
   const [langError, setLangError] = useState('');
 
   const [curPw, setCurPw] = useState('');
+  const [showPw, setShowPw] = useState(false);
   const [newPw, setNewPw] = useState('');
   const [confirmPw, setConfirmPw] = useState('');
   const [pwMsg, setPwMsg] = useState('');
@@ -2400,22 +2415,26 @@ function SettingsPage({
           <div className="form-grid">
             <div className="field">
               <label>{t(lang, 'currentPassword')}</label>
-              <input type="password" value={curPw} onChange={(e) => setCurPw(e.target.value)} required />
+              <input type={showPw ? 'text' : 'password'} value={curPw} onChange={(e) => setCurPw(e.target.value)} required />
             </div>
             <div className="field">
               <label>{t(lang, 'newPassword')}</label>
-              <input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)} required />
+              <input type={showPw ? 'text' : 'password'} value={newPw} onChange={(e) => setNewPw(e.target.value)} required />
             </div>
             <div className="field">
               <label>{t(lang, 'confirmPassword')}</label>
               <input
-                type="password"
+                type={showPw ? 'text' : 'password'}
                 value={confirmPw}
                 onChange={(e) => setConfirmPw(e.target.value)}
                 required
               />
             </div>
           </div>
+          <label className="show-pw">
+            <input type="checkbox" checked={showPw} onChange={(e) => setShowPw(e.target.checked)} />{' '}
+            {t(lang, 'showPassword')}
+          </label>
           {pwError && <div className="error-box">{pwError}</div>}
           {pwMsg && <div className="success-box">{pwMsg}</div>}
           <button className="btn-save" type="submit" disabled={pwBusy}>
@@ -2510,11 +2529,15 @@ function SettingsPage({
               <div className="field">
                 <label>{t(lang, 'password')} *</label>
                 <input
-                  type="password"
+                  type={showPw ? 'text' : 'password'}
                   value={nuPassword}
                   onChange={(e) => setNuPassword(e.target.value)}
                   required
                 />
+                <label className="show-pw">
+                  <input type="checkbox" checked={showPw} onChange={(e) => setShowPw(e.target.checked)} />{' '}
+                  {t(lang, 'showPassword')}
+                </label>
               </div>
               <div className="field">
                 <label>{t(lang, 'role')}</label>

@@ -10,7 +10,7 @@ const { authRequired, requireRole } = require('../middleware/auth');
 const router = express.Router();
 
 const COLUMNS =
-  'id, branch_id, name, generic_name, company, barcode, unit, category, sale_price, min_stock, created_at, updated_at';
+  'id, branch_id, name, generic_name, company, barcode, unit, category, sale_price, min_stock, warn_months, created_at, updated_at';
 
 // POST /api/medicines  (admin or pharmacist)
 // Body: { name, generic_name?, company?, barcode?, unit?, category?, sale_price?, min_stock? }
@@ -40,6 +40,7 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
   if (!category) missing.push('category');
   if (body.sale_price === undefined || body.sale_price === null || body.sale_price === '') missing.push('sale_price');
   if (body.min_stock === undefined || body.min_stock === null || body.min_stock === '') missing.push('min_stock');
+  if (body.warn_months === undefined || body.warn_months === null || body.warn_months === '') missing.push('warn_months');
   if (missing.length > 0) {
     return res.status(400).json({ status: 'error', message: `These fields are required: ${missing.join(', ')}` });
   }
@@ -51,6 +52,12 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
   const minStock = Number(body.min_stock);
   if (!Number.isInteger(minStock) || minStock < 0) {
     return res.status(400).json({ status: 'error', message: 'Minimum stock must be a whole number, 0 or more' });
+  }
+  // Per-medicine expiry warning: how many months before expiry this medicine
+  // starts appearing in the dashboard warnings (the pharmacist sets it).
+  const warnMonths = Number(body.warn_months);
+  if (!Number.isInteger(warnMonths) || warnMonths < 0 || warnMonths > 24) {
+    return res.status(400).json({ status: 'error', message: 'Expiry warning must be a whole number of months, 0 to 24' });
   }
 
   // Optional opening stock: when a pharmacist registers a brand-new medicine
@@ -117,8 +124,8 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
 
     const id = uuidv4();
     await conn.query(
-      'INSERT INTO medicines (id, branch_id, name, generic_name, company, barcode, unit, category, sale_price, min_stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [id, branchId, name, genericName, company, barcode, unit, category, salePrice, minStock]
+      'INSERT INTO medicines (id, branch_id, name, generic_name, company, barcode, unit, category, sale_price, min_stock, warn_months) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, branchId, name, genericName, company, barcode, unit, category, salePrice, minStock, warnMonths]
     );
 
     let initialStock = null;
@@ -192,6 +199,7 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
   if (!category) missing.push('category');
   if (body.sale_price === undefined || body.sale_price === null || body.sale_price === '') missing.push('sale_price');
   if (body.min_stock === undefined || body.min_stock === null || body.min_stock === '') missing.push('min_stock');
+  if (body.warn_months === undefined || body.warn_months === null || body.warn_months === '') missing.push('warn_months');
   if (missing.length > 0) {
     return res.status(400).json({ status: 'error', message: `These fields are required: ${missing.join(', ')}` });
   }
@@ -202,6 +210,10 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
   const minStock = Number(body.min_stock);
   if (!Number.isInteger(minStock) || minStock < 0) {
     return res.status(400).json({ status: 'error', message: 'Minimum stock must be a whole number, 0 or more' });
+  }
+  const warnMonths = Number(body.warn_months);
+  if (!Number.isInteger(warnMonths) || warnMonths < 0 || warnMonths > 24) {
+    return res.status(400).json({ status: 'error', message: 'Expiry warning must be a whole number of months, 0 to 24' });
   }
 
   try {
@@ -224,9 +236,9 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
     }
     await pool.query(
       `UPDATE medicines
-          SET name = ?, generic_name = ?, company = ?, barcode = ?, unit = ?, category = ?, sale_price = ?, min_stock = ?
+          SET name = ?, generic_name = ?, company = ?, barcode = ?, unit = ?, category = ?, sale_price = ?, min_stock = ?, warn_months = ?
         WHERE id = ? AND branch_id = ?`,
-      [name, genericName, company, barcode, unit, category, salePrice, minStock, req.params.id, branchId]
+      [name, genericName, company, barcode, unit, category, salePrice, minStock, warnMonths, req.params.id, branchId]
     );
     const [rows] = await pool.query(`SELECT ${COLUMNS} FROM medicines WHERE id = ?`, [req.params.id]);
     return res.json({ status: 'ok', medicine: rows[0] });
