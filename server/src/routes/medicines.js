@@ -40,7 +40,6 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
   if (!category) missing.push('category');
   if (body.sale_price === undefined || body.sale_price === null || body.sale_price === '') missing.push('sale_price');
   if (body.min_stock === undefined || body.min_stock === null || body.min_stock === '') missing.push('min_stock');
-  if (body.warn_months === undefined || body.warn_months === null || body.warn_months === '') missing.push('warn_months');
   if (missing.length > 0) {
     return res.status(400).json({ status: 'error', message: `These fields are required: ${missing.join(', ')}` });
   }
@@ -55,7 +54,11 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
   }
   // Per-medicine expiry warning: how many months before expiry this medicine
   // starts appearing in the dashboard warnings (the pharmacist sets it).
-  const warnMonths = Number(body.warn_months);
+  // Left empty, the system assigns the standard 3 months by itself.
+  const warnMonths =
+    body.warn_months === undefined || body.warn_months === null || body.warn_months === ''
+      ? 3
+      : Number(body.warn_months);
   if (!Number.isInteger(warnMonths) || warnMonths < 0 || warnMonths > 24) {
     return res.status(400).json({ status: 'error', message: 'Expiry warning must be a whole number of months, 0 to 24' });
   }
@@ -199,7 +202,6 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
   if (!category) missing.push('category');
   if (body.sale_price === undefined || body.sale_price === null || body.sale_price === '') missing.push('sale_price');
   if (body.min_stock === undefined || body.min_stock === null || body.min_stock === '') missing.push('min_stock');
-  if (body.warn_months === undefined || body.warn_months === null || body.warn_months === '') missing.push('warn_months');
   if (missing.length > 0) {
     return res.status(400).json({ status: 'error', message: `These fields are required: ${missing.join(', ')}` });
   }
@@ -211,7 +213,11 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
   if (!Number.isInteger(minStock) || minStock < 0) {
     return res.status(400).json({ status: 'error', message: 'Minimum stock must be a whole number, 0 or more' });
   }
-  const warnMonths = Number(body.warn_months);
+  // Left empty, the system assigns the standard 3 months by itself.
+  const warnMonths =
+    body.warn_months === undefined || body.warn_months === null || body.warn_months === ''
+      ? 3
+      : Number(body.warn_months);
   if (!Number.isInteger(warnMonths) || warnMonths < 0 || warnMonths > 24) {
     return res.status(400).json({ status: 'error', message: 'Expiry warning must be a whole number of months, 0 to 24' });
   }

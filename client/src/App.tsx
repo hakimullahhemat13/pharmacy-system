@@ -617,7 +617,6 @@ function Medicines({ lang }: { lang: Lang }) {
     if (!form.category.trim()) missing.push(t(lang, 'category'));
     if (form.sale_price.trim() === '') missing.push(t(lang, 'salePrice'));
     if (form.min_stock.trim() === '') missing.push(t(lang, 'minStockLabel'));
-    if (form.warn_months.trim() === '') missing.push(t(lang, 'warnMonths'));
     if (missing.length > 0) {
       setError(`${t(lang, 'fillRequired')}: ${missing.join(', ')}`);
       return;
@@ -638,7 +637,7 @@ function Medicines({ lang }: { lang: Lang }) {
         category: form.category.trim() || undefined,
         sale_price: form.sale_price === '' ? undefined : Number(form.sale_price),
         min_stock: form.min_stock === '' ? undefined : Number(form.min_stock),
-        warn_months: form.warn_months === '' ? undefined : Number(form.warn_months),
+        warn_months: form.warn_months.trim() === '' ? undefined : Number(form.warn_months),
       };
       if (editingId) {
         // Correcting an existing medicine — details only, stock untouched.
@@ -723,7 +722,7 @@ function Medicines({ lang }: { lang: Lang }) {
               <input type="number" min="0" step="1" value={form.min_stock} onChange={set('min_stock')} />
             </div>
             <div className="field">
-              <label>{t(lang, 'warnMonths')} *</label>
+              <label>{t(lang, 'warnMonths')}</label>
               <input type="number" min="0" max="24" step="1" value={form.warn_months} onChange={set('warn_months')} />
             </div>
           </div>
