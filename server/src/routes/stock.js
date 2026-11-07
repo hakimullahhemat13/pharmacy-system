@@ -21,7 +21,7 @@ router.get('/', authRequired, async (req, res) => {
          ON b.medicine_id = m.id AND b.branch_id = m.branch_id AND b.is_deleted = 0
        WHERE m.branch_id = ? AND m.is_deleted = 0
        GROUP BY m.id, m.name, m.generic_name, m.company, m.barcode, m.unit, m.category, m.sale_price, m.min_stock, m.created_at
-       ORDER BY m.name`,
+       ORDER BY m.created_at DESC, m.name`,
       [req.user.branch_id]
     );
     const stock = rows.map((r) => ({
@@ -45,7 +45,7 @@ router.get('/expiring', authRequired, async (req, res) => {
               DATEDIFF(b.expiry_date, CURDATE()) AS days_remaining
        FROM medicine_batches b
        JOIN medicines m ON m.id = b.medicine_id
-       WHERE b.branch_id = ? AND b.is_deleted = 0 AND b.quantity_on_hand > 0
+       WHERE b.branch_id = ? AND b.is_deleted = 0 AND m.is_deleted = 0 AND b.quantity_on_hand > 0
          AND b.expiry_date <= DATE_ADD(CURDATE(), INTERVAL ? MONTH)
        ORDER BY b.expiry_date ASC`,
       [req.user.branch_id, months]

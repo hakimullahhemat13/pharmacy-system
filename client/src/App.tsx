@@ -456,7 +456,10 @@ function Medicines({ lang }: { lang: Lang }) {
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState({
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const blankForm = {
     name: '',
     generic_name: '',
     company: '',
@@ -465,7 +468,52 @@ function Medicines({ lang }: { lang: Lang }) {
     category: '',
     sale_price: '',
     min_stock: '10',
-  });
+    init_qty: '',
+    init_price: '',
+    init_expiry: '',
+    init_batch: '',
+    init_supplier: '',
+  };
+  const [form, setForm] = useState(blankForm);
+
+  const startEdit = (r: StockRow) => {
+    setEditingId(r.medicine_id);
+    setError('');
+    setMsg('');
+    setForm({
+      ...blankForm,
+      name: r.name,
+      generic_name: r.generic_name || '',
+      company: r.company || '',
+      barcode: r.barcode || '',
+      unit: r.unit || 'tablet',
+      category: r.category || '',
+      sale_price: String(r.sale_price ?? ''),
+      min_stock: String(r.min_stock ?? 10),
+    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setError('');
+    setMsg('');
+    setForm(blankForm);
+  };
+
+  const doDelete = async (id: string) => {
+    setError('');
+    setMsg('');
+    try {
+      await api.del(`/medicines/${id}`);
+      if (editingId === id) cancelEdit();
+      setConfirmDeleteId(null);
+      setMsg(t(lang, 'medicineDeleted'));
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
+  };
 
   const load = async () => {
     const data = await api.get('/stock');
@@ -474,6 +522,10 @@ function Medicines({ lang }: { lang: Lang }) {
 
   useEffect(() => {
     load().catch((err) => setError(err instanceof Error ? err.message : 'Error'));
+    api
+      .get('/suppliers')
+      .then((data) => setSuppliers(data.suppliers as Supplier[]))
+      .catch(() => undefined);
   }, []);
 
   const q = query.trim().toLowerCase();
@@ -489,17 +541,86 @@ function Medicines({ lang }: { lang: Lang }) {
   const set = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm((f) => ({ ...f, [key]: e.target.value }));
 
+  // Scanner support: as soon as a barcode is scanned (or typed) into the
+  // barcode box, look it up — warn if this medicine already exists so it is
+  // never added twice, or confirm it is new and the rest can be filled in.
+  const checkBarcode = async (code: string) => {
+    const c = code.trim();
+    if (!c) return;
+    try {
+      const data: any = await api.get(`/medicines?barcode=${encodeURIComponent(c)}`);
+      if (data.medicines && data.medicines.length > 0) {
+        if (data.medicines[0].id === editingId) return; // the medicine being edited
+        setMsg('');
+        setError(`${t(lang, 'barcodeExists')}: ${data.medicines[0].name}`);
+      } else {
+        // New to this pharmacy — try the free online product databases as a
+        // helper. They cover some international products and none of others,
+        // so a hit only PREFILLS name/company for the pharmacist to check;
+        // a miss (or no internet) leaves manual entry exactly as before.
+        const product: any = await lookupOnline(c);
+        if (product && (product.product_name || product.brands)) {
+          setForm((f: any) => ({
+            ...f,
+            name: f.name || product.product_name || '',
+            company: f.company || String(product.brands || '').split(',')[0].trim(),
+          }));
+          setError('');
+          setMsg(t(lang, 'barcodeOnlineFound'));
+        } else {
+          setError('');
+          setMsg(t(lang, 'barcodeNew'));
+        }
+      }
+    } catch {
+      /* Lookup failed — the save-time checks still apply. */
+    }
+  };
+
+  const lookupOnline = async (code: string): Promise<any> => {
+    const sources = [
+      `https://world.openproductsfacts.org/api/v0/product/${encodeURIComponent(code)}.json`,
+      `https://world.openfoodfacts.org/api/v0/product/${encodeURIComponent(code)}.json`,
+    ];
+    for (const url of sources) {
+      try {
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data && data.status === 1 && data.product) return data.product;
+      } catch {
+        /* Offline or blocked — try the next source. */
+      }
+    }
+    return null;
+  };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setMsg('');
-    if (!form.name.trim()) {
-      setError(t(lang, 'nameRequired'));
+    // All main fields are required — the medicine is only saved once every
+    // one of them is filled in; the error names the empty ones.
+    const missing: string[] = [];
+    if (!form.name.trim()) missing.push(t(lang, 'name'));
+    if (!form.generic_name.trim()) missing.push(t(lang, 'genericName'));
+    if (!form.company.trim()) missing.push(t(lang, 'company'));
+    if (!form.barcode.trim()) missing.push(t(lang, 'barcodeLabel'));
+    if (!form.unit.trim()) missing.push(t(lang, 'unit'));
+    if (!form.category.trim()) missing.push(t(lang, 'category'));
+    if (form.sale_price.trim() === '') missing.push(t(lang, 'salePrice'));
+    if (form.min_stock.trim() === '') missing.push(t(lang, 'minStockLabel'));
+    if (missing.length > 0) {
+      setError(`${t(lang, 'fillRequired')}: ${missing.join(', ')}`);
+      return;
+    }
+    const initQty = Number(form.init_qty) || 0;
+    if (initQty > 0 && !form.init_expiry) {
+      setError(t(lang, 'expiryNeeded'));
       return;
     }
     setBusy(true);
     try {
-      await api.post('/medicines', {
+      const payload = {
         name: form.name.trim(),
         generic_name: form.generic_name.trim() || undefined,
         company: form.company.trim() || undefined,
@@ -508,18 +629,29 @@ function Medicines({ lang }: { lang: Lang }) {
         category: form.category.trim() || undefined,
         sale_price: form.sale_price === '' ? undefined : Number(form.sale_price),
         min_stock: form.min_stock === '' ? undefined : Number(form.min_stock),
-      });
-      setMsg(t(lang, 'added'));
-      setForm({
-        name: '',
-        generic_name: '',
-        company: '',
-        barcode: '',
-        unit: 'tablet',
-        category: '',
-        sale_price: '',
-        min_stock: '10',
-      });
+      };
+      if (editingId) {
+        // Correcting an existing medicine — details only, stock untouched.
+        await api.put(`/medicines/${editingId}`, payload);
+        setMsg(t(lang, 'medicineUpdated'));
+        setEditingId(null);
+      } else {
+        await api.post('/medicines', {
+          ...payload,
+          initial_stock:
+            initQty > 0
+              ? {
+                  quantity: initQty,
+                  purchase_price: form.init_price === '' ? 0 : Number(form.init_price),
+                  expiry_date: form.init_expiry,
+                  batch_no: form.init_batch.trim() || undefined,
+                  supplier_id: form.init_supplier || undefined,
+                }
+              : undefined,
+        });
+        setMsg(t(lang, 'added'));
+      }
+      setForm(blankForm);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error');
@@ -532,7 +664,7 @@ function Medicines({ lang }: { lang: Lang }) {
       <h2>{t(lang, 'medicines')}</h2>
 
       <div className="panel" style={{ marginTop: 0 }}>
-        <h3>➕ {t(lang, 'addMedicine')}</h3>
+        <h3>{editingId ? `✏️ ${t(lang, 'editMedicine')}` : `➕ ${t(lang, 'addMedicine')}`}</h3>
         <form onSubmit={submit}>
           <div className="form-grid">
             <div className="field">
@@ -540,39 +672,100 @@ function Medicines({ lang }: { lang: Lang }) {
               <input value={form.name} onChange={set('name')} />
             </div>
             <div className="field">
-              <label>{t(lang, 'genericName')}</label>
-              <input value={form.generic_name} onChange={set('generic_name')} />
+              <label>{t(lang, 'genericName')} *</label>
+              <input id="med-generic" value={form.generic_name} onChange={set('generic_name')} />
             </div>
             <div className="field">
-              <label>{t(lang, 'company')}</label>
+              <label>{t(lang, 'company')} *</label>
               <input value={form.company} onChange={set('company')} />
             </div>
             <div className="field">
-              <label>{t(lang, 'barcodeLabel')}</label>
-              <input value={form.barcode} onChange={set('barcode')} />
+              <label>{t(lang, 'barcodeLabel')} *</label>
+              <input
+                value={form.barcode}
+                onChange={set('barcode')}
+                onBlur={() => checkBarcode(form.barcode)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    // A scanner "types" the code, then presses Enter — check
+                    // the code and move to the next box instead of submitting.
+                    e.preventDefault();
+                    checkBarcode(form.barcode);
+                    document.getElementById('med-generic')?.focus();
+                  }
+                }}
+              />
             </div>
             <div className="field">
-              <label>{t(lang, 'unit')}</label>
+              <label>{t(lang, 'unit')} *</label>
               <input value={form.unit} onChange={set('unit')} />
             </div>
             <div className="field">
-              <label>{t(lang, 'category')}</label>
+              <label>{t(lang, 'category')} *</label>
               <input value={form.category} onChange={set('category')} />
             </div>
             <div className="field">
-              <label>{t(lang, 'salePrice')}</label>
+              <label>{t(lang, 'salePrice')} *</label>
               <input type="number" min="0" step="0.01" value={form.sale_price} onChange={set('sale_price')} />
             </div>
             <div className="field">
-              <label>{t(lang, 'minStockLabel')}</label>
+              <label>{t(lang, 'minStockLabel')} *</label>
               <input type="number" min="0" step="1" value={form.min_stock} onChange={set('min_stock')} />
             </div>
           </div>
+          {!editingId && (
+            <>
+              <h4 style={{ margin: '16px 0 8px' }}>📦 {t(lang, 'initialStock')}</h4>
+              <div className="form-grid">
+                <div className="field">
+                  <label>{t(lang, 'qty')}</label>
+                  <input type="number" min="0" step="1" value={form.init_qty} onChange={set('init_qty')} />
+                </div>
+                <div className="field">
+                  <label>{t(lang, 'purchasePrice')}</label>
+                  <input type="number" min="0" step="0.01" value={form.init_price} onChange={set('init_price')} />
+                </div>
+                <div className="field">
+                  <label>{t(lang, 'expiryDate')}</label>
+                  <input type="date" value={form.init_expiry} onChange={set('init_expiry')} />
+                </div>
+                <div className="field">
+                  <label>{t(lang, 'batch')}</label>
+                  <input value={form.init_batch} onChange={set('init_batch')} placeholder="B1" />
+                </div>
+                <div className="field">
+                  <label>{t(lang, 'supplier')}</label>
+                  <select
+                    className="field-select"
+                    value={form.init_supplier}
+                    onChange={(e) => setForm((f) => ({ ...f, init_supplier: e.target.value }))}
+                  >
+                    <option value="">—</option>
+                    {suppliers.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </>
+          )}
           {error && <div className="error-box">{error}</div>}
           {msg && <div className="success-box">{msg}</div>}
           <button className="btn-save" type="submit" disabled={busy}>
-            {busy ? t(lang, 'loading') : t(lang, 'save')}
+            {busy ? t(lang, 'loading') : editingId ? t(lang, 'saveChanges') : t(lang, 'save')}
           </button>
+          {editingId && (
+            <button
+              className="btn-secondary"
+              type="button"
+              onClick={cancelEdit}
+              style={{ marginInlineStart: 8 }}
+            >
+              {t(lang, 'cancelBtn')}
+            </button>
+          )}
         </form>
       </div>
 
@@ -588,6 +781,7 @@ function Medicines({ lang }: { lang: Lang }) {
             {t(lang, 'noMedicines')}
           </p>
         ) : (
+          <div className="table-scroll">
           <table>
             <thead>
               <tr>
@@ -598,7 +792,7 @@ function Medicines({ lang }: { lang: Lang }) {
                 <th>{t(lang, 'unit')}</th>
                 <th>{t(lang, 'category')}</th>
                 <th>{t(lang, 'salePrice')}</th>
-                <th>{t(lang, 'minStock')}</th>
+                <th>{t(lang, 'minStockLabel')}</th>
                 <th>{t(lang, 'stockQty')}</th>
                 <th>{t(lang, 'dateAdded')}</th>
                 <th></th>
@@ -621,12 +815,35 @@ function Medicines({ lang }: { lang: Lang }) {
                   <td>{fmt(r.total_quantity)}</td>
                   <td>{String(r.created_at).slice(0, 10)}</td>
                   <td>
-                    {r.low_stock && <span className="badge low">{t(lang, 'lowBadge')}</span>}
+                    {r.low_stock && <span className="badge low">{t(lang, 'lowBadge')}</span>}{' '}
+                    <button type="button" className="btn-secondary" onClick={() => startEdit(r)}>
+                      ✏️ {t(lang, 'edit')}
+                    </button>{' '}
+                    {confirmDeleteId === r.medicine_id ? (
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        style={{ color: '#b91c1c', borderColor: '#b91c1c' }}
+                        onClick={() => doDelete(r.medicine_id)}
+                      >
+                        {t(lang, 'sureDelete')}
+                        {r.total_quantity > 0 ? ` (${fmt(r.total_quantity)})` : ''}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => setConfirmDeleteId(r.medicine_id)}
+                      >
+                        🗑️ {t(lang, 'delete')}
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     </>
