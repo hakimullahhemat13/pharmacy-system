@@ -48,6 +48,18 @@ interface Customer {
   phone: string | null;
 }
 
+interface CustomerFull extends Customer {
+  created_at: string;
+}
+
+interface CustomerHistorySale {
+  id: string;
+  invoice_no: string;
+  sale_date: string;
+  net_total: number | string;
+  items: number;
+}
+
 interface BillItem {
   medicine_id: string;
   name: string;
@@ -107,7 +119,7 @@ interface MonthRow {
   profit: number;
 }
 
-type Page = 'dashboard' | 'medicines' | 'sales' | 'purchases' | 'reports' | 'backup' | 'settings';
+type Page = 'dashboard' | 'medicines' | 'sales' | 'purchases' | 'reports' | 'customers' | 'backup' | 'settings';
 
 const USER_KEY = 'pharmacy_user';
 const LANG_KEY = 'pharmacy_lang';
@@ -186,6 +198,7 @@ export default function App() {
     { key: 'sales', label: t(lang, 'sales') },
     { key: 'purchases', label: t(lang, 'purchases') },
     { key: 'reports', label: t(lang, 'reports') },
+    { key: 'customers', label: t(lang, 'customers') },
     { key: 'settings', label: t(lang, 'settings') },
     ...(user.role === 'admin' ? [{ key: 'backup' as Page, label: t(lang, 'backup') }] : []),
   ];
@@ -219,9 +232,10 @@ export default function App() {
         {page === 'sales' && <SalesPage lang={lang} />}
         {page === 'purchases' && <PurchasesPage lang={lang} />}
         {page === 'reports' && <ReportsPage lang={lang} />}
+        {page === 'customers' && <CustomersPage lang={lang} />}
         {page === 'backup' && <BackupPage lang={lang} onLogout={logout} />}
         {page === 'settings' && <SettingsPage lang={lang} user={user} setLang={setLang} />}
-        {page !== 'dashboard' && page !== 'medicines' && page !== 'sales' && page !== 'purchases' && page !== 'reports' && page !== 'backup' && page !== 'settings' && (
+        {page !== 'dashboard' && page !== 'medicines' && page !== 'sales' && page !== 'purchases' && page !== 'reports' && page !== 'customers' && page !== 'backup' && page !== 'settings' && (
           <>
             <h2>{menu.find((m) => m.key === page)?.label}</h2>
             <div className="panel">
@@ -1384,6 +1398,324 @@ function ReportsPage({ lang }: { lang: Lang }) {
           </table>
         </div>
       )}
+    </>
+  );
+}
+
+function CustomersPage({ lang }: { lang: Lang }) {
+  const [rows, setRows] = useState<CustomerFull[]>([]);
+  const [query, setQuery] = useState('');
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [selectedId, setSelectedId] = useState('');
+  const [history, setHistory] = useState<{
+    customer: CustomerFull;
+    totals: { bills: number; total_spent: number };
+    sales: CustomerHistorySale[];
+  } | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [editingId, setEditingId] = useState('');
+  const [editName, setEditName] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+  const [deletingId, setDeletingId] = useState('');
+
+  const load = async () => {
+    const data = await api.get('/customers');
+    setRows(data.customers as CustomerFull[]);
+  };
+
+  useEffect(() => {
+    load().catch((err) => setError(err instanceof Error ? err.message : 'Error'));
+  }, []);
+
+  const q = query.trim().toLowerCase();
+  const filtered = rows.filter(
+    (r) =>
+      !q ||
+      r.name.toLowerCase().includes(q) ||
+      (r.phone || '').toLowerCase().includes(q)
+  );
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setMsg('');
+    if (!name.trim()) {
+      setError(t(lang, 'nameRequired'));
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.post('/customers', {
+        name: name.trim(),
+        phone: phone.trim() || undefined,
+      });
+      setMsg(t(lang, 'customerAdded'));
+      setName('');
+      setPhone('');
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
+    setBusy(false);
+  };
+
+  const selectCustomer = async (c: CustomerFull) => {
+    setError('');
+    setDeletingId('');
+    setEditingId('');
+    setSelectedId(c.id);
+    setHistoryLoading(true);
+    try {
+      const data = await api.get(`/customers/${c.id}/history`);
+      setHistory({
+        customer: data.customer as CustomerFull,
+        totals: data.totals as { bills: number; total_spent: number },
+        sales: data.sales as CustomerHistorySale[],
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+      setHistory(null);
+    }
+    setHistoryLoading(false);
+  };
+
+  const startEdit = (c: CustomerFull) => {
+    setEditingId(c.id);
+    setEditName(c.name);
+    setEditPhone(c.phone || '');
+    setDeletingId('');
+    setError('');
+    setMsg('');
+  };
+
+  const saveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setMsg('');
+    if (!editName.trim()) {
+      setError(t(lang, 'nameRequired'));
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.put(`/customers/${editingId}`, {
+        name: editName.trim(),
+        phone: editPhone.trim() || undefined,
+      });
+      setMsg(t(lang, 'customerUpdated'));
+      setEditingId('');
+      await load();
+      if (selectedId === editingId) {
+        const c = rows.find((r) => r.id === editingId);
+        if (c) await selectCustomer({ ...c, name: editName.trim(), phone: editPhone.trim() || null });
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
+    setBusy(false);
+  };
+
+  const removeCustomer = async (id: string) => {
+    setError('');
+    setMsg('');
+    setBusy(true);
+    try {
+      await api.del(`/customers/${id}`);
+      setMsg(t(lang, 'customerDeleted'));
+      setDeletingId('');
+      if (selectedId === id) {
+        setSelectedId('');
+        setHistory(null);
+      }
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
+    setBusy(false);
+  };
+
+  return (
+    <>
+      <h2>{t(lang, 'customers')}</h2>
+
+      <div className="panel" style={{ marginTop: 0 }}>
+        <h3>➕ {t(lang, 'addCustomer')}</h3>
+        <form onSubmit={submit}>
+          <div className="form-grid">
+            <div className="field">
+              <label>{t(lang, 'name')} *</label>
+              <input value={name} onChange={(e) => setName(e.target.value)} />
+            </div>
+            <div className="field">
+              <label>{t(lang, 'phone')}</label>
+              <input value={phone} onChange={(e) => setPhone(e.target.value)} />
+            </div>
+          </div>
+          {error && <div className="error-box">{error}</div>}
+          {msg && <div className="success-box">{msg}</div>}
+          <button className="btn-save" type="submit" disabled={busy}>
+            {busy ? t(lang, 'loading') : t(lang, 'save')}
+          </button>
+        </form>
+      </div>
+
+      <div className="panel">
+        <input
+          className="search-input"
+          placeholder={t(lang, 'searchCustomer')}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        {filtered.length === 0 ? (
+          <p className="muted" style={{ fontSize: 15 }}>
+            {t(lang, 'noCustomers')}
+          </p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>{t(lang, 'name')}</th>
+                <th>{t(lang, 'phone')}</th>
+                <th>{t(lang, 'registeredOn')}</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((r) => (
+                <tr
+                  key={r.id}
+                  className={selectedId === r.id ? 'highlight' : ''}
+                  onClick={() => selectCustomer(r)}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <td>{r.name}</td>
+                  <td>{r.phone || '—'}</td>
+                  <td>{String(r.created_at).slice(0, 10)}</td>
+                  <td onClick={(e) => e.stopPropagation()}>
+                    {editingId === r.id ? (
+                      <form
+                        onSubmit={saveEdit}
+                        style={{ display: 'flex', gap: 6, alignItems: 'center' }}
+                      >
+                        <input
+                          className="cell-input"
+                          style={{ width: 130 }}
+                          value={editName}
+                          onChange={(e) => setEditName(e.target.value)}
+                        />
+                        <input
+                          className="cell-input"
+                          style={{ width: 110 }}
+                          value={editPhone}
+                          onChange={(e) => setEditPhone(e.target.value)}
+                        />
+                        <button className="btn-save" type="submit" disabled={busy}>
+                          {t(lang, 'save')}
+                        </button>
+                        <button
+                          className="btn-secondary"
+                          type="button"
+                          onClick={() => setEditingId('')}
+                        >
+                          {t(lang, 'cancel')}
+                        </button>
+                      </form>
+                    ) : deletingId === r.id ? (
+                      <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <span style={{ fontSize: 13 }}>{t(lang, 'confirmDelete')}</span>
+                        <button
+                          className="btn-remove"
+                          style={{ padding: '6px 12px' }}
+                          onClick={() => removeCustomer(r.id)}
+                          disabled={busy}
+                        >
+                          {t(lang, 'delete')}
+                        </button>
+                        <button className="btn-secondary" onClick={() => setDeletingId('')}>
+                          {t(lang, 'cancel')}
+                        </button>
+                      </span>
+                    ) : (
+                      <span style={{ display: 'flex', gap: 6 }}>
+                        <button className="btn-secondary" onClick={() => startEdit(r)}>
+                          {t(lang, 'edit')}
+                        </button>
+                        <button className="btn-remove" onClick={() => setDeletingId(r.id)}>
+                          {t(lang, 'delete')}
+                        </button>
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="panel">
+        <h3>🧾 {t(lang, 'purchaseHistory')}</h3>
+        {!history && !historyLoading && (
+          <p className="muted" style={{ fontSize: 15 }}>
+            {t(lang, 'selectCustomer')}
+          </p>
+        )}
+        {historyLoading && <p className="muted">{t(lang, 'loading')}</p>}
+        {history && (
+          <>
+            <div className="cards">
+              <div className="card">
+                <div className="card-label">{t(lang, 'customer')}</div>
+                <div className="card-value" style={{ fontSize: 20 }}>
+                  {history.customer.name}
+                </div>
+                <div className="card-sub">{history.customer.phone || '—'}</div>
+              </div>
+              <div className="card">
+                <div className="card-label">{t(lang, 'billsCount')}</div>
+                <div className="card-value">{fmt(history.totals.bills)}</div>
+              </div>
+              <div className="card profit">
+                <div className="card-label">{t(lang, 'totalSpent')}</div>
+                <div className="card-value">{fmt(history.totals.total_spent)}</div>
+                <div className="card-sub">{t(lang, 'currency')}</div>
+              </div>
+            </div>
+            {history.sales.length === 0 ? (
+              <p className="muted" style={{ fontSize: 15 }}>
+                {t(lang, 'noPurchases')}
+              </p>
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th>{t(lang, 'invoice')}</th>
+                    <th>{t(lang, 'dateLabel')}</th>
+                    <th>{t(lang, 'qty')}</th>
+                    <th>{t(lang, 'lineTotal')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.sales.map((s) => (
+                    <tr key={s.id}>
+                      <td>{s.invoice_no}</td>
+                      <td>
+                        {String(s.sale_date).slice(0, 10)} {String(s.sale_date).slice(11, 16)}
+                      </td>
+                      <td>{fmt(Number(s.items))}</td>
+                      <td>{fmt(Number(s.net_total))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </>
+        )}
+      </div>
     </>
   );
 }

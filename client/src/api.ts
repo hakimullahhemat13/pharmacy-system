@@ -83,6 +83,13 @@ export const api = {
     });
     return handle(res);
   },
+  async del(path: string) {
+    const res = await fetch(BASE + path, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${getToken()}` },
+    });
+    return handle(res);
+  },
   // POST a raw text body (used to upload a .sql backup for restore).
   async postText(path: string, text: string) {
     const res = await fetch(BASE + path, {
