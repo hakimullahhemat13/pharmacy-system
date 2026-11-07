@@ -33,10 +33,13 @@ interface StockRow {
   medicine_id: string;
   name: string;
   generic_name: string | null;
+  company: string | null;
   barcode: string | null;
   unit: string;
+  category: string | null;
   sale_price: number | string;
   min_stock: number;
+  created_at: string;
   total_quantity: number;
   batch_count: number;
   low_stock: boolean;
@@ -590,10 +593,14 @@ function Medicines({ lang }: { lang: Lang }) {
               <tr>
                 <th>{t(lang, 'name')}</th>
                 <th>{t(lang, 'genericName')}</th>
+                <th>{t(lang, 'company')}</th>
                 <th>{t(lang, 'barcodeLabel')}</th>
                 <th>{t(lang, 'unit')}</th>
+                <th>{t(lang, 'category')}</th>
                 <th>{t(lang, 'salePrice')}</th>
+                <th>{t(lang, 'minStock')}</th>
                 <th>{t(lang, 'stockQty')}</th>
+                <th>{t(lang, 'dateAdded')}</th>
                 <th></th>
               </tr>
             </thead>
@@ -605,10 +612,14 @@ function Medicines({ lang }: { lang: Lang }) {
                 >
                   <td>{r.name}</td>
                   <td>{r.generic_name || '—'}</td>
+                  <td>{r.company || '—'}</td>
                   <td>{r.barcode || '—'}</td>
                   <td>{r.unit}</td>
+                  <td>{r.category || '—'}</td>
                   <td>{fmt(Number(r.sale_price))}</td>
+                  <td>{fmt(Number(r.min_stock))}</td>
                   <td>{fmt(r.total_quantity)}</td>
+                  <td>{String(r.created_at).slice(0, 10)}</td>
                   <td>
                     {r.low_stock && <span className="badge low">{t(lang, 'lowBadge')}</span>}
                   </td>
