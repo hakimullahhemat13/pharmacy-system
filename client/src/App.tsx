@@ -42,6 +42,30 @@ interface StockRow {
   low_stock: boolean;
 }
 
+interface SaleItemDetail {
+  item_id: string;
+  medicine_id: string;
+  medicine_name: string;
+  batch_id: string;
+  batch_no: string;
+  expiry_date: string;
+  quantity: number;
+  unit_price: number | string;
+  cost_price: number | string;
+  returned_quantity: number;
+}
+
+interface SaleDetail {
+  id: string;
+  invoice_no: string;
+  sale_date: string;
+  total_amount: number | string;
+  discount: number | string;
+  net_total: number | string;
+  customer_name: string | null;
+  items: SaleItemDetail[];
+}
+
 interface Customer {
   id: string;
   name: string;
@@ -609,6 +633,11 @@ function SalesPage({ lang }: { lang: Lang }) {
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
+  const [detail, setDetail] = useState<SaleDetail | null>(null);
+  const [retQtys, setRetQtys] = useState<Record<string, string>>({});
+  const [retError, setRetError] = useState('');
+  const [retMsg, setRetMsg] = useState('');
+  const [retBusy, setRetBusy] = useState(false);
 
   const loadStock = async () => {
     const data = await api.get('/stock');
@@ -717,6 +746,53 @@ function SalesPage({ lang }: { lang: Lang }) {
       setError(err instanceof Error ? err.message : 'Error');
     }
     setBusy(false);
+  };
+
+  const openReturn = async (saleId: string) => {
+    setError('');
+    setRetError('');
+    setRetMsg('');
+    setRetQtys({});
+    try {
+      const data = await api.get(`/sales/${saleId}`);
+      setDetail(data.sale as SaleDetail);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
+  };
+
+  const refundPreview = detail
+    ? detail.items.reduce((sum, it) => {
+        const rq = Number(retQtys[it.item_id]) || 0;
+        return sum + rq * Number(it.unit_price);
+      }, 0)
+    : 0;
+
+  const submitReturn = async () => {
+    if (!detail) return;
+    setRetError('');
+    setRetMsg('');
+    const items = detail.items
+      .map((it) => ({ item_id: it.item_id, quantity: Number(retQtys[it.item_id]) || 0 }))
+      .filter((x) => x.quantity > 0);
+    if (items.length === 0) {
+      setRetError(t(lang, 'nothingToReturn'));
+      return;
+    }
+    setRetBusy(true);
+    try {
+      const data = await api.post(`/sales/${detail.id}/return`, { items });
+      setRetMsg(
+        `${t(lang, 'returnDone')} — ${fmt(Number(data.refund_total))} ${t(lang, 'currency')}`
+      );
+      setRetQtys({});
+      const fresh = await api.get(`/sales/${detail.id}`);
+      setDetail(fresh.sale as SaleDetail);
+      await Promise.all([loadStock(), loadRecent()]);
+    } catch (err) {
+      setRetError(err instanceof Error ? err.message : 'Error');
+    }
+    setRetBusy(false);
   };
 
   return (
@@ -859,6 +935,7 @@ function SalesPage({ lang }: { lang: Lang }) {
                 <th>{t(lang, 'invoice')}</th>
                 <th>{t(lang, 'customer')}</th>
                 <th>{t(lang, 'lineTotal')}</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -873,12 +950,89 @@ function SalesPage({ lang }: { lang: Lang }) {
                   </td>
                   <td>{s.customer_name || t(lang, 'walkIn')}</td>
                   <td>{fmt(Number(s.net_total))}</td>
+                  <td>
+                    <button className="btn-secondary" onClick={() => openReturn(s.id)}>
+                      ↩️ {t(lang, 'returnSale')}
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
       </div>
+
+      {detail && (
+        <div className="panel">
+          <h3>
+            ↩️ {t(lang, 'billDetails')} — {detail.invoice_no}
+            <span className="muted" style={{ fontSize: 14 }}>
+              {' '}
+              · {detail.customer_name || t(lang, 'walkIn')} · {fmt(Number(detail.net_total))}{' '}
+              {t(lang, 'currency')}
+            </span>
+          </h3>
+          <table>
+            <thead>
+              <tr>
+                <th>{t(lang, 'name')}</th>
+                <th>{t(lang, 'salePrice')}</th>
+                <th>{t(lang, 'soldQty')}</th>
+                <th>{t(lang, 'returnedQty')}</th>
+                <th>{t(lang, 'returnQty')}</th>
+                <th>{t(lang, 'lineTotal')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {detail.items.map((it) => {
+                const left = it.quantity - it.returned_quantity;
+                const rq = Number(retQtys[it.item_id]) || 0;
+                return (
+                  <tr key={it.item_id}>
+                    <td>
+                      {it.medicine_name}
+                      <span className="muted"> · {it.batch_no}</span>
+                    </td>
+                    <td>{fmt(Number(it.unit_price))}</td>
+                    <td>{fmt(it.quantity)}</td>
+                    <td>{fmt(it.returned_quantity)}</td>
+                    <td>
+                      <input
+                        className="qty-input"
+                        type="number"
+                        min="0"
+                        max={left}
+                        step="1"
+                        value={retQtys[it.item_id] ?? ''}
+                        onChange={(e) =>
+                          setRetQtys((m) => ({ ...m, [it.item_id]: e.target.value }))
+                        }
+                      />
+                    </td>
+                    <td>{fmt(rq * Number(it.unit_price))}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div className="total-row grand">
+            <span>{t(lang, 'refundTotal')}</span>
+            <span>
+              {fmt(refundPreview)} {t(lang, 'currency')}
+            </span>
+          </div>
+          {retError && <div className="error-box">{retError}</div>}
+          {retMsg && <div className="success-box">{retMsg}</div>}
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button className="btn-save" onClick={submitReturn} disabled={retBusy}>
+              {retBusy ? t(lang, 'loading') : t(lang, 'doReturn')}
+            </button>
+            <button className="btn-secondary" onClick={() => setDetail(null)} disabled={retBusy}>
+              {t(lang, 'closeBtn')}
+            </button>
+          </div>
+        </div>
+      )}
     </>
   );
 }

@@ -194,17 +194,135 @@ router.get('/:id', authRequired, async (req, res) => {
       return res.status(404).json({ status: 'error', message: 'Sale not found' });
     }
     const [items] = await pool.query(
-      `SELECT si.medicine_id, m.name AS medicine_name, si.batch_id, b.batch_no, b.expiry_date,
-              si.quantity, si.unit_price, si.cost_price
+      `SELECT si.id AS item_id, si.medicine_id, m.name AS medicine_name, si.batch_id, b.batch_no,
+              b.expiry_date, si.quantity, si.unit_price, si.cost_price,
+              COALESCE(rt.returned, 0) AS returned_quantity
        FROM sale_items si
        JOIN medicines m ON m.id = si.medicine_id
        JOIN medicine_batches b ON b.id = si.batch_id
+       LEFT JOIN (
+         SELECT batch_id, SUM(quantity_change) AS returned
+         FROM stock_transactions
+         WHERE type = 'sale_return' AND reference_id = ?
+         GROUP BY batch_id
+       ) rt ON rt.batch_id = si.batch_id
        WHERE si.sale_id = ?`,
-      [req.params.id]
+      [req.params.id, req.params.id]
     );
-    return res.json({ status: 'ok', sale: { ...head[0], items } });
+    const itemsWithReturns = items.map((it) => ({
+      ...it,
+      returned_quantity: Number(it.returned_quantity),
+    }));
+    return res.json({ status: 'ok', sale: { ...head[0], items: itemsWithReturns } });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+});
+
+// POST /api/sales/:id/return — return items from a sale back into stock.
+// Body: { items: [ { item_id, quantity } ] }  (item_id = a sale_items row id)
+// One transaction: the returned quantity goes back into the SAME batch it was
+// sold from, a 'sale_return' ledger row is written, and reports net the
+// refund against revenue/cost on the day the return happens. A return can
+// never exceed what was sold minus what was already returned.
+router.post('/:id/return', authRequired, async (req, res) => {
+  const body = req.body || {};
+  const items = Array.isArray(body.items) ? body.items : [];
+  if (items.length === 0) {
+    return res.status(400).json({ status: 'error', message: 'A return needs at least one item' });
+  }
+  for (const [i, it] of items.entries()) {
+    if (!it || !it.item_id) {
+      return res.status(400).json({ status: 'error', message: `Item ${i + 1}: item_id is required` });
+    }
+    const qty = Number(it.quantity);
+    if (!Number.isInteger(qty) || qty <= 0) {
+      return res.status(400).json({ status: 'error', message: `Item ${i + 1}: quantity must be a whole number above 0` });
+    }
+  }
+
+  const branchId = req.user.branch_id;
+  const userId = req.user.sub;
+  const saleId = req.params.id;
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [sale] = await conn.query(
+      'SELECT id, invoice_no FROM sales WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1 FOR UPDATE',
+      [saleId, branchId]
+    );
+    if (sale.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ status: 'error', message: 'Sale not found' });
+    }
+
+    const [soldItems] = await conn.query(
+      `SELECT si.id, si.medicine_id, m.name AS medicine_name, si.batch_id, si.quantity,
+              si.unit_price, si.cost_price
+       FROM sale_items si
+       JOIN medicines m ON m.id = si.medicine_id
+       WHERE si.sale_id = ? FOR UPDATE`,
+      [saleId]
+    );
+    const byId = new Map(soldItems.map((si) => [si.id, si]));
+
+    const returned = [];
+    let refundTotal = 0;
+    for (const it of items) {
+      const sold = byId.get(String(it.item_id));
+      if (!sold) {
+        await conn.rollback();
+        return res.status(400).json({ status: 'error', message: 'An item does not belong to this sale' });
+      }
+      const qty = Number(it.quantity);
+      const [rt] = await conn.query(
+        `SELECT COALESCE(SUM(quantity_change), 0) AS returned
+         FROM stock_transactions
+         WHERE type = 'sale_return' AND reference_id = ? AND batch_id = ?`,
+        [saleId, sold.batch_id]
+      );
+      const alreadyReturned = Number(rt[0].returned);
+      const returnable = Number(sold.quantity) - alreadyReturned;
+      if (qty > returnable) {
+        await conn.rollback();
+        return res.status(400).json({
+          status: 'error',
+          message: `Cannot return ${qty} of ${sold.medicine_name}: sold ${sold.quantity}, already returned ${alreadyReturned}`,
+        });
+      }
+      await conn.query(
+        'UPDATE medicine_batches SET quantity_on_hand = quantity_on_hand + ? WHERE id = ?',
+        [qty, sold.batch_id]
+      );
+      await conn.query(
+        "INSERT INTO stock_transactions (id, branch_id, medicine_id, batch_id, type, quantity_change, reference_id, created_by) VALUES (?, ?, ?, ?, 'sale_return', ?, ?, ?)",
+        [uuidv4(), branchId, sold.medicine_id, sold.batch_id, qty, saleId, userId]
+      );
+      refundTotal += qty * Number(sold.unit_price);
+      returned.push({
+        item_id: sold.id,
+        medicine_id: sold.medicine_id,
+        medicine_name: sold.medicine_name,
+        batch_id: sold.batch_id,
+        quantity: qty,
+        unit_price: Number(sold.unit_price),
+      });
+    }
+
+    await conn.commit();
+    return res.json({
+      status: 'ok',
+      invoice_no: sale[0].invoice_no,
+      refund_total: refundTotal,
+      returned,
+    });
+  } catch (err) {
+    try { await conn.rollback(); } catch (_) { /* already rolled back */ }
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  } finally {
+    conn.release();
   }
 });
 

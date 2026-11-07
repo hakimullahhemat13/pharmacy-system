@@ -19,6 +19,24 @@ function isValidDateString(value) {
   return !Number.isNaN(new Date(`${value}T00:00:00Z`).getTime());
 }
 
+// Returns in a period, valued at the original sale's prices: each
+// 'sale_return' ledger row joins back to its sale_items row (same sale,
+// same batch) for the unit_price / cost_price snapshot. Returns are counted
+// on the day the return happened (the ledger row's created_at), not the
+// sale day — the refund leaves the till that day.
+async function returnsForRange(branchId, start, end) {
+  const [rows] = await pool.query(
+    `SELECT COALESCE(SUM(sr.quantity_change), 0) AS qty,
+            COALESCE(SUM(sr.quantity_change * si.unit_price), 0) AS value,
+            COALESCE(SUM(sr.quantity_change * si.cost_price), 0) AS cost
+     FROM stock_transactions sr
+     JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
+     WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at >= ? AND sr.created_at < ?`,
+    [branchId, start, end]
+  );
+  return { qty: Number(rows[0].qty), value: Number(rows[0].value), cost: Number(rows[0].cost) };
+}
+
 async function summaryForRange(branchId, start, end) {
   const [salesRows] = await pool.query(
     `SELECT COUNT(*) AS sales_count,
@@ -36,15 +54,18 @@ async function summaryForRange(branchId, start, end) {
      WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.sale_date >= ? AND s.sale_date < ?`,
     [branchId, start, end]
   );
-  const revenue = Number(salesRows[0].revenue);
-  const cost = Number(itemRows[0].cost_total);
+  const ret = await returnsForRange(branchId, start, end);
+  const revenue = Number(salesRows[0].revenue) - ret.value;
+  const cost = Number(itemRows[0].cost_total) - ret.cost;
   return {
     sales_count: Number(salesRows[0].sales_count),
-    items_sold: Number(itemRows[0].items_sold),
+    items_sold: Number(itemRows[0].items_sold) - ret.qty,
     revenue,
     discount_total: Number(salesRows[0].discount_total),
     cost_total: cost,
     profit: revenue - cost,
+    returns_total: ret.value,
+    returned_items: ret.qty,
   };
 }
 
@@ -87,7 +108,7 @@ router.get('/monthly', authRequired, async (req, res) => {
   try {
     const summary = await summaryForRange(req.user.branch_id, start, end);
     const [days] = await pool.query(
-      `SELECT DATE(s.sale_date) AS day,
+      `SELECT DATE_FORMAT(s.sale_date, '%Y-%m-%d') AS day,
               COUNT(*) AS sales_count,
               COALESCE(SUM(s.net_total), 0) AS revenue,
               COALESCE(SUM(si.cost), 0) AS cost_total
@@ -101,13 +122,38 @@ router.get('/monthly', authRequired, async (req, res) => {
        ORDER BY day ASC`,
       [req.user.branch_id, start, end]
     );
-    const byDay = days.map((d) => ({
-      day: d.day,
-      sales_count: Number(d.sales_count),
-      revenue: Number(d.revenue),
-      cost_total: Number(d.cost_total || 0),
-      profit: Number(d.revenue) - Number(d.cost_total || 0),
-    }));
+    const [retDays] = await pool.query(
+      `SELECT DATE_FORMAT(sr.created_at, '%Y-%m-%d') AS day,
+              COALESCE(SUM(sr.quantity_change * si.unit_price), 0) AS value,
+              COALESCE(SUM(sr.quantity_change * si.cost_price), 0) AS cost
+       FROM stock_transactions sr
+       JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
+       WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at >= ? AND sr.created_at < ?
+       GROUP BY DATE(sr.created_at)`,
+      [req.user.branch_id, start, end]
+    );
+    const retByDay = new Map(
+      retDays.map((r) => [String(r.day), { value: Number(r.value), cost: Number(r.cost) }])
+    );
+    const byDayMap = new Map();
+    for (const d of days) {
+      const key = String(d.day);
+      const ret = retByDay.get(key) || { value: 0, cost: 0 };
+      byDayMap.set(key, {
+        day: d.day,
+        sales_count: Number(d.sales_count),
+        revenue: Number(d.revenue) - ret.value,
+        cost_total: Number(d.cost_total || 0) - ret.cost,
+      });
+      retByDay.delete(key);
+    }
+    // A day can have returns but no sales — it still belongs in the table.
+    for (const [key, ret] of retByDay) {
+      byDayMap.set(key, { day: key, sales_count: 0, revenue: -ret.value, cost_total: -ret.cost });
+    }
+    const byDay = [...byDayMap.values()]
+      .sort((a, b) => String(a.day).localeCompare(String(b.day)))
+      .map((d) => ({ ...d, profit: d.revenue - d.cost_total }));
     return res.json({ status: 'ok', year, month, summary, days: byDay });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
@@ -140,13 +186,37 @@ router.get('/yearly', authRequired, async (req, res) => {
        ORDER BY month ASC`,
       [req.user.branch_id, start, end]
     );
-    const byMonth = months.map((m) => ({
-      month: Number(m.month),
-      sales_count: Number(m.sales_count),
-      revenue: Number(m.revenue),
-      cost_total: Number(m.cost_total || 0),
-      profit: Number(m.revenue) - Number(m.cost_total || 0),
-    }));
+    const [retMonths] = await pool.query(
+      `SELECT MONTH(sr.created_at) AS month,
+              COALESCE(SUM(sr.quantity_change * si.unit_price), 0) AS value,
+              COALESCE(SUM(sr.quantity_change * si.cost_price), 0) AS cost
+       FROM stock_transactions sr
+       JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
+       WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at >= ? AND sr.created_at < ?
+       GROUP BY MONTH(sr.created_at)`,
+      [req.user.branch_id, start, end]
+    );
+    const retByMonth = new Map(
+      retMonths.map((r) => [Number(r.month), { value: Number(r.value), cost: Number(r.cost) }])
+    );
+    const byMonthMap = new Map();
+    for (const m of months) {
+      const key = Number(m.month);
+      const ret = retByMonth.get(key) || { value: 0, cost: 0 };
+      byMonthMap.set(key, {
+        month: key,
+        sales_count: Number(m.sales_count),
+        revenue: Number(m.revenue) - ret.value,
+        cost_total: Number(m.cost_total || 0) - ret.cost,
+      });
+      retByMonth.delete(key);
+    }
+    for (const [key, ret] of retByMonth) {
+      byMonthMap.set(key, { month: key, sales_count: 0, revenue: -ret.value, cost_total: -ret.cost });
+    }
+    const byMonth = [...byMonthMap.values()]
+      .sort((a, b) => a.month - b.month)
+      .map((m) => ({ ...m, profit: m.revenue - m.cost_total }));
     return res.json({ status: 'ok', year, summary, months: byMonth });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
