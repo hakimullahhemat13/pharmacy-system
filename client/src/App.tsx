@@ -101,9 +101,6 @@ interface SaleRow {
   sale_date: string;
   net_total: number | string;
   customer_name: string | null;
-  items_sold?: number;
-  items_returned?: number;
-  refunded_total?: number;
 }
 
 interface MedOption {
@@ -1315,40 +1312,24 @@ function SalesPage({ lang }: { lang: Lang }) {
               </tr>
             </thead>
             <tbody>
-              {recent.map((s) => {
-                const soldQty = Number(s.items_sold || 0);
-                const retQty = Number(s.items_returned || 0);
-                const refunded = Number(s.refunded_total || 0);
-                const fullyReturned = soldQty > 0 && retQty >= soldQty;
-                const partiallyReturned = retQty > 0 && !fullyReturned;
-                const displayTotal = Math.max(0, Number(s.net_total) - refunded);
-                return (
-                  <tr key={s.id} style={fullyReturned ? { opacity: 0.65 } : undefined}>
-                    <td>
-                      {s.invoice_no}
-                      <span className="muted">
-                        {' '}
-                        · {String(s.sale_date).slice(0, 10)} {String(s.sale_date).slice(11, 16)}
-                      </span>{' '}
-                      {fullyReturned && (
-                        <span className="badge returned">↩️ {t(lang, 'returnedFull')}</span>
-                      )}
-                      {partiallyReturned && (
-                        <span className="badge warning">↩️ {t(lang, 'returnedPartial')}</span>
-                      )}
-                    </td>
-                    <td>{s.customer_name || t(lang, 'walkIn')}</td>
-                    <td>{fmt(displayTotal)}</td>
-                    <td>
-                      {!fullyReturned && (
-                        <button className="btn-secondary" onClick={() => openReturn(s.id)}>
-                          ↩️ {t(lang, 'returnSale')}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
+              {recent.map((s) => (
+                <tr key={s.id}>
+                  <td>
+                    {s.invoice_no}
+                    <span className="muted">
+                      {' '}
+                      · {String(s.sale_date).slice(0, 10)} {String(s.sale_date).slice(11, 16)}
+                    </span>
+                  </td>
+                  <td>{s.customer_name || t(lang, 'walkIn')}</td>
+                  <td>{fmt(Number(s.net_total))}</td>
+                  <td>
+                    <button className="btn-secondary" onClick={() => openReturn(s.id)}>
+                      ↩️ {t(lang, 'returnSale')}
+                    </button>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         )}

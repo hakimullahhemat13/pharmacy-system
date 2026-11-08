@@ -61,4 +61,38 @@ router.get('/expiring', authRequired, async (req, res) => {
   }
 });
 
+// Every batch with stock, whatever its expiry date — the page behind the
+// "all expiry dates, always visible" view. Sorted soonest-expiring first;
+// a batch's level uses its own medicine's warn_months window.
+router.get('/all-batches', authRequired, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT b.id AS batch_id, b.batch_no, b.expiry_date, b.quantity_on_hand,
+              m.id AS medicine_id, m.name AS medicine_name, m.company, m.barcode,
+              m.warn_months,
+              DATEDIFF(b.expiry_date, CURDATE()) AS days_remaining
+       FROM medicine_batches b
+       JOIN medicines m ON m.id = b.medicine_id
+       WHERE b.branch_id = ? AND b.is_deleted = 0 AND m.is_deleted = 0 AND b.quantity_on_hand > 0
+       ORDER BY b.expiry_date ASC`,
+      [req.user.branch_id]
+    );
+    const batches = rows.map((r) => {
+      const warnDays = (Number(r.warn_months) || 3) * 30;
+      const level =
+        r.days_remaining < 0
+          ? 'expired'
+          : r.days_remaining <= 30
+            ? 'critical'
+            : r.days_remaining <= warnDays
+              ? 'warning'
+              : 'ok';
+      return { ...r, level };
+    });
+    return res.json({ status: 'ok', batches });
+  } catch (err) {
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+});
+
 module.exports = router;

@@ -179,7 +179,6 @@ th { color: #64748b; font-weight: 600; font-size: 13px; }
 .badge.critical { background: #ffedd5; color: #c2410c; }
 .badge.warning { background: #fef9c3; color: #a16207; }
 .badge.ok { background: #dcfce7; color: #15803d; }
-.badge.returned { background: #e5e7eb; color: #374151; }
 tr.row-expired td { background: #fff7f7; }
 
 .empty-note { color: #16a34a; font-size: 15px; padding: 8px 0 2px; }
