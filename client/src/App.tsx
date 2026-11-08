@@ -1305,6 +1305,7 @@ function SalesPage({ lang }: { lang: Lang }) {
         {recent.length === 0 ? (
           <p className="muted">—</p>
         ) : (
+          <div className="table-scroll">
           <table>
             <thead>
               <tr>
@@ -1351,6 +1352,7 @@ function SalesPage({ lang }: { lang: Lang }) {
               })}
             </tbody>
           </table>
+          </div>
         )}
       </div>
 
