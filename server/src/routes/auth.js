@@ -27,10 +27,11 @@ router.post('/login', async (req, res) => {
     if (!user.is_active) {
       return res.status(403).json({ status: 'error', message: 'This user is disabled' });
     }
+    // No expiry: on this local, single-owner installation the session
+    // stays valid until the user logs out (owner's choice, 2026-11-08).
     const token = jwt.sign(
       { sub: user.id, username: user.username, role: user.role, branch_id: user.branch_id },
-      process.env.JWT_SECRET,
-      { expiresIn: '12h' }
+      process.env.JWT_SECRET
     );
     return res.json({
       status: 'ok',
