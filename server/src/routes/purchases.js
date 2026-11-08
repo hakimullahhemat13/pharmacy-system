@@ -61,6 +61,9 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
   if (!Number.isFinite(paidAmount) || paidAmount < 0) {
     return res.status(400).json({ status: 'error', message: 'paid_amount must be a number, 0 or more' });
   }
+  if (paidAmount > totalAmount) {
+    return res.status(400).json({ status: 'error', message: 'paid_amount cannot be more than the purchase total' });
+  }
 
   const conn = await pool.getConnection();
   try {

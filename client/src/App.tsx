@@ -134,6 +134,24 @@ interface Supplier {
   phone: string | null;
 }
 
+interface SupplierRow extends Supplier {
+  address: string | null;
+  purchases_total: number | string;
+  paid_total: number | string;
+  due_total: number | string;
+}
+
+interface SupplierPaymentRow {
+  id: string;
+  amount: number | string;
+  created_at: string;
+}
+
+interface SupplierDetail extends SupplierRow {
+  purchases: PurchaseRow[];
+  payments: SupplierPaymentRow[];
+}
+
 interface PurchaseRow {
   id: string;
   invoice_no: string | null;
@@ -167,7 +185,7 @@ interface MonthRow {
   profit: number;
 }
 
-type Page = 'dashboard' | 'medicines' | 'expiry' | 'sales' | 'purchases' | 'reports' | 'customers' | 'backup' | 'settings';
+type Page = 'dashboard' | 'medicines' | 'expiry' | 'sales' | 'purchases' | 'suppliers' | 'reports' | 'customers' | 'backup' | 'settings';
 
 const USER_KEY = 'pharmacy_user';
 const LANG_KEY = 'pharmacy_lang';
@@ -246,6 +264,7 @@ export default function App() {
     { key: 'expiry', label: t(lang, 'expiryDates') },
     { key: 'sales', label: t(lang, 'sales') },
     { key: 'purchases', label: t(lang, 'purchases') },
+    { key: 'suppliers', label: t(lang, 'suppliers') },
     { key: 'reports', label: t(lang, 'reports') },
     { key: 'customers', label: t(lang, 'customers') },
     { key: 'settings', label: t(lang, 'settings') },
@@ -281,11 +300,12 @@ export default function App() {
         {page === 'expiry' && <ExpiryPage lang={lang} />}
         {page === 'sales' && <SalesPage lang={lang} />}
         {page === 'purchases' && <PurchasesPage lang={lang} />}
+        {page === 'suppliers' && <SuppliersPage lang={lang} />}
         {page === 'reports' && <ReportsPage lang={lang} />}
         {page === 'customers' && <CustomersPage lang={lang} />}
         {page === 'backup' && <BackupPage lang={lang} onLogout={logout} />}
         {page === 'settings' && <SettingsPage lang={lang} user={user} setLang={setLang} />}
-        {page !== 'dashboard' && page !== 'medicines' && page !== 'expiry' && page !== 'sales' && page !== 'purchases' && page !== 'reports' && page !== 'customers' && page !== 'backup' && page !== 'settings' && (
+        {page !== 'dashboard' && page !== 'medicines' && page !== 'expiry' && page !== 'sales' && page !== 'purchases' && page !== 'suppliers' && page !== 'reports' && page !== 'customers' && page !== 'backup' && page !== 'settings' && (
           <>
             <h2>{menu.find((m) => m.key === page)?.label}</h2>
             <div className="panel">
@@ -1787,6 +1807,308 @@ function SalesPage({ lang }: { lang: Lang }) {
           </div>,
           document.body
         )}
+    </>
+  );
+}
+
+function SuppliersPage({ lang }: { lang: Lang }) {
+  const [list, setList] = useState<SupplierRow[]>([]);
+  const [query, setQuery] = useState('');
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [address, setAddress] = useState('');
+  const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
+  const [detail, setDetail] = useState<SupplierDetail | null>(null);
+  const [eName, setEName] = useState('');
+  const [ePhone, setEPhone] = useState('');
+  const [eAddress, setEAddress] = useState('');
+  const [editMsg, setEditMsg] = useState('');
+  const [payAmount, setPayAmount] = useState('');
+  const [payMsg, setPayMsg] = useState('');
+  const [payError, setPayError] = useState('');
+
+  const load = async () => {
+    const data = await api.get('/suppliers');
+    setList(data.suppliers as SupplierRow[]);
+  };
+  useEffect(() => {
+    load().catch((err) => setError(err instanceof Error ? err.message : 'Error'));
+  }, []);
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setMsg('');
+    try {
+      await api.post('/suppliers', {
+        name: name.trim(),
+        phone: phone.trim() || undefined,
+        address: address.trim() || undefined,
+      });
+      setMsg(`✅ ${t(lang, 'supplierAdded')}`);
+      setName('');
+      setPhone('');
+      setAddress('');
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
+  };
+
+  const openDetail = async (id: string) => {
+    setPayMsg('');
+    setPayError('');
+    setEditMsg('');
+    setPayAmount('');
+    try {
+      const data = await api.get(`/suppliers/${id}`);
+      const s = data.supplier as SupplierDetail;
+      setDetail(s);
+      setEName(s.name);
+      setEPhone(s.phone || '');
+      setEAddress(s.address || '');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
+  };
+
+  const saveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!detail) return;
+    setEditMsg('');
+    try {
+      await api.put(`/suppliers/${detail.id}`, {
+        name: eName.trim(),
+        phone: ePhone.trim() || undefined,
+        address: eAddress.trim() || undefined,
+      });
+      setEditMsg(`✅ ${t(lang, 'saved')}`);
+      await Promise.all([load(), openDetail(detail.id)]);
+    } catch (err) {
+      setEditMsg(err instanceof Error ? err.message : 'Error');
+    }
+  };
+
+  const recordPayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!detail) return;
+    setPayMsg('');
+    setPayError('');
+    const amount = Number(payAmount);
+    if (!payAmount || !Number.isFinite(amount) || amount <= 0) {
+      setPayError(t(lang, 'paidAmount'));
+      return;
+    }
+    try {
+      await api.post(`/suppliers/${detail.id}/payment`, { amount });
+      setPayMsg(`✅ ${t(lang, 'paymentRecorded')}`);
+      setPayAmount('');
+      await Promise.all([load(), openDetail(detail.id)]);
+    } catch (err) {
+      setPayError(err instanceof Error ? err.message : 'Error');
+    }
+  };
+
+  const shown = list.filter(
+    (s) => !query.trim() || s.name.toLowerCase().includes(query.trim().toLowerCase())
+  );
+
+  return (
+    <>
+      <h2>{t(lang, 'suppliers')}</h2>
+      <div className="panel">
+        <h3>🏭 {t(lang, 'addSupplier')}</h3>
+        <form onSubmit={add}>
+          <div className="form-grid">
+            <label>
+              <span>{t(lang, 'name')} *</span>
+              <input value={name} onChange={(e) => setName(e.target.value)} />
+            </label>
+            <label>
+              <span>{t(lang, 'phone')}</span>
+              <input value={phone} onChange={(e) => setPhone(e.target.value)} />
+            </label>
+            <label>
+              <span>{t(lang, 'address')}</span>
+              <input value={address} onChange={(e) => setAddress(e.target.value)} />
+            </label>
+          </div>
+          <button className="btn primary" type="submit">
+            {t(lang, 'save')}
+          </button>
+        </form>
+        {msg && <p className="ok">{msg}</p>}
+        {error && <p className="err">{error}</p>}
+      </div>
+
+      <div className="panel">
+        <input
+          className="search-input"
+          placeholder={t(lang, 'suppliers')}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <div className="table-scroll">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>{t(lang, 'name')}</th>
+                <th>{t(lang, 'phone')}</th>
+                <th>{t(lang, 'totalPurchased')}</th>
+                <th>{t(lang, 'paidAmount')}</th>
+                <th>{t(lang, 'due')}</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((s) => (
+                <tr key={s.id}>
+                  <td>{s.name}</td>
+                  <td>{s.phone || '—'}</td>
+                  <td>{fmt(Number(s.purchases_total))}</td>
+                  <td>{fmt(Number(s.paid_total))}</td>
+                  <td>
+                    {Number(s.due_total) > 0 ? (
+                      <span className="badge credit">
+                        {t(lang, 'due')}: {fmt(Number(s.due_total))}
+                      </span>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
+                  <td>
+                    <button className="btn small" onClick={() => openDetail(s.id)}>
+                      {t(lang, 'supplierAccount')}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {shown.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="muted">
+                    {t(lang, 'noResults')}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {detail && (
+        <div className="panel">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h3 style={{ margin: 0 }}>
+              {t(lang, 'supplierAccount')}: {detail.name}
+            </h3>
+            <button className="btn small" onClick={() => setDetail(null)}>
+              ✕
+            </button>
+          </div>
+          <p style={{ fontSize: 15, margin: '10px 0' }}>
+            {t(lang, 'totalPurchased')}: <b>{fmt(Number(detail.purchases_total))}</b>
+            {' · '}
+            {t(lang, 'paidAmount')}: <b>{fmt(Number(detail.paid_total))}</b>
+            {' · '}
+            {t(lang, 'due')}: <b>{fmt(Number(detail.due_total))}</b> {t(lang, 'currency')}
+          </p>
+
+          <form onSubmit={saveEdit}>
+            <div className="form-grid">
+              <label>
+                <span>{t(lang, 'name')} *</span>
+                <input value={eName} onChange={(e) => setEName(e.target.value)} />
+              </label>
+              <label>
+                <span>{t(lang, 'phone')}</span>
+                <input value={ePhone} onChange={(e) => setEPhone(e.target.value)} />
+              </label>
+              <label>
+                <span>{t(lang, 'address')}</span>
+                <input value={eAddress} onChange={(e) => setEAddress(e.target.value)} />
+              </label>
+            </div>
+            <button className="btn" type="submit">
+              {t(lang, 'save')}
+            </button>
+            {editMsg && <span style={{ marginInlineStart: 10 }}>{editMsg}</span>}
+          </form>
+
+          {Number(detail.due_total) > 0 && (
+            <form onSubmit={recordPayment} style={{ marginTop: 14 }}>
+              <div className="form-grid">
+                <label>
+                  <span>{t(lang, 'paidAmount')}</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={payAmount}
+                    onChange={(e) => setPayAmount(e.target.value)}
+                  />
+                </label>
+              </div>
+              <button className="btn primary" type="submit">
+                {t(lang, 'recordPayment')}
+              </button>
+              {payMsg && <p className="ok">{payMsg}</p>}
+              {payError && <p className="err">{payError}</p>}
+            </form>
+          )}
+
+          {detail.payments.length > 0 && (
+            <>
+              <h4>{t(lang, 'paymentsHistory')}</h4>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>{t(lang, 'date')}</th>
+                    <th>{t(lang, 'paidAmount')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detail.payments.map((p) => (
+                    <tr key={p.id}>
+                      <td>{String(p.created_at).slice(0, 10)}</td>
+                      <td>{fmt(Number(p.amount))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+
+          <h4>{t(lang, 'purchasesHistory')}</h4>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>{t(lang, 'invoiceNo')}</th>
+                <th>{t(lang, 'date')}</th>
+                <th>{t(lang, 'netTotal')}</th>
+                <th>{t(lang, 'paidAmount')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {detail.purchases.map((p) => (
+                <tr key={p.id}>
+                  <td>{p.invoice_no || '—'}</td>
+                  <td>{String(p.purchase_date).slice(0, 10)}</td>
+                  <td>{fmt(Number(p.total_amount))}</td>
+                  <td>{fmt(Number(p.paid_amount))}</td>
+                </tr>
+              ))}
+              {detail.purchases.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="muted">
+                    {t(lang, 'noResults')}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
     </>
   );
 }
