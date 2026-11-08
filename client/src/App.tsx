@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api, getToken, setToken } from './api';
 import { type Lang, LANG_NAMES, dirFor, t } from './i18n';
@@ -1042,6 +1042,16 @@ function SalesPage({ lang }: { lang: Lang }) {
   const [payMsg, setPayMsg] = useState('');
   const [payError, setPayError] = useState('');
   const [voidArm, setVoidArm] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
+  // Scanner-first till: the medicine search box is where scans land, so
+  // after any click that is not inside a field (picking a result, the
+  // quantity buttons, completing a sale, ...) the cursor returns to the
+  // search box by itself — scanning never needs a click first.
+  const focusSearch = () => setTimeout(() => searchRef.current?.focus(), 0);
+  const refocusOnClick = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest('input, select, textarea')) return;
+    focusSearch();
+  };
 
   const loadStock = async () => {
     const data = await api.get('/stock');
@@ -1303,10 +1313,11 @@ function SalesPage({ lang }: { lang: Lang }) {
   return (
     <>
       <h2>{t(lang, 'sales')}</h2>
-      <div className="pos-grid">
+      <div className="pos-grid" onClick={refocusOnClick}>
         <div className="panel" style={{ marginTop: 0 }}>
           <form onSubmit={onSearchSubmit}>
             <input
+              ref={searchRef}
               className="search-input"
               placeholder={t(lang, 'searchMedicine')}
               value={query}
