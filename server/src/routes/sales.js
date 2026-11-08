@@ -42,6 +42,16 @@ router.post('/', authRequired, async (req, res) => {
     return res.status(400).json({ status: 'error', message: 'discount must be a number, 0 or more' });
   }
 
+  // Credit (por) sales: paid_amount is what the customer pays at the till.
+  // Missing means "paid in full"; less than the total means the rest is owed.
+  let paidAmount = null;
+  if (body.paid_amount !== undefined && body.paid_amount !== null && body.paid_amount !== '') {
+    paidAmount = Number(body.paid_amount);
+    if (!Number.isFinite(paidAmount) || paidAmount < 0) {
+      return res.status(400).json({ status: 'error', message: 'paid_amount must be a number, 0 or more' });
+    }
+  }
+
   const branchId = req.user.branch_id;
   const userId = req.user.id;
   const customerId = body.customer_id ? String(body.customer_id) : null;
@@ -128,14 +138,24 @@ router.post('/', authRequired, async (req, res) => {
     }
     const netTotal = totalAmount - discount;
 
+    if (paidAmount === null) paidAmount = netTotal;
+    if (paidAmount > netTotal) {
+      await conn.rollback();
+      return res.status(400).json({ status: 'error', message: 'Paid amount cannot be more than the bill total' });
+    }
+    if (paidAmount < netTotal && !customerId) {
+      await conn.rollback();
+      return res.status(400).json({ status: 'error', message: 'A credit sale needs a named customer (not walk-in)' });
+    }
+
     // Per-branch invoice sequence: SALE-0001, SALE-0002, ...
     const [cntRows] = await conn.query('SELECT COUNT(*) AS c FROM sales WHERE branch_id = ?', [branchId]);
     const invoiceNo = `SALE-${String(Number(cntRows[0].c) + 1).padStart(4, '0')}`;
 
     const saleId = uuidv4();
     await conn.query(
-      'INSERT INTO sales (id, branch_id, invoice_no, customer_id, total_amount, discount, net_total, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [saleId, branchId, invoiceNo, customerId, totalAmount, discount, netTotal, userId]
+      'INSERT INTO sales (id, branch_id, invoice_no, customer_id, total_amount, discount, net_total, paid_amount, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [saleId, branchId, invoiceNo, customerId, totalAmount, discount, netTotal, paidAmount, userId]
     );
     for (const a of allocations) {
       await conn.query(
@@ -151,7 +171,7 @@ router.post('/', authRequired, async (req, res) => {
     await conn.commit();
     return res.status(201).json({
       status: 'ok',
-      sale: { id: saleId, invoice_no: invoiceNo, customer_id: customerId, total_amount: totalAmount, discount, net_total: netTotal, items: allocations },
+      sale: { id: saleId, invoice_no: invoiceNo, customer_id: customerId, total_amount: totalAmount, discount, net_total: netTotal, paid_amount: paidAmount, due_amount: Math.round((netTotal - paidAmount) * 100) / 100, items: allocations },
     });
   } catch (err) {
     try { await conn.rollback(); } catch (_) { /* already rolled back */ }
@@ -161,17 +181,62 @@ router.post('/', authRequired, async (req, res) => {
   }
 });
 
-// GET /api/sales — newest first. Each row also carries its returns state
-// (items sold vs returned, and the refunded amount at sale prices) so the
-// bills list can mark returned bills and show the net amount still standing.
+// Money state of one sale: what was refunded (returns at sale prices),
+// what has been paid (at the till plus later payments), and what is still
+// owed. A NULL paid_amount (sales recorded before credit tracking existed)
+// counts as paid in full at the till.
+async function saleMoney(db, sale) {
+  const [rt] = await db.query(
+    `SELECT COALESCE(SUM(st.quantity_change * i.unit_price), 0) AS refunded
+     FROM stock_transactions st
+     JOIN sale_items i ON i.sale_id = st.reference_id AND i.batch_id = st.batch_id
+     WHERE st.type = 'sale_return' AND st.reference_id = ?`,
+    [sale.id]
+  );
+  const [pay] = await db.query(
+    'SELECT COALESCE(SUM(amount), 0) AS paid FROM sale_payments WHERE sale_id = ? AND is_deleted = 0',
+    [sale.id]
+  );
+  const net = Number(sale.net_total);
+  const refunded = Math.round(Number(rt[0].refunded) * 100) / 100;
+  const paidAtSale = sale.paid_amount === null || sale.paid_amount === undefined ? net : Number(sale.paid_amount);
+  const paidTotal = Math.round((paidAtSale + Number(pay[0].paid)) * 100) / 100;
+  const due = Math.max(0, Math.round((net - refunded - paidTotal) * 100) / 100);
+  return { refunded_total: refunded, paid_total: paidTotal, due_amount: due };
+}
+
+// GET /api/sales — newest first. Optional filters: ?q= (invoice no or
+// customer name), ?from=YYYY-MM-DD, ?to=YYYY-MM-DD. Each row also carries
+// its returns state (items sold vs returned, refunded amount at sale
+// prices) and its money state (paid_total, due_amount, voided), so the
+// bills list can mark returned / credited / voided bills truthfully.
 router.get('/', authRequired, async (req, res) => {
   try {
+    const where = ['s.branch_id = ?', 's.is_deleted = 0'];
+    const params = [req.user.branch_id];
+    const q = String(req.query.q || '').trim();
+    if (q) {
+      where.push('(s.invoice_no LIKE ? OR c.name LIKE ?)');
+      params.push(`%${q}%`, `%${q}%`);
+    }
+    const from = String(req.query.from || '').trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(from)) {
+      where.push('s.sale_date >= ?');
+      params.push(`${from} 00:00:00`);
+    }
+    const to = String(req.query.to || '').trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+      where.push('s.sale_date < DATE_ADD(?, INTERVAL 1 DAY)');
+      params.push(to);
+    }
     const [rows] = await pool.query(
       `SELECT s.id, s.invoice_no, s.sale_date, s.total_amount, s.discount, s.net_total,
+              s.paid_amount, s.voided_at,
               c.name AS customer_name,
               COALESCE(si.items_sold, 0) AS items_sold,
               COALESCE(rt.items_returned, 0) AS items_returned,
-              COALESCE(rt.refunded_total, 0) AS refunded_total
+              COALESCE(rt.refunded_total, 0) AS refunded_total,
+              COALESCE(pay.paid_sum, 0) AS payments_sum
        FROM sales s
        LEFT JOIN customers c ON c.id = s.customer_id
        LEFT JOIN (
@@ -187,16 +252,29 @@ router.get('/', authRequired, async (req, res) => {
          WHERE st.type = 'sale_return'
          GROUP BY st.reference_id
        ) rt ON rt.sale_id = s.id
-       WHERE s.branch_id = ? AND s.is_deleted = 0
+       LEFT JOIN (
+         SELECT sale_id, SUM(amount) AS paid_sum
+         FROM sale_payments WHERE is_deleted = 0 GROUP BY sale_id
+       ) pay ON pay.sale_id = s.id
+       WHERE ${where.join(' AND ')}
        ORDER BY s.sale_date DESC, s.created_at DESC`,
-      [req.user.branch_id]
+      params
     );
-    const sales = rows.map((r) => ({
-      ...r,
-      items_sold: Number(r.items_sold),
-      items_returned: Number(r.items_returned),
-      refunded_total: Math.round(Number(r.refunded_total) * 100) / 100,
-    }));
+    const sales = rows.map((r) => {
+      const net = Number(r.net_total);
+      const refunded = Math.round(Number(r.refunded_total) * 100) / 100;
+      const paidAtSale = r.paid_amount === null ? net : Number(r.paid_amount);
+      const paidTotal = Math.round((paidAtSale + Number(r.payments_sum)) * 100) / 100;
+      return {
+        ...r,
+        items_sold: Number(r.items_sold),
+        items_returned: Number(r.items_returned),
+        refunded_total: refunded,
+        paid_total: paidTotal,
+        due_amount: Math.max(0, Math.round((net - refunded - paidTotal) * 100) / 100),
+        voided: r.voided_at ? 1 : 0,
+      };
+    });
     return res.json({ status: 'ok', sales });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
@@ -208,6 +286,7 @@ router.get('/:id', authRequired, async (req, res) => {
   try {
     const [head] = await pool.query(
       `SELECT s.id, s.invoice_no, s.sale_date, s.total_amount, s.discount, s.net_total,
+              s.paid_amount, s.voided_at,
               c.name AS customer_name
        FROM sales s
        LEFT JOIN customers c ON c.id = s.customer_id
@@ -237,7 +316,20 @@ router.get('/:id', authRequired, async (req, res) => {
       ...it,
       returned_quantity: Number(it.returned_quantity),
     }));
-    return res.json({ status: 'ok', sale: { ...head[0], items: itemsWithReturns } });
+    const [payments] = await pool.query(
+      'SELECT id, amount, created_at FROM sale_payments WHERE sale_id = ? AND is_deleted = 0 ORDER BY created_at',
+      [req.params.id]
+    );
+    const money = await saleMoney(pool, head[0]);
+    return res.json({
+      status: 'ok',
+      sale: {
+        ...head[0],
+        items: itemsWithReturns,
+        payments: payments.map((p) => ({ ...p, amount: Number(p.amount) })),
+        ...money,
+      },
+    });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
   }
@@ -342,6 +434,120 @@ router.post('/:id/return', authRequired, async (req, res) => {
       refund_total: refundTotal,
       returned,
     });
+  } catch (err) {
+    try { await conn.rollback(); } catch (_) { /* already rolled back */ }
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  } finally {
+    conn.release();
+  }
+});
+
+// POST /api/sales/:id/payment — record a later payment against a credit
+// (por) bill. Body: { amount }. One transaction; a payment can never
+// exceed what is still owed on the bill.
+router.post('/:id/payment', authRequired, async (req, res) => {
+  const amount = Number((req.body || {}).amount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return res.status(400).json({ status: 'error', message: 'amount must be a number above 0' });
+  }
+  const branchId = req.user.branch_id;
+  const userId = req.user.sub;
+  const saleId = req.params.id;
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const [sale] = await conn.query(
+      'SELECT id, net_total, paid_amount FROM sales WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1 FOR UPDATE',
+      [saleId, branchId]
+    );
+    if (sale.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ status: 'error', message: 'Sale not found' });
+    }
+    const money = await saleMoney(conn, sale[0]);
+    if (amount > money.due_amount + 0.001) {
+      await conn.rollback();
+      return res.status(400).json({
+        status: 'error',
+        message: `Payment ${amount} is more than the amount still due (${money.due_amount})`,
+      });
+    }
+    await conn.query(
+      'INSERT INTO sale_payments (id, branch_id, sale_id, amount, created_by) VALUES (?, ?, ?, ?, ?)',
+      [uuidv4(), branchId, saleId, amount, userId]
+    );
+    await conn.commit();
+    return res.json({
+      status: 'ok',
+      paid_total: Math.round((money.paid_total + amount) * 100) / 100,
+      due_amount: Math.max(0, Math.round((money.due_amount - amount) * 100) / 100),
+    });
+  } catch (err) {
+    try { await conn.rollback(); } catch (_) { /* already rolled back */ }
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  } finally {
+    conn.release();
+  }
+});
+
+// POST /api/sales/:id/void — cancel a whole bill in one step: every item
+// still out goes back into the batch it was sold from (the same ledger
+// rows a normal return writes), and the bill is stamped voided_at. The
+// bill itself stays in the records — reports already net the returns.
+router.post('/:id/void', authRequired, async (req, res) => {
+  const branchId = req.user.branch_id;
+  const userId = req.user.sub;
+  const saleId = req.params.id;
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [sale] = await conn.query(
+      'SELECT id, invoice_no, voided_at FROM sales WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1 FOR UPDATE',
+      [saleId, branchId]
+    );
+    if (sale.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ status: 'error', message: 'Sale not found' });
+    }
+    if (sale[0].voided_at) {
+      await conn.rollback();
+      return res.status(400).json({ status: 'error', message: 'This bill is already voided' });
+    }
+
+    const [soldItems] = await conn.query(
+      `SELECT si.id, si.medicine_id, si.batch_id, si.quantity, si.unit_price
+       FROM sale_items si
+       WHERE si.sale_id = ? FOR UPDATE`,
+      [saleId]
+    );
+
+    let refundTotal = 0;
+    for (const sold of soldItems) {
+      const [rt] = await conn.query(
+        `SELECT COALESCE(SUM(quantity_change), 0) AS returned
+         FROM stock_transactions
+         WHERE type = 'sale_return' AND reference_id = ? AND batch_id = ?`,
+        [saleId, sold.batch_id]
+      );
+      const remaining = Number(sold.quantity) - Number(rt[0].returned);
+      if (remaining <= 0) continue;
+      await conn.query(
+        'UPDATE medicine_batches SET quantity_on_hand = quantity_on_hand + ? WHERE id = ?',
+        [remaining, sold.batch_id]
+      );
+      await conn.query(
+        "INSERT INTO stock_transactions (id, branch_id, medicine_id, batch_id, type, quantity_change, reference_id, created_by) VALUES (?, ?, ?, ?, 'sale_return', ?, ?, ?)",
+        [uuidv4(), branchId, sold.medicine_id, sold.batch_id, remaining, saleId, userId]
+      );
+      refundTotal += remaining * Number(sold.unit_price);
+    }
+
+    await conn.query('UPDATE sales SET voided_at = NOW() WHERE id = ?', [saleId]);
+    await conn.commit();
+    return res.json({ status: 'ok', invoice_no: sale[0].invoice_no, refund_total: refundTotal });
   } catch (err) {
     try { await conn.rollback(); } catch (_) { /* already rolled back */ }
     return res.status(500).json({ status: 'error', message: err.code || err.message });
