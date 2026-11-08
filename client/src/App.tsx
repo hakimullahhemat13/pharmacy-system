@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { api, getToken, setToken } from './api';
 import { type Lang, LANG_NAMES, dirFor, t } from './i18n';
 
@@ -59,6 +60,12 @@ interface SaleItemDetail {
   returned_quantity: number;
 }
 
+interface SalePayment {
+  id: string;
+  amount: number | string;
+  created_at: string;
+}
+
 interface SaleDetail {
   id: string;
   invoice_no: string;
@@ -66,14 +73,21 @@ interface SaleDetail {
   total_amount: number | string;
   discount: number | string;
   net_total: number | string;
+  paid_amount: number | string | null;
+  voided_at: string | null;
   customer_name: string | null;
   items: SaleItemDetail[];
+  payments?: SalePayment[];
+  paid_total?: number;
+  due_amount?: number;
+  refunded_total?: number;
 }
 
 interface Customer {
   id: string;
   name: string;
   phone: string | null;
+  due_total?: number | string;
 }
 
 interface CustomerFull extends Customer {
@@ -104,6 +118,9 @@ interface SaleRow {
   items_sold?: number;
   items_returned?: number;
   refunded_total?: number;
+  paid_total?: number;
+  due_amount?: number;
+  voided?: number;
 }
 
 interface MedOption {
@@ -1014,24 +1031,67 @@ function SalesPage({ lang }: { lang: Lang }) {
   const [retError, setRetError] = useState('');
   const [retMsg, setRetMsg] = useState('');
   const [retBusy, setRetBusy] = useState(false);
+  const [paid, setPaid] = useState('');
+  const [lastSaleId, setLastSaleId] = useState('');
+  const [billQuery, setBillQuery] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [branch, setBranch] = useState<BranchInfo | null>(null);
+  const [receipt, setReceipt] = useState<SaleDetail | null>(null);
+  const [payAmount, setPayAmount] = useState('');
+  const [payMsg, setPayMsg] = useState('');
+  const [payError, setPayError] = useState('');
+  const [voidArm, setVoidArm] = useState(false);
 
   const loadStock = async () => {
     const data = await api.get('/stock');
     setStock(data.stock as StockRow[]);
   };
   const loadRecent = async () => {
-    const data = await api.get('/sales');
-    setRecent((data.sales as SaleRow[]).slice(0, 8));
+    const params = new URLSearchParams();
+    if (billQuery.trim()) params.set('q', billQuery.trim());
+    if (dateFrom) params.set('from', dateFrom);
+    if (dateTo) params.set('to', dateTo);
+    const qs = params.toString();
+    const data = await api.get(`/sales${qs ? `?${qs}` : ''}`);
+    setRecent(data.sales as SaleRow[]);
   };
 
   useEffect(() => {
     loadStock().catch((err) => setError(err instanceof Error ? err.message : 'Error'));
-    loadRecent().catch(() => undefined);
     api
       .get('/customers')
       .then((data) => setCustomers(data.customers as Customer[]))
       .catch(() => undefined);
+    api
+      .get('/settings/branch')
+      .then((data) => setBranch(data.branch as BranchInfo))
+      .catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    loadRecent().catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [billQuery, dateFrom, dateTo]);
+
+  // Print the receipt as soon as it has rendered.
+  useEffect(() => {
+    if (!receipt) return;
+    const timer = setTimeout(() => {
+      window.print();
+      setReceipt(null);
+    }, 80);
+    return () => clearTimeout(timer);
+  }, [receipt]);
+
+  const printSale = async (saleId: string) => {
+    try {
+      const data = await api.get(`/sales/${saleId}`);
+      setReceipt(data.sale as SaleDetail);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
+  };
 
   const q = query.trim().toLowerCase();
   const results = q
@@ -1096,6 +1156,8 @@ function SalesPage({ lang }: { lang: Lang }) {
   const subtotal = bill.reduce((sum, i) => sum + i.unit_price * i.quantity, 0);
   const discountNum = discount === '' ? 0 : Number(discount) || 0;
   const net = Math.max(0, subtotal - discountNum);
+  const paidNum = paid === '' ? net : Number(paid) || 0;
+  const duePreview = Math.max(0, net - paidNum);
 
   const complete = async () => {
     setError('');
@@ -1104,18 +1166,29 @@ function SalesPage({ lang }: { lang: Lang }) {
       setError(t(lang, 'billEmpty'));
       return;
     }
+    if (paidNum > net) {
+      setError(`${t(lang, 'paidAmount')} > ${t(lang, 'netTotal')}`);
+      return;
+    }
+    if (duePreview > 0 && !customerId) {
+      setError(t(lang, 'creditNeedsCustomer'));
+      return;
+    }
     setBusy(true);
     try {
       const data = await api.post('/sales', {
         items: bill.map((i) => ({ medicine_id: i.medicine_id, quantity: i.quantity })),
         discount: discountNum,
         customer_id: customerId || undefined,
+        paid_amount: paid === '' ? undefined : paidNum,
       });
       setMsg(
         `✅ ${t(lang, 'saleDone')}: ${data.sale.invoice_no} — ${fmt(Number(data.sale.net_total))} ${t(lang, 'currency')}`
       );
+      setLastSaleId(data.sale.id as string);
       setBill([]);
       setDiscount('');
+      setPaid('');
       setCustomerId('');
       await Promise.all([loadStock(), loadRecent()]);
     } catch (err) {
@@ -1129,6 +1202,10 @@ function SalesPage({ lang }: { lang: Lang }) {
     setRetError('');
     setRetMsg('');
     setRetQtys({});
+    setPayAmount('');
+    setPayMsg('');
+    setPayError('');
+    setVoidArm(false);
     try {
       const data = await api.get(`/sales/${saleId}`);
       setDetail(data.sale as SaleDetail);
@@ -1143,6 +1220,11 @@ function SalesPage({ lang }: { lang: Lang }) {
         return sum + rq * Number(it.unit_price);
       }, 0)
     : 0;
+
+  const detailDue = detail ? Number(detail.due_amount || 0) : 0;
+  const detailAllReturned = detail
+    ? detail.items.every((it) => it.returned_quantity >= it.quantity)
+    : false;
 
   const submitReturn = async () => {
     if (!detail) return;
@@ -1162,6 +1244,53 @@ function SalesPage({ lang }: { lang: Lang }) {
         `${t(lang, 'returnDone')} — ${fmt(Number(data.refund_total))} ${t(lang, 'currency')}`
       );
       setRetQtys({});
+      const fresh = await api.get(`/sales/${detail.id}`);
+      setDetail(fresh.sale as SaleDetail);
+      await Promise.all([loadStock(), loadRecent()]);
+    } catch (err) {
+      setRetError(err instanceof Error ? err.message : 'Error');
+    }
+    setRetBusy(false);
+  };
+
+  const submitPayment = async () => {
+    if (!detail) return;
+    setPayError('');
+    setPayMsg('');
+    const amount = Number(payAmount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setPayError(t(lang, 'paidAmount'));
+      return;
+    }
+    setRetBusy(true);
+    try {
+      await api.post(`/sales/${detail.id}/payment`, { amount });
+      setPayMsg(t(lang, 'paymentDone'));
+      setPayAmount('');
+      const fresh = await api.get(`/sales/${detail.id}`);
+      setDetail(fresh.sale as SaleDetail);
+      await loadRecent();
+    } catch (err) {
+      setPayError(err instanceof Error ? err.message : 'Error');
+    }
+    setRetBusy(false);
+  };
+
+  const submitVoid = async () => {
+    if (!detail) return;
+    if (!voidArm) {
+      setVoidArm(true);
+      return;
+    }
+    setRetError('');
+    setRetMsg('');
+    setRetBusy(true);
+    try {
+      const data = await api.post(`/sales/${detail.id}/void`, {});
+      setRetMsg(
+        `${t(lang, 'voidedFull')} — ${t(lang, 'refundTotal')}: ${fmt(Number(data.refund_total))} ${t(lang, 'currency')}`
+      );
+      setVoidArm(false);
       const fresh = await api.get(`/sales/${detail.id}`);
       setDetail(fresh.sale as SaleDetail);
       await Promise.all([loadStock(), loadRecent()]);
@@ -1286,6 +1415,28 @@ function SalesPage({ lang }: { lang: Lang }) {
               {fmt(net)} {t(lang, 'currency')}
             </span>
           </div>
+          <div className="total-row">
+            <span>{t(lang, 'paidAmount')}</span>
+            <input
+              className="discount-input"
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder={fmt(net)}
+              value={paid}
+              onChange={(e) => setPaid(e.target.value)}
+            />
+          </div>
+          {duePreview > 0 && (
+            <div className="total-row">
+              <span>
+                {t(lang, 'dueAmount')} ({t(lang, 'credit')})
+              </span>
+              <span>
+                {fmt(duePreview)} {t(lang, 'currency')}
+              </span>
+            </div>
+          )}
 
           {error && <div className="error-box">{error}</div>}
           {msg && <div className="success-box">{msg}</div>}
@@ -1297,11 +1448,47 @@ function SalesPage({ lang }: { lang: Lang }) {
           >
             {busy ? t(lang, 'loading') : t(lang, 'completeSale')}
           </button>
+          {lastSaleId && (
+            <button
+              className="btn-secondary"
+              style={{ width: '100%', marginTop: 8 }}
+              onClick={() => printSale(lastSaleId)}
+            >
+              🧾 {t(lang, 'printReceipt')}
+            </button>
+          )}
         </div>
       </div>
 
       <div className="panel">
         <h3>🧾 {t(lang, 'recentBills')}</h3>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+          <input
+            className="field-select"
+            style={{ flex: '1 1 220px' }}
+            placeholder={t(lang, 'searchBillsPh')}
+            value={billQuery}
+            onChange={(e) => setBillQuery(e.target.value)}
+          />
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span className="muted">{t(lang, 'fromDate')}</span>
+            <input
+              className="field-select"
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+            />
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span className="muted">{t(lang, 'toDate')}</span>
+            <input
+              className="field-select"
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+            />
+          </label>
+        </div>
         {recent.length === 0 ? (
           <p className="muted">—</p>
         ) : (
@@ -1323,29 +1510,47 @@ function SalesPage({ lang }: { lang: Lang }) {
                 const fullyReturned = soldQty > 0 && retQty >= soldQty;
                 const partiallyReturned = retQty > 0 && !fullyReturned;
                 const displayTotal = Math.max(0, Number(s.net_total) - refunded);
+                const due = Number(s.due_amount || 0);
+                const isVoided = Number(s.voided || 0) === 1;
                 return (
-                  <tr key={s.id} style={fullyReturned ? { opacity: 0.65 } : undefined}>
+                  <tr key={s.id} style={fullyReturned || isVoided ? { opacity: 0.65 } : undefined}>
                     <td>
                       {s.invoice_no}
                       <span className="muted">
                         {' '}
                         · {String(s.sale_date).slice(0, 10)} {String(s.sale_date).slice(11, 16)}
                       </span>{' '}
-                      {fullyReturned && (
+                      {isVoided ? (
+                        <span className="badge expired">🚫 {t(lang, 'voidedFull')}</span>
+                      ) : fullyReturned ? (
                         <span className="badge returned">↩️ {t(lang, 'returnedFull')}</span>
-                      )}
-                      {partiallyReturned && (
+                      ) : partiallyReturned ? (
                         <span className="badge warning">↩️ {t(lang, 'returnedPartial')}</span>
-                      )}
+                      ) : null}
                     </td>
                     <td>{s.customer_name || t(lang, 'walkIn')}</td>
-                    <td>{fmt(displayTotal)}</td>
                     <td>
-                      {!fullyReturned && (
-                        <button className="btn-secondary" onClick={() => openReturn(s.id)}>
-                          ↩️ {t(lang, 'returnSale')}
-                        </button>
+                      {fmt(displayTotal)}
+                      {due > 0 && (
+                        <>
+                          {' '}
+                          <span className="badge warning">
+                            {t(lang, 'credit')}: {fmt(due)}
+                          </span>
+                        </>
                       )}
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <button className="btn-secondary" onClick={() => printSale(s.id)}>
+                          🧾 {t(lang, 'printReceipt')}
+                        </button>
+                        {!fullyReturned && !isVoided && (
+                          <button className="btn-secondary" onClick={() => openReturn(s.id)}>
+                            ↩️ {t(lang, 'returnSale')}
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -1415,18 +1620,162 @@ function SalesPage({ lang }: { lang: Lang }) {
               {fmt(refundPreview)} {t(lang, 'currency')}
             </span>
           </div>
+
+          <div className="total-row">
+            <span>{t(lang, 'paidTotal')}</span>
+            <span>
+              {fmt(Number(detail.paid_total || 0))} {t(lang, 'currency')}
+            </span>
+          </div>
+          {detailDue > 0 && (
+            <div className="total-row">
+              <span>
+                {t(lang, 'dueAmount')} ({t(lang, 'credit')})
+              </span>
+              <span>
+                {fmt(detailDue)} {t(lang, 'currency')}
+              </span>
+            </div>
+          )}
+          {(detail.payments || []).map((p) => (
+            <div className="total-row" key={p.id}>
+              <span className="muted">
+                💵 {String(p.created_at).slice(0, 10)} {String(p.created_at).slice(11, 16)}
+              </span>
+              <span>
+                {fmt(Number(p.amount))} {t(lang, 'currency')}
+              </span>
+            </div>
+          ))}
+
+          {detailDue > 0 && !detail.voided_at && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+              <input
+                className="discount-input"
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder={t(lang, 'paidAmount')}
+                value={payAmount}
+                onChange={(e) => setPayAmount(e.target.value)}
+              />
+              <button className="btn-secondary" onClick={submitPayment} disabled={retBusy}>
+                💵 {t(lang, 'recordPayment')}
+              </button>
+            </div>
+          )}
+          {payError && <div className="error-box">{payError}</div>}
+          {payMsg && <div className="success-box">{payMsg}</div>}
+
           {retError && <div className="error-box">{retError}</div>}
           {retMsg && <div className="success-box">{retMsg}</div>}
-          <div style={{ display: 'flex', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             <button className="btn-save" onClick={submitReturn} disabled={retBusy}>
               {retBusy ? t(lang, 'loading') : t(lang, 'doReturn')}
             </button>
+            <button className="btn-secondary" onClick={() => setReceipt(detail)} disabled={retBusy}>
+              🧾 {t(lang, 'printReceipt')}
+            </button>
+            {detail.voided_at ? (
+              <span className="badge expired">🚫 {t(lang, 'voidedFull')}</span>
+            ) : !detailAllReturned ? (
+              <button
+                className={voidArm ? 'btn-danger armed' : 'btn-danger'}
+                onClick={submitVoid}
+                disabled={retBusy}
+              >
+                {voidArm ? `⚠️ ${t(lang, 'confirmVoidQ')}` : `🚫 ${t(lang, 'voidBill')}`}
+              </button>
+            ) : null}
             <button className="btn-secondary" onClick={() => setDetail(null)} disabled={retBusy}>
               {t(lang, 'closeBtn')}
             </button>
           </div>
         </div>
       )}
+
+      {receipt &&
+        createPortal(
+          <div id="receipt-print">
+          <div style={{ textAlign: 'center', marginBottom: 6 }}>
+            <div style={{ fontSize: 16, fontWeight: 700 }}>{branch?.name || 'Pharmacy'}</div>
+            {branch?.address && <div>{branch.address}</div>}
+            {branch?.phone && <div>{branch.phone}</div>}
+          </div>
+          <div style={{ borderTop: '1px dashed #000', paddingTop: 4 }}>
+            <div>
+              {t(lang, 'invoice')}: {receipt.invoice_no}
+            </div>
+            <div>
+              {String(receipt.sale_date).slice(0, 10)} {String(receipt.sale_date).slice(11, 16)}
+            </div>
+            <div>
+              {t(lang, 'customer')}: {receipt.customer_name || t(lang, 'walkIn')}
+            </div>
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 6 }}>
+            <tbody>
+              {receipt.items.map((it) => (
+                <tr key={it.item_id}>
+                  <td style={{ padding: '2px 0' }}>
+                    {it.medicine_name}
+                    <br />
+                    <span>
+                      {fmt(it.quantity)} × {fmt(Number(it.unit_price))}
+                    </span>
+                  </td>
+                  <td style={{ textAlign: 'right', verticalAlign: 'top', padding: '2px 0' }}>
+                    {fmt(it.quantity * Number(it.unit_price))}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{ borderTop: '1px dashed #000', marginTop: 6, paddingTop: 4 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>{t(lang, 'subtotal')}</span>
+              <span>{fmt(Number(receipt.total_amount))}</span>
+            </div>
+            {Number(receipt.discount) > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span>{t(lang, 'discount')}</span>
+                <span>−{fmt(Number(receipt.discount))}</span>
+              </div>
+            )}
+            <div
+              style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: 14 }}
+            >
+              <span>{t(lang, 'netTotal')}</span>
+              <span>
+                {fmt(Number(receipt.net_total))} {t(lang, 'currency')}
+              </span>
+            </div>
+            {Number(receipt.refunded_total || 0) > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span>{t(lang, 'returnedFull')}</span>
+                <span>−{fmt(Number(receipt.refunded_total || 0))}</span>
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>{t(lang, 'paidTotal')}</span>
+              <span>{fmt(Number(receipt.paid_total || 0))}</span>
+            </div>
+            {Number(receipt.due_amount || 0) > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700 }}>
+                <span>{t(lang, 'dueAmount')}</span>
+                <span>{fmt(Number(receipt.due_amount || 0))}</span>
+              </div>
+            )}
+            {receipt.voided_at && (
+              <div style={{ textAlign: 'center', fontWeight: 700, marginTop: 4 }}>
+                🚫 {t(lang, 'voidedFull')}
+              </div>
+            )}
+          </div>
+          <div style={{ textAlign: 'center', marginTop: 8 }}>{t(lang, 'thankYou')}</div>
+          </div>,
+          document.body
+        )}
     </>
   );
 }
@@ -2128,6 +2477,7 @@ function CustomersPage({ lang }: { lang: Lang }) {
               <tr>
                 <th>{t(lang, 'name')}</th>
                 <th>{t(lang, 'phone')}</th>
+                <th>{t(lang, 'dueAmount')}</th>
                 <th>{t(lang, 'registeredOn')}</th>
                 <th></th>
               </tr>
@@ -2142,6 +2492,15 @@ function CustomersPage({ lang }: { lang: Lang }) {
                 >
                   <td>{r.name}</td>
                   <td>{r.phone || '—'}</td>
+                  <td>
+                    {Number(r.due_total || 0) > 0 ? (
+                      <span className="badge warning">
+                        {t(lang, 'credit')}: {fmt(Number(r.due_total))} {t(lang, 'currency')}
+                      </span>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
                   <td>{String(r.created_at).slice(0, 10)}</td>
                   <td onClick={(e) => e.stopPropagation()}>
                     {editingId === r.id ? (
