@@ -161,19 +161,43 @@ router.post('/', authRequired, async (req, res) => {
   }
 });
 
-// GET /api/sales — newest first
+// GET /api/sales — newest first. Each row also carries its returns state
+// (items sold vs returned, and the refunded amount at sale prices) so the
+// bills list can mark returned bills and show the net amount still standing.
 router.get('/', authRequired, async (req, res) => {
   try {
     const [rows] = await pool.query(
       `SELECT s.id, s.invoice_no, s.sale_date, s.total_amount, s.discount, s.net_total,
-              c.name AS customer_name
+              c.name AS customer_name,
+              COALESCE(si.items_sold, 0) AS items_sold,
+              COALESCE(rt.items_returned, 0) AS items_returned,
+              COALESCE(rt.refunded_total, 0) AS refunded_total
        FROM sales s
        LEFT JOIN customers c ON c.id = s.customer_id
+       LEFT JOIN (
+         SELECT sale_id, SUM(quantity) AS items_sold
+         FROM sale_items GROUP BY sale_id
+       ) si ON si.sale_id = s.id
+       LEFT JOIN (
+         SELECT st.reference_id AS sale_id,
+                SUM(st.quantity_change) AS items_returned,
+                SUM(st.quantity_change * i.unit_price) AS refunded_total
+         FROM stock_transactions st
+         JOIN sale_items i ON i.sale_id = st.reference_id AND i.batch_id = st.batch_id
+         WHERE st.type = 'sale_return'
+         GROUP BY st.reference_id
+       ) rt ON rt.sale_id = s.id
        WHERE s.branch_id = ? AND s.is_deleted = 0
        ORDER BY s.sale_date DESC, s.created_at DESC`,
       [req.user.branch_id]
     );
-    return res.json({ status: 'ok', sales: rows });
+    const sales = rows.map((r) => ({
+      ...r,
+      items_sold: Number(r.items_sold),
+      items_returned: Number(r.items_returned),
+      refunded_total: Math.round(Number(r.refunded_total) * 100) / 100,
+    }));
+    return res.json({ status: 'ok', sales });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
   }

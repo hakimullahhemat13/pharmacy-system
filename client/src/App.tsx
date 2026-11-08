@@ -26,7 +26,7 @@ interface Batch {
   quantity_on_hand: number;
   medicine_name: string;
   days_remaining: number;
-  level: 'expired' | 'critical' | 'warning';
+  level: 'expired' | 'critical' | 'warning' | 'ok';
 }
 
 interface StockRow {
@@ -101,6 +101,9 @@ interface SaleRow {
   sale_date: string;
   net_total: number | string;
   customer_name: string | null;
+  items_sold?: number;
+  items_returned?: number;
+  refunded_total?: number;
 }
 
 interface MedOption {
@@ -147,7 +150,7 @@ interface MonthRow {
   profit: number;
 }
 
-type Page = 'dashboard' | 'medicines' | 'sales' | 'purchases' | 'reports' | 'customers' | 'backup' | 'settings';
+type Page = 'dashboard' | 'medicines' | 'expiry' | 'sales' | 'purchases' | 'reports' | 'customers' | 'backup' | 'settings';
 
 const USER_KEY = 'pharmacy_user';
 const LANG_KEY = 'pharmacy_lang';
@@ -223,6 +226,7 @@ export default function App() {
   const menu: { key: Page; label: string }[] = [
     { key: 'dashboard', label: t(lang, 'dashboard') },
     { key: 'medicines', label: t(lang, 'medicines') },
+    { key: 'expiry', label: t(lang, 'expiryDates') },
     { key: 'sales', label: t(lang, 'sales') },
     { key: 'purchases', label: t(lang, 'purchases') },
     { key: 'reports', label: t(lang, 'reports') },
@@ -257,13 +261,14 @@ export default function App() {
       <main className="main">
         {page === 'dashboard' && <Dashboard lang={lang} />}
         {page === 'medicines' && <Medicines lang={lang} />}
+        {page === 'expiry' && <ExpiryPage lang={lang} />}
         {page === 'sales' && <SalesPage lang={lang} />}
         {page === 'purchases' && <PurchasesPage lang={lang} />}
         {page === 'reports' && <ReportsPage lang={lang} />}
         {page === 'customers' && <CustomersPage lang={lang} />}
         {page === 'backup' && <BackupPage lang={lang} onLogout={logout} />}
         {page === 'settings' && <SettingsPage lang={lang} user={user} setLang={setLang} />}
-        {page !== 'dashboard' && page !== 'medicines' && page !== 'sales' && page !== 'purchases' && page !== 'reports' && page !== 'customers' && page !== 'backup' && page !== 'settings' && (
+        {page !== 'dashboard' && page !== 'medicines' && page !== 'expiry' && page !== 'sales' && page !== 'purchases' && page !== 'reports' && page !== 'customers' && page !== 'backup' && page !== 'settings' && (
           <>
             <h2>{menu.find((m) => m.key === page)?.label}</h2>
             <div className="panel">
@@ -383,7 +388,9 @@ function Dashboard({ lang }: { lang: Lang }) {
       ? t(lang, 'levelExpired')
       : level === 'critical'
         ? t(lang, 'levelCritical')
-        : t(lang, 'levelWarning');
+        : level === 'warning'
+          ? t(lang, 'levelWarning')
+          : t(lang, 'levelOk');
 
   return (
     <>
@@ -450,6 +457,134 @@ function Dashboard({ lang }: { lang: Lang }) {
               ))}
             </tbody>
           </table>
+        )}
+      </div>
+    </>
+  );
+}
+
+// All expiry dates, always visible — unlike the dashboard warnings, which
+// only show a batch once its own warning window is reached. Every batch
+// with stock is listed, soonest-expiring first, with search and a filter.
+interface ExpiryBatch {
+  batch_id: string;
+  batch_no: string;
+  expiry_date: string;
+  quantity_on_hand: number;
+  medicine_name: string;
+  company: string | null;
+  barcode: string | null;
+  warn_months: number;
+  days_remaining: number;
+  level: 'expired' | 'critical' | 'warning' | 'ok';
+}
+
+type ExpiryFilter = 'all' | 'expired' | 'warning' | 'ok';
+
+function ExpiryPage({ lang }: { lang: Lang }) {
+  const [rows, setRows] = useState<ExpiryBatch[]>([]);
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<ExpiryFilter>('all');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    api
+      .get('/stock/all-batches')
+      .then((data) => setRows(data.batches as ExpiryBatch[]))
+      .catch((err) => setError(err instanceof Error ? err.message : 'Error'));
+  }, []);
+
+  const q = query.trim().toLowerCase();
+  const filtered = rows.filter((r) => {
+    if (filter === 'expired' && r.level !== 'expired') return false;
+    if (filter === 'warning' && r.level !== 'warning' && r.level !== 'critical') return false;
+    if (filter === 'ok' && r.level !== 'ok') return false;
+    return (
+      !q ||
+      r.medicine_name.toLowerCase().includes(q) ||
+      (r.company || '').toLowerCase().includes(q) ||
+      r.batch_no.toLowerCase().includes(q)
+    );
+  });
+
+  const expiredCount = rows.filter((r) => r.level === 'expired').length;
+  const warnCount = rows.filter((r) => r.level === 'warning' || r.level === 'critical').length;
+  const levelLabel = (level: ExpiryBatch['level']) =>
+    level === 'expired'
+      ? t(lang, 'levelExpired')
+      : level === 'critical'
+        ? t(lang, 'levelCritical')
+        : level === 'warning'
+          ? t(lang, 'levelWarning')
+          : t(lang, 'levelOk');
+
+  const filters: { key: ExpiryFilter; label: string }[] = [
+    { key: 'all', label: `${t(lang, 'filterAll')} (${rows.length})` },
+    { key: 'expired', label: `${t(lang, 'filterExpired')} (${expiredCount})` },
+    { key: 'warning', label: `${t(lang, 'filterWarning')} (${warnCount})` },
+    { key: 'ok', label: `${t(lang, 'filterOk')} (${rows.length - expiredCount - warnCount})` },
+  ];
+
+  return (
+    <>
+      <h2>{t(lang, 'expiryDates')}</h2>
+      <p className="muted" style={{ fontSize: 14, marginTop: 0 }}>
+        {t(lang, 'expiryDatesDesc')}
+      </p>
+      {error && <div className="error-box">{error}</div>}
+      <div className="tabs">
+        {filters.map((f) => (
+          <button
+            key={f.key}
+            className={filter === f.key ? 'active' : ''}
+            onClick={() => setFilter(f.key)}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+      <input
+        className="search-input"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder={t(lang, 'searchExpiry')}
+      />
+      <div className="panel">
+        {filtered.length === 0 ? (
+          <p className="empty-note">{rows.length === 0 ? t(lang, 'noBatches') : t(lang, 'noResults')}</p>
+        ) : (
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>{t(lang, 'medicine')}</th>
+                  <th>{t(lang, 'company')}</th>
+                  <th>{t(lang, 'batch')}</th>
+                  <th>{t(lang, 'expiryDate')}</th>
+                  <th>{t(lang, 'daysLeft')}</th>
+                  <th>{t(lang, 'qty')}</th>
+                  <th>{t(lang, 'warnMonthsCol')}</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((b) => (
+                  <tr key={b.batch_id} className={b.level === 'expired' ? 'row-expired' : ''}>
+                    <td>{b.medicine_name}</td>
+                    <td>{b.company || '—'}</td>
+                    <td>{b.batch_no}</td>
+                    <td>{String(b.expiry_date).slice(0, 10)}</td>
+                    <td>{b.days_remaining}</td>
+                    <td>{b.quantity_on_hand}</td>
+                    <td>{b.warn_months ?? 3}</td>
+                    <td>
+                      <span className={`badge ${b.level}`}>{levelLabel(b.level)}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </>
@@ -1180,24 +1315,40 @@ function SalesPage({ lang }: { lang: Lang }) {
               </tr>
             </thead>
             <tbody>
-              {recent.map((s) => (
-                <tr key={s.id}>
-                  <td>
-                    {s.invoice_no}
-                    <span className="muted">
-                      {' '}
-                      · {String(s.sale_date).slice(0, 10)} {String(s.sale_date).slice(11, 16)}
-                    </span>
-                  </td>
-                  <td>{s.customer_name || t(lang, 'walkIn')}</td>
-                  <td>{fmt(Number(s.net_total))}</td>
-                  <td>
-                    <button className="btn-secondary" onClick={() => openReturn(s.id)}>
-                      ↩️ {t(lang, 'returnSale')}
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {recent.map((s) => {
+                const soldQty = Number(s.items_sold || 0);
+                const retQty = Number(s.items_returned || 0);
+                const refunded = Number(s.refunded_total || 0);
+                const fullyReturned = soldQty > 0 && retQty >= soldQty;
+                const partiallyReturned = retQty > 0 && !fullyReturned;
+                const displayTotal = Math.max(0, Number(s.net_total) - refunded);
+                return (
+                  <tr key={s.id} style={fullyReturned ? { opacity: 0.65 } : undefined}>
+                    <td>
+                      {s.invoice_no}
+                      <span className="muted">
+                        {' '}
+                        · {String(s.sale_date).slice(0, 10)} {String(s.sale_date).slice(11, 16)}
+                      </span>{' '}
+                      {fullyReturned && (
+                        <span className="badge returned">↩️ {t(lang, 'returnedFull')}</span>
+                      )}
+                      {partiallyReturned && (
+                        <span className="badge warning">↩️ {t(lang, 'returnedPartial')}</span>
+                      )}
+                    </td>
+                    <td>{s.customer_name || t(lang, 'walkIn')}</td>
+                    <td>{fmt(displayTotal)}</td>
+                    <td>
+                      {!fullyReturned && (
+                        <button className="btn-secondary" onClick={() => openReturn(s.id)}>
+                          ↩️ {t(lang, 'returnSale')}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
