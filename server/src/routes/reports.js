@@ -119,7 +119,7 @@ router.get('/monthly', authRequired, async (req, res) => {
          FROM sale_items GROUP BY sale_id
        ) si ON si.sale_id = s.id
        WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at IS NULL AND s.sale_date >= ? AND s.sale_date < ?
-       GROUP BY DATE(s.sale_date)
+       GROUP BY DATE_FORMAT(s.sale_date, '%Y-%m-%d')
        ORDER BY day ASC`,
       [req.user.branch_id, start, end]
     );
@@ -131,7 +131,7 @@ router.get('/monthly', authRequired, async (req, res) => {
        JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
        JOIN sales sv ON sv.id = sr.reference_id AND sv.voided_at IS NULL
        WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at >= ? AND sr.created_at < ?
-       GROUP BY DATE(sr.created_at)`,
+       GROUP BY DATE_FORMAT(sr.created_at, '%Y-%m-%d')`,
       [req.user.branch_id, start, end]
     );
     const retByDay = new Map(
@@ -359,7 +359,7 @@ router.get('/export', authRequired, async (req, res) => {
            FROM sale_items GROUP BY sale_id
          ) si ON si.sale_id = s.id
          WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at IS NULL AND s.sale_date >= ? AND s.sale_date < ?
-         GROUP BY DATE(s.sale_date)
+         GROUP BY DATE_FORMAT(s.sale_date, '%Y-%m-%d')
          ORDER BY day ASC`,
         [branchId, start, end]
       );
@@ -371,7 +371,7 @@ router.get('/export', authRequired, async (req, res) => {
          JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
          JOIN sales sv ON sv.id = sr.reference_id AND sv.voided_at IS NULL
          WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at >= ? AND sr.created_at < ?
-         GROUP BY DATE(sr.created_at)`,
+         GROUP BY DATE_FORMAT(sr.created_at, '%Y-%m-%d')`,
         [branchId, start, end]
       );
       const retByDay = new Map(retDays.map((r) => [String(r.day), { value: Number(r.value), cost: Number(r.cost) }]));
