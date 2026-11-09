@@ -149,17 +149,40 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
   }
 });
 
-// GET /api/purchases — newest first, with supplier name
+// GET /api/purchases — newest first, with supplier name and the value
+// already returned to the supplier. Optional filters: ?q= matches the
+// invoice number or the supplier name; ?from= / ?to= (YYYY-MM-DD) bound
+// the purchase date.
 router.get('/', authRequired, async (req, res) => {
   try {
+    const where = ['p.branch_id = ?', 'p.is_deleted = 0'];
+    const params = [req.user.branch_id];
+    const q = String(req.query.q || '').trim();
+    if (q) {
+      where.push('(p.invoice_no LIKE ? OR s.name LIKE ?)');
+      params.push(`%${q}%`, `%${q}%`);
+    }
+    if (isValidDateString(req.query.from)) {
+      where.push('DATE(p.purchase_date) >= ?');
+      params.push(req.query.from);
+    }
+    if (isValidDateString(req.query.to)) {
+      where.push('DATE(p.purchase_date) <= ?');
+      params.push(req.query.to);
+    }
     const [rows] = await pool.query(
-      `SELECT p.id, p.invoice_no, p.purchase_date, p.total_amount, p.paid_amount, p.notes,
-              s.name AS supplier_name
+      `SELECT p.id, p.supplier_id, p.invoice_no, p.purchase_date, p.total_amount, p.paid_amount, p.notes,
+              s.name AS supplier_name,
+              COALESCE(r.returned_total, 0) AS returned_total
        FROM purchases p
        LEFT JOIN suppliers s ON s.id = p.supplier_id
-       WHERE p.branch_id = ? AND p.is_deleted = 0
+       LEFT JOIN (
+         SELECT purchase_id, SUM(quantity * unit_price) AS returned_total
+         FROM purchase_returns WHERE is_deleted = 0 GROUP BY purchase_id
+       ) r ON r.purchase_id = p.id
+       WHERE ${where.join(' AND ')}
        ORDER BY p.purchase_date DESC, p.created_at DESC`,
-      [req.user.branch_id]
+      params
     );
     return res.json({ status: 'ok', purchases: rows });
   } catch (err) {
@@ -183,16 +206,107 @@ router.get('/:id', authRequired, async (req, res) => {
     }
     const [items] = await pool.query(
       `SELECT pi.id, pi.medicine_id, m.name AS medicine_name, pi.batch_id, b.batch_no, b.expiry_date,
-              pi.quantity, pi.purchase_price
+              pi.quantity, pi.purchase_price,
+              COALESCE(r.returned_quantity, 0) AS returned_quantity
        FROM purchase_items pi
        JOIN medicines m ON m.id = pi.medicine_id
        JOIN medicine_batches b ON b.id = pi.batch_id
+       LEFT JOIN (
+         SELECT purchase_item_id, SUM(quantity) AS returned_quantity
+         FROM purchase_returns WHERE is_deleted = 0 GROUP BY purchase_item_id
+       ) r ON r.purchase_item_id = pi.id
        WHERE pi.purchase_id = ?`,
       [req.params.id]
     );
-    return res.json({ status: 'ok', purchase: { ...head[0], items } });
+    const returnedTotal = items.reduce(
+      (sum, it) => sum + Number(it.returned_quantity) * Number(it.purchase_price),
+      0
+    );
+    return res.json({ status: 'ok', purchase: { ...head[0], returned_total: returnedTotal, items } });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+});
+
+// POST /api/purchases/:id/return  (admin or pharmacist)
+// Send units of this purchase back to the supplier. Body:
+//   { items: [ { purchase_item_id, quantity } ] }
+// One transaction: stock leaves the batch it came in on, a
+// 'purchase_return' ledger row is written, and the return is recorded in
+// purchase_returns so the supplier's account drops by the same value.
+// A return can never exceed what was bought minus what was already
+// returned, nor what the batch still physically holds.
+router.post('/:id/return', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
+  const branchId = req.user.branch_id;
+  const rawItems = Array.isArray((req.body || {}).items) ? req.body.items : [];
+  const wanted = rawItems.filter((it) => it && Number(it.quantity) > 0);
+  if (wanted.length === 0) {
+    return res.status(400).json({ status: 'error', message: 'Nothing to return: set a quantity above zero' });
+  }
+  for (const it of wanted) {
+    if (!Number.isInteger(Number(it.quantity))) {
+      return res.status(400).json({ status: 'error', message: 'Return quantities must be whole numbers' });
+    }
+  }
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const [head] = await conn.query(
+      'SELECT id FROM purchases WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
+      [req.params.id, branchId]
+    );
+    if (head.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ status: 'error', message: 'Purchase not found' });
+    }
+    let returnedTotal = 0;
+    for (const it of wanted) {
+      const qty = Number(it.quantity);
+      const [rows] = await conn.query(
+        `SELECT pi.id, pi.medicine_id, pi.batch_id, pi.quantity, pi.purchase_price,
+                b.quantity_on_hand, m.name AS medicine_name
+         FROM purchase_items pi
+         JOIN medicine_batches b ON b.id = pi.batch_id
+         JOIN medicines m ON m.id = pi.medicine_id
+         WHERE pi.id = ? AND pi.purchase_id = ? LIMIT 1`,
+        [String(it.purchase_item_id || ''), req.params.id]
+      );
+      if (rows.length === 0) {
+        await conn.rollback();
+        return res.status(400).json({ status: 'error', message: 'An item does not belong to this purchase' });
+      }
+      const item = rows[0];
+      const [ret] = await conn.query(
+        'SELECT COALESCE(SUM(quantity), 0) AS returned_qty FROM purchase_returns WHERE purchase_item_id = ? AND is_deleted = 0',
+        [item.id]
+      );
+      const alreadyReturned = Number(ret[0].returned_qty);
+      const maxReturnable = Math.min(Number(item.quantity) - alreadyReturned, Number(item.quantity_on_hand));
+      if (qty > maxReturnable) {
+        await conn.rollback();
+        return res.status(400).json({
+          status: 'error',
+          message: `Cannot return ${qty} of ${item.medicine_name}: only ${maxReturnable} can still be returned (${alreadyReturned} already returned, ${item.quantity_on_hand} on hand)`,
+        });
+      }
+      await conn.query('UPDATE medicine_batches SET quantity_on_hand = quantity_on_hand - ? WHERE id = ?', [qty, item.batch_id]);
+      await conn.query(
+        "INSERT INTO stock_transactions (id, branch_id, medicine_id, batch_id, type, quantity_change, reference_id, created_by) VALUES (?, ?, ?, ?, 'purchase_return', ?, ?, ?)",
+        [uuidv4(), branchId, item.medicine_id, item.batch_id, -qty, req.params.id, req.user.id]
+      );
+      await conn.query(
+        'INSERT INTO purchase_returns (id, branch_id, purchase_id, purchase_item_id, batch_id, quantity, unit_price, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [uuidv4(), branchId, req.params.id, item.id, item.batch_id, qty, item.purchase_price, req.user.id]
+      );
+      returnedTotal += qty * Number(item.purchase_price);
+    }
+    await conn.commit();
+    return res.json({ status: 'ok', returned_total: returnedTotal });
+  } catch (err) {
+    try { await conn.rollback(); } catch (_) { /* already rolled back */ }
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  } finally {
+    conn.release();
   }
 });
 
@@ -283,10 +397,15 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
     const [oldItems] = await conn.query(
       `SELECT pi.id, pi.medicine_id, pi.batch_id, pi.quantity, pi.purchase_price,
               b.batch_no, DATE_FORMAT(b.expiry_date, '%Y-%m-%d') AS expiry_date,
-              m.name AS medicine_name
+              m.name AS medicine_name,
+              COALESCE(r.returned_qty, 0) AS returned_qty
        FROM purchase_items pi
        JOIN medicine_batches b ON b.id = pi.batch_id
        JOIN medicines m ON m.id = pi.medicine_id
+       LEFT JOIN (
+         SELECT purchase_item_id, SUM(quantity) AS returned_qty
+         FROM purchase_returns WHERE is_deleted = 0 GROUP BY purchase_item_id
+       ) r ON r.purchase_item_id = pi.id
        WHERE pi.purchase_id = ?`,
       [purchase.id]
     );
@@ -336,9 +455,15 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
     };
 
     // Rows the edit no longer lists: take their stock back out, drop the row.
+    // A row with supplier returns can never be dropped — its returns point at it.
     const keptIds = new Set(items.filter((it) => it.id).map((it) => String(it.id)));
     for (const old of oldItems) {
       if (!keptIds.has(old.id)) {
+        if (Number(old.returned_qty) > 0) {
+          throw badRequest(
+            `Cannot remove ${old.medicine_name}: ${old.returned_qty} units were already returned to the supplier`
+          );
+        }
         await takeOut(old, Number(old.quantity));
         await conn.query('DELETE FROM purchase_items WHERE id = ?', [old.id]);
       }
@@ -362,7 +487,13 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
       }
 
       if (old && old.medicine_id === medId && String(old.batch_no) === batchNo && String(old.expiry_date) === String(it.expiry_date)) {
-        // Same batch: only the difference moves.
+        // Same batch: only the difference moves. The quantity can never
+        // drop below what was already returned to the supplier.
+        if (qty < Number(old.returned_qty)) {
+          throw badRequest(
+            `Quantity of ${old.medicine_name} cannot be less than the ${old.returned_qty} already returned to the supplier`
+          );
+        }
         const delta = qty - Number(old.quantity);
         if (delta > 0) {
           await conn.query('UPDATE medicine_batches SET quantity_on_hand = quantity_on_hand + ? WHERE id = ?', [delta, old.batch_id]);
@@ -376,7 +507,13 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
         await conn.query('UPDATE purchase_items SET quantity = ?, purchase_price = ? WHERE id = ?', [qty, price, old.id]);
       } else {
         // New row, or the row moved to another medicine/batch: out of the
-        // old batch (if any), into the resolved one.
+        // old batch (if any), into the resolved one. A row with supplier
+        // returns cannot move — its returns point at the original batch.
+        if (old && Number(old.returned_qty) > 0) {
+          throw badRequest(
+            `Cannot move ${old.medicine_name} to another batch: ${old.returned_qty} units were already returned to the supplier`
+          );
+        }
         if (old) {
           await takeOut(old, Number(old.quantity));
         }

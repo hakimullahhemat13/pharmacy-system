@@ -36,7 +36,14 @@ async function supplierMoney(db, branchId, supplierId) {
      WHERE branch_id = ? AND supplier_id = ? AND is_deleted = 0`,
     [branchId, supplierId]
   );
-  const purchasesTotal = Number(p[0].purchases_total);
+  const [ret] = await db.query(
+    `SELECT COALESCE(SUM(pr.quantity * pr.unit_price), 0) AS returns_total
+     FROM purchase_returns pr
+     JOIN purchases pu ON pu.id = pr.purchase_id
+     WHERE pu.branch_id = ? AND pu.supplier_id = ? AND pr.is_deleted = 0 AND pu.is_deleted = 0`,
+    [branchId, supplierId]
+  );
+  const purchasesTotal = Number(p[0].purchases_total) - Number(ret[0].returns_total);
   const paidTotal = Number(p[0].paid_at_purchase) + Number(pay[0].payments_total);
   return {
     purchases_total: purchasesTotal,
@@ -79,7 +86,7 @@ router.get('/', authRequired, async (req, res) => {
   try {
     const [rows] = await pool.query(
       `SELECT s.id, s.branch_id, s.name, s.phone, s.address, s.created_at,
-              COALESCE(p.purchases_total, 0) AS purchases_total,
+              COALESCE(p.purchases_total, 0) - COALESCE(r.returns_total, 0) AS purchases_total,
               COALESCE(p.paid_at_purchase, 0) + COALESCE(pay.payments_total, 0) AS paid_total
        FROM suppliers s
        LEFT JOIN (
@@ -92,9 +99,16 @@ router.get('/', authRequired, async (req, res) => {
          FROM supplier_payments WHERE branch_id = ? AND is_deleted = 0
          GROUP BY supplier_id
        ) pay ON pay.supplier_id = s.id
+       LEFT JOIN (
+         SELECT pu.supplier_id, SUM(pr.quantity * pr.unit_price) AS returns_total
+         FROM purchase_returns pr
+         JOIN purchases pu ON pu.id = pr.purchase_id
+         WHERE pu.branch_id = ? AND pr.is_deleted = 0 AND pu.is_deleted = 0 AND pu.supplier_id IS NOT NULL
+         GROUP BY pu.supplier_id
+       ) r ON r.supplier_id = s.id
        WHERE s.branch_id = ? AND s.is_deleted = 0
        ORDER BY s.name`,
-      [req.user.branch_id, req.user.branch_id, req.user.branch_id]
+      [req.user.branch_id, req.user.branch_id, req.user.branch_id, req.user.branch_id]
     );
     const suppliers = rows.map((r) => ({
       ...r,
@@ -119,10 +133,15 @@ router.get('/:id', authRequired, async (req, res) => {
     }
     const money = await supplierMoney(pool, branchId, req.params.id);
     const [purchases] = await pool.query(
-      `SELECT id, invoice_no, purchase_date, total_amount, paid_amount
-       FROM purchases
-       WHERE branch_id = ? AND supplier_id = ? AND is_deleted = 0
-       ORDER BY purchase_date DESC, created_at DESC`,
+      `SELECT pu.id, pu.invoice_no, pu.purchase_date, pu.total_amount, pu.paid_amount,
+              COALESCE(r.returned_total, 0) AS returned_total
+       FROM purchases pu
+       LEFT JOIN (
+         SELECT purchase_id, SUM(quantity * unit_price) AS returned_total
+         FROM purchase_returns WHERE is_deleted = 0 GROUP BY purchase_id
+       ) r ON r.purchase_id = pu.id
+       WHERE pu.branch_id = ? AND pu.supplier_id = ? AND pu.is_deleted = 0
+       ORDER BY pu.purchase_date DESC, pu.created_at DESC`,
       [branchId, req.params.id]
     );
     const [payments] = await pool.query(

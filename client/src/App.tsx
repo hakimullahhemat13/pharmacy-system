@@ -154,11 +154,29 @@ interface SupplierDetail extends SupplierRow {
 
 interface PurchaseRow {
   id: string;
+  supplier_id: string | null;
   invoice_no: string | null;
   purchase_date: string;
   total_amount: number | string;
   paid_amount: number | string;
   supplier_name: string | null;
+  returned_total: number | string;
+}
+
+interface PurchaseDetailItem {
+  id: string;
+  medicine_id: string;
+  medicine_name: string;
+  batch_id: string;
+  batch_no: string;
+  expiry_date: string;
+  quantity: number;
+  purchase_price: number | string;
+  returned_quantity: number | string;
+}
+
+interface PurchaseDetail extends PurchaseRow {
+  items: PurchaseDetailItem[];
 }
 
 interface PurchaseItemDraft {
@@ -2247,9 +2265,14 @@ function SuppliersPage({ lang }: { lang: Lang }) {
             <tbody>
               {detail.purchases.map((p) => (
                 <tr key={p.id}>
-                  <td>{p.invoice_no || '—'}</td>
+                  <td>
+                    {p.invoice_no || '—'}{' '}
+                    {Number(p.returned_total || 0) > 0 && (
+                      <span className="badge warning">↩️ {t(lang, 'returnedPartial')}</span>
+                    )}
+                  </td>
                   <td>{String(p.purchase_date).slice(0, 10)}</td>
-                  <td>{fmt(Number(p.total_amount))}</td>
+                  <td>{fmt(Number(p.total_amount) - Number(p.returned_total || 0))}</td>
                   <td>{fmt(Number(p.paid_amount))}</td>
                 </tr>
               ))}
@@ -2289,14 +2312,27 @@ function PurchasesPage({ lang }: { lang: Lang }) {
   const [delArm, setDelArm] = useState('');
   const [listError, setListError] = useState('');
   const [listMsg, setListMsg] = useState('');
+  const [purQuery, setPurQuery] = useState('');
+  const [purFrom, setPurFrom] = useState('');
+  const [purTo, setPurTo] = useState('');
+  const [detail, setDetail] = useState<PurchaseDetail | null>(null);
+  const [retQtys, setRetQtys] = useState<Record<string, string>>({});
+  const [retError, setRetError] = useState('');
+  const [retMsg, setRetMsg] = useState('');
+  const [retBusy, setRetBusy] = useState(false);
 
   const loadSuppliers = async () => {
     const data = await api.get('/suppliers');
     setSuppliers(data.suppliers as Supplier[]);
   };
   const loadPurchases = async () => {
-    const data = await api.get('/purchases');
-    setPurchases((data.purchases as PurchaseRow[]).slice(0, 8));
+    const params = new URLSearchParams();
+    if (purQuery.trim()) params.set('q', purQuery.trim());
+    if (purFrom) params.set('from', purFrom);
+    if (purTo) params.set('to', purTo);
+    const qs = params.toString();
+    const data = await api.get(`/purchases${qs ? `?${qs}` : ''}`);
+    setPurchases(data.purchases as PurchaseRow[]);
   };
 
   useEffect(() => {
@@ -2369,6 +2405,47 @@ function PurchasesPage({ lang }: { lang: Lang }) {
       setListError(err instanceof Error ? err.message : 'Error');
       setDelArm('');
     }
+  };
+
+  useEffect(() => {
+    loadPurchases().catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [purQuery, purFrom, purTo]);
+
+  const openDetail = async (id: string) => {
+    setRetQtys({});
+    setRetError('');
+    setRetMsg('');
+    try {
+      const data = await api.get(`/purchases/${id}`);
+      setDetail(data.purchase as PurchaseDetail);
+    } catch (err) {
+      setListError(err instanceof Error ? err.message : 'Error');
+    }
+  };
+
+  const submitReturn = async () => {
+    if (!detail) return;
+    setRetError('');
+    setRetMsg('');
+    const items = detail.items
+      .map((it) => ({ purchase_item_id: it.id, quantity: Number(retQtys[it.id] || 0) }))
+      .filter((x) => x.quantity > 0);
+    if (items.length === 0) {
+      setRetError(t(lang, 'returnQty'));
+      return;
+    }
+    setRetBusy(true);
+    try {
+      const data = await api.post(`/purchases/${detail.id}/return`, { items });
+      setRetMsg(
+        `✅ ${t(lang, 'returnDone')} — ${fmt(Number(data.returned_total))} ${t(lang, 'currency')}`
+      );
+      await Promise.all([openDetail(detail.id), loadPurchases()]);
+    } catch (err) {
+      setRetError(err instanceof Error ? err.message : 'Error');
+    }
+    setRetBusy(false);
   };
 
   const setRow = (idx: number, key: keyof PurchaseItemDraft, value: string) =>
@@ -2619,57 +2696,180 @@ function PurchasesPage({ lang }: { lang: Lang }) {
 
       <div className="panel">
         <h3>📦 {t(lang, 'recentPurchases')}</h3>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+          <input
+            className="field-select"
+            style={{ flex: '1 1 220px' }}
+            placeholder={t(lang, 'searchPurchase')}
+            value={purQuery}
+            onChange={(e) => setPurQuery(e.target.value)}
+          />
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span className="muted">{t(lang, 'fromDate')}</span>
+            <input
+              className="field-select"
+              type="date"
+              value={purFrom}
+              onChange={(e) => setPurFrom(e.target.value)}
+            />
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span className="muted">{t(lang, 'toDate')}</span>
+            <input
+              className="field-select"
+              type="date"
+              value={purTo}
+              onChange={(e) => setPurTo(e.target.value)}
+            />
+          </label>
+        </div>
         {listError && <div className="error-box">{listError}</div>}
         {listMsg && <div className="success-box">{listMsg}</div>}
         {purchases.length === 0 ? (
           <p className="muted">—</p>
         ) : (
-          <table>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>{t(lang, 'invoiceNo')}</th>
+                  <th>{t(lang, 'supplier')}</th>
+                  <th>{t(lang, 'dateLabel')}</th>
+                  <th>{t(lang, 'lineTotal')}</th>
+                  <th>{t(lang, 'paidAmount')}</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {purchases.map((p) => {
+                  const returned = Number(p.returned_total || 0);
+                  const net = Number(p.total_amount) - returned;
+                  return (
+                    <tr key={p.id}>
+                      <td>
+                        {p.invoice_no || '—'}{' '}
+                        {returned > 0 &&
+                          (net <= 0 ? (
+                            <span className="badge returned">↩️ {t(lang, 'returnedFull')}</span>
+                          ) : (
+                            <span className="badge warning">↩️ {t(lang, 'returnedPartial')}</span>
+                          ))}
+                      </td>
+                      <td>{p.supplier_name || '—'}</td>
+                      <td>{String(p.purchase_date).slice(0, 10)}</td>
+                      <td>{fmt(net)}</td>
+                      <td>{fmt(Number(p.paid_amount))}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        <button className="btn small" onClick={() => openDetail(p.id)}>
+                          {t(lang, 'purchaseDetails')}
+                        </button>{' '}
+                        <button className="btn small" onClick={() => startEdit(p)}>
+                          {t(lang, 'edit')}
+                        </button>{' '}
+                        {delArm === p.id ? (
+                          <button className="btn small btn-danger armed" onClick={() => doDelete(p.id)}>
+                            {t(lang, 'confirmDelete')}
+                          </button>
+                        ) : (
+                          <button
+                            className="btn small btn-danger"
+                            onClick={() => {
+                              setListError('');
+                              setListMsg('');
+                              setDelArm(p.id);
+                            }}
+                          >
+                            {t(lang, 'delete')}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {detail && (
+        <div className="panel">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h3 style={{ margin: 0 }}>
+              {t(lang, 'purchaseDetails')}: {detail.invoice_no || '—'} · {detail.supplier_name || '—'}
+            </h3>
+            <button className="btn small" onClick={() => setDetail(null)}>
+              ✕
+            </button>
+          </div>
+          <p style={{ fontSize: 15, margin: '10px 0' }}>
+            {t(lang, 'lineTotal')}: <b>{fmt(Number(detail.total_amount) - Number(detail.returned_total || 0))}</b>
+            {' · '}
+            {t(lang, 'paidAmount')}: <b>{fmt(Number(detail.paid_amount))}</b>
+            {' · '}
+            {t(lang, 'due')}:{' '}
+            <b>
+              {fmt(
+                Math.max(
+                  0,
+                  Number(detail.total_amount) - Number(detail.returned_total || 0) - Number(detail.paid_amount)
+                )
+              )}
+            </b>{' '}
+            {t(lang, 'currency')}
+          </p>
+          <table className="table">
             <thead>
               <tr>
-                <th>{t(lang, 'invoiceNo')}</th>
-                <th>{t(lang, 'supplier')}</th>
-                <th>{t(lang, 'dateLabel')}</th>
+                <th>{t(lang, 'name')}</th>
+                <th>{t(lang, 'batch')}</th>
+                <th>{t(lang, 'expiryDate')}</th>
+                <th>{t(lang, 'quantity')}</th>
+                <th>{t(lang, 'returnedQty')}</th>
+                <th>{t(lang, 'returnQty')}</th>
+                <th>{t(lang, 'purchasePrice')}</th>
                 <th>{t(lang, 'lineTotal')}</th>
-                <th>{t(lang, 'paidAmount')}</th>
-                <th></th>
               </tr>
             </thead>
             <tbody>
-              {purchases.map((p) => (
-                <tr key={p.id}>
-                  <td>{p.invoice_no || '—'}</td>
-                  <td>{p.supplier_name || '—'}</td>
-                  <td>{String(p.purchase_date).slice(0, 10)}</td>
-                  <td>{fmt(Number(p.total_amount))}</td>
-                  <td>{fmt(Number(p.paid_amount))}</td>
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    <button className="btn small" onClick={() => startEdit(p)}>
-                      {t(lang, 'edit')}
-                    </button>{' '}
-                    {delArm === p.id ? (
-                      <button className="btn small btn-danger armed" onClick={() => doDelete(p.id)}>
-                        {t(lang, 'confirmDelete')}
-                      </button>
-                    ) : (
-                      <button
-                        className="btn small btn-danger"
-                        onClick={() => {
-                          setListError('');
-                          setListMsg('');
-                          setDelArm(p.id);
-                        }}
-                      >
-                        {t(lang, 'delete')}
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {detail.items.map((it) => {
+                const maxRet = Number(it.quantity) - Number(it.returned_quantity);
+                return (
+                  <tr key={it.id}>
+                    <td>{it.medicine_name}</td>
+                    <td>{it.batch_no}</td>
+                    <td>{String(it.expiry_date).slice(0, 10)}</td>
+                    <td>{it.quantity}</td>
+                    <td>{Number(it.returned_quantity) || '—'}</td>
+                    <td>
+                      {maxRet > 0 ? (
+                        <input
+                          className="cell-input"
+                          style={{ width: 64 }}
+                          type="number"
+                          min={0}
+                          max={maxRet}
+                          value={retQtys[it.id] || ''}
+                          onChange={(e) => setRetQtys((s) => ({ ...s, [it.id]: e.target.value }))}
+                        />
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                    <td>{fmt(Number(it.purchase_price))}</td>
+                    <td>{fmt(Number(it.quantity) * Number(it.purchase_price))}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
-        )}
-      </div>
+          {retError && <div className="error-box">{retError}</div>}
+          {retMsg && <div className="success-box">{retMsg}</div>}
+          <button className="btn primary" onClick={submitReturn} disabled={retBusy}>
+            ↩️ {t(lang, 'returnToSupplier')}
+          </button>
+        </div>
+      )}
     </>
   );
 }
