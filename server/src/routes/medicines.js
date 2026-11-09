@@ -84,6 +84,15 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
       if (!/^\d{4}-\d{2}-\d{2}$/.test(expiry) || Number.isNaN(new Date(`${expiry}T00:00:00Z`).getTime())) {
         return res.status(400).json({ status: 'error', message: 'Initial stock needs an expiry date (YYYY-MM-DD)' });
       }
+      const nowD = new Date();
+      const p2 = (n) => String(n).padStart(2, '0');
+      const today = `${nowD.getFullYear()}-${p2(nowD.getMonth() + 1)}-${p2(nowD.getDate())}`;
+      if (expiry < today) {
+        return res.status(400).json({
+          status: 'error',
+          message: 'Initial stock expiry date is in the past — already-expired medicine cannot be recorded',
+        });
+      }
       initData = {
         quantity: qty,
         purchase_price: pp,

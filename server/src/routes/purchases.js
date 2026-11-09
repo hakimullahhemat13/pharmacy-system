@@ -17,6 +17,14 @@ function isValidDateString(value) {
   return !Number.isNaN(d.getTime());
 }
 
+// Local calendar date as YYYY-MM-DD — lexicographic comparison with an
+// expiry_date string is a correct date comparison in this format.
+function todayString() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 // POST /api/purchases  (admin or pharmacist)
 // Body: {
 //   supplier_id?, invoice_no?, paid_amount?, notes?,
@@ -40,6 +48,12 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
     }
     if (!isValidDateString(it.expiry_date)) {
       return res.status(400).json({ status: 'error', message: `${label}: expiry_date must be YYYY-MM-DD` });
+    }
+    if (it.expiry_date < todayString()) {
+      return res.status(400).json({
+        status: 'error',
+        message: `${label}: expiry_date is in the past — already-expired medicine cannot be recorded`,
+      });
     }
     const qty = Number(it.quantity);
     if (!Number.isInteger(qty) || qty <= 0) {
@@ -439,6 +453,21 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
        WHERE pi.purchase_id = ?`,
       [purchase.id]
     );
+
+    // Expiry rule on edit: a NEW row, or a row whose expiry date was changed,
+    // may not carry an already-past date. Untouched rows keep their stored
+    // date — the passing of time must not make an old purchase uneditable.
+    for (const [i, it] of items.entries()) {
+      const old = it.id ? oldItems.find((o) => o.id === String(it.id)) : null;
+      const changed = !old || old.expiry_date !== it.expiry_date;
+      if (changed && it.expiry_date < todayString()) {
+        await conn.rollback();
+        return res.status(400).json({
+          status: 'error',
+          message: `Item ${i + 1}: expiry_date is in the past — already-expired medicine cannot be recorded`,
+        });
+      }
+    }
 
     const ledger = (medicineId, batchId, type, delta) =>
       conn.query(
