@@ -96,18 +96,9 @@ router.get('/daily', authRequired, async (req, res) => {
   }
 });
 
-// GET /api/reports/monthly?year=YYYY&month=M  (month 1-12)
-router.get('/monthly', authRequired, async (req, res) => {
-  const now = new Date();
-  const year = req.query.year === undefined ? now.getFullYear() : Number(req.query.year);
-  const month = req.query.month === undefined ? now.getMonth() + 1 : Number(req.query.month);
-  if (!Number.isInteger(year) || year < 2000 || year > 2100 || !Number.isInteger(month) || month < 1 || month > 12) {
-    return res.status(400).json({ status: 'error', message: 'Give a valid year and month (1-12)' });
-  }
-  const start = `${year}-${pad(month)}-01`;
-  const end = month === 12 ? `${year + 1}-01-01` : `${year}-${pad(month + 1)}-01`;
-  try {
-    const summary = await summaryForRange(req.user.branch_id, start, end);
+// Per-day rows for a range (monthly view, weekly view, Excel export):
+// sales by day with that day's returns netted off, oldest first.
+async function dayBreakdown(branchId, start, end) {
     const [days] = await pool.query(
       `SELECT DATE_FORMAT(s.sale_date, '%Y-%m-%d') AS day,
               COUNT(*) AS sales_count,
@@ -121,7 +112,7 @@ router.get('/monthly', authRequired, async (req, res) => {
        WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at IS NULL AND s.sale_date >= ? AND s.sale_date < ?
        GROUP BY DATE_FORMAT(s.sale_date, '%Y-%m-%d')
        ORDER BY day ASC`,
-      [req.user.branch_id, start, end]
+      [branchId, start, end]
     );
     const [retDays] = await pool.query(
       `SELECT DATE_FORMAT(sr.created_at, '%Y-%m-%d') AS day,
@@ -132,7 +123,7 @@ router.get('/monthly', authRequired, async (req, res) => {
        JOIN sales sv ON sv.id = sr.reference_id AND sv.voided_at IS NULL
        WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at >= ? AND sr.created_at < ?
        GROUP BY DATE_FORMAT(sr.created_at, '%Y-%m-%d')`,
-      [req.user.branch_id, start, end]
+      [branchId, start, end]
     );
     const retByDay = new Map(
       retDays.map((r) => [String(r.day), { value: Number(r.value), cost: Number(r.cost) }])
@@ -156,7 +147,43 @@ router.get('/monthly', authRequired, async (req, res) => {
     const byDay = [...byDayMap.values()]
       .sort((a, b) => String(a.day).localeCompare(String(b.day)))
       .map((d) => ({ ...d, profit: d.revenue - d.cost_total }));
+  return byDay;
+}
+
+// GET /api/reports/monthly?year=YYYY&month=M  (month 1-12)
+router.get('/monthly', authRequired, async (req, res) => {
+  const now = new Date();
+  const year = req.query.year === undefined ? now.getFullYear() : Number(req.query.year);
+  const month = req.query.month === undefined ? now.getMonth() + 1 : Number(req.query.month);
+  if (!Number.isInteger(year) || year < 2000 || year > 2100 || !Number.isInteger(month) || month < 1 || month > 12) {
+    return res.status(400).json({ status: 'error', message: 'Give a valid year and month (1-12)' });
+  }
+  const start = `${year}-${pad(month)}-01`;
+  const end = month === 12 ? `${year + 1}-01-01` : `${year}-${pad(month + 1)}-01`;
+  try {
+    const summary = await summaryForRange(req.user.branch_id, start, end);
+    const byDay = await dayBreakdown(req.user.branch_id, start, end);
     return res.json({ status: 'ok', year, month, summary, days: byDay });
+  } catch (err) {
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+});
+
+// GET /api/reports/weekly?date=YYYY-MM-DD — the 7 days starting at `date`.
+// The client defaults the date to the most recent Saturday (the Afghan
+// work week), but any start day can be picked.
+router.get('/weekly', authRequired, async (req, res) => {
+  const date = req.query.date === undefined ? fmtDate(new Date()) : String(req.query.date);
+  if (!isValidDateString(date)) {
+    return res.status(400).json({ status: 'error', message: 'date must be YYYY-MM-DD' });
+  }
+  const endDt = new Date(`${date}T00:00:00Z`);
+  endDt.setUTCDate(endDt.getUTCDate() + 7);
+  const end = `${endDt.getUTCFullYear()}-${pad(endDt.getUTCMonth() + 1)}-${pad(endDt.getUTCDate())}`;
+  try {
+    const summary = await summaryForRange(req.user.branch_id, date, end);
+    const byDay = await dayBreakdown(req.user.branch_id, date, end);
+    return res.json({ status: 'ok', start: date, end, summary, days: byDay });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
   }
@@ -244,7 +271,7 @@ router.get('/export', authRequired, async (req, res) => {
   }
 
   const branchId = req.user.branch_id;
-  const period = ['daily', 'monthly', 'yearly'].includes(String(req.query.period))
+  const period = ['daily', 'weekly', 'monthly', 'yearly'].includes(String(req.query.period))
     ? String(req.query.period)
     : 'daily';
 
@@ -263,6 +290,20 @@ router.get('/export', authRequired, async (req, res) => {
     start = date;
     label = `Daily — ${date}`;
     filename = `pharmacy-report-daily-${date}.xlsx`;
+  } else if (period === 'weekly') {
+    const date = req.query.date === undefined ? fmtDate(new Date()) : String(req.query.date);
+    if (!isValidDateString(date)) {
+      return res.status(400).json({ status: 'error', message: 'date must be YYYY-MM-DD' });
+    }
+    const endDt = new Date(`${date}T00:00:00Z`);
+    endDt.setUTCDate(endDt.getUTCDate() + 7);
+    end = `${endDt.getUTCFullYear()}-${pad(endDt.getUTCMonth() + 1)}-${pad(endDt.getUTCDate())}`;
+    const lastDt = new Date(`${date}T00:00:00Z`);
+    lastDt.setUTCDate(lastDt.getUTCDate() + 6);
+    const last = `${lastDt.getUTCFullYear()}-${pad(lastDt.getUTCMonth() + 1)}-${pad(lastDt.getUTCDate())}`;
+    start = date;
+    label = `Weekly — ${date} to ${last}`;
+    filename = `pharmacy-report-weekly-${date}.xlsx`;
   } else if (period === 'monthly') {
     const now = new Date();
     const year = req.query.year === undefined ? now.getFullYear() : Number(req.query.year);
@@ -347,50 +388,8 @@ router.get('/export', authRequired, async (req, res) => {
       sh.getColumn(2).numFmt = 'yyyy-mm-dd hh:mm';
       for (const col of [4, 5, 6]) sh.getColumn(col).numFmt = '#,##0.00';
       styleHeader(sh);
-    } else if (period === 'monthly') {
-      const [days] = await pool.query(
-        `SELECT DATE_FORMAT(s.sale_date, '%Y-%m-%d') AS day,
-                COUNT(*) AS sales_count,
-                COALESCE(SUM(s.net_total), 0) AS revenue,
-                COALESCE(SUM(si.cost), 0) AS cost_total
-         FROM sales s
-         LEFT JOIN (
-           SELECT sale_id, SUM(quantity * cost_price) AS cost
-           FROM sale_items GROUP BY sale_id
-         ) si ON si.sale_id = s.id
-         WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at IS NULL AND s.sale_date >= ? AND s.sale_date < ?
-         GROUP BY DATE_FORMAT(s.sale_date, '%Y-%m-%d')
-         ORDER BY day ASC`,
-        [branchId, start, end]
-      );
-      const [retDays] = await pool.query(
-        `SELECT DATE_FORMAT(sr.created_at, '%Y-%m-%d') AS day,
-                COALESCE(SUM(sr.quantity_change * si.unit_price), 0) AS value,
-                COALESCE(SUM(sr.quantity_change * si.cost_price), 0) AS cost
-         FROM stock_transactions sr
-         JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
-         JOIN sales sv ON sv.id = sr.reference_id AND sv.voided_at IS NULL
-         WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at >= ? AND sr.created_at < ?
-         GROUP BY DATE_FORMAT(sr.created_at, '%Y-%m-%d')`,
-        [branchId, start, end]
-      );
-      const retByDay = new Map(retDays.map((r) => [String(r.day), { value: Number(r.value), cost: Number(r.cost) }]));
-      const byDayMap = new Map();
-      for (const d of days) {
-        const key = String(d.day);
-        const ret = retByDay.get(key) || { value: 0, cost: 0 };
-        byDayMap.set(key, {
-          day: d.day,
-          sales_count: Number(d.sales_count),
-          revenue: Number(d.revenue) - ret.value,
-          cost_total: Number(d.cost_total || 0) - ret.cost,
-        });
-        retByDay.delete(key);
-      }
-      for (const [key, ret] of retByDay) {
-        byDayMap.set(key, { day: key, sales_count: 0, revenue: -ret.value, cost_total: -ret.cost });
-      }
-      const byDay = [...byDayMap.values()].sort((a, b) => String(a.day).localeCompare(String(b.day)));
+    } else if (period === 'monthly' || period === 'weekly') {
+      const byDay = await dayBreakdown(branchId, start, end);
       const sh = wb.addWorksheet('Days');
       sh.columns = [{ width: 14 }, { width: 10 }, { width: 16 }, { width: 16 }, { width: 16 }];
       sh.addRow(['Date', 'Bills', 'Revenue (AFN)', 'Cost (AFN)', 'Profit (AFN)']);

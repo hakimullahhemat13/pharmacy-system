@@ -2935,12 +2935,22 @@ function todayStr(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-type ReportTab = 'daily' | 'monthly' | 'yearly';
+// The most recent Saturday (start of the Afghan work week) as YYYY-MM-DD.
+function weekStartStr(): string {
+  const d = new Date();
+  const diff = (d.getDay() + 1) % 7; // Sat→0, Sun→1, Mon→2, … Fri→6
+  d.setDate(d.getDate() - diff);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+type ReportTab = 'daily' | 'weekly' | 'monthly' | 'yearly';
 
 function ReportsPage({ lang }: { lang: Lang }) {
   const now = new Date();
   const [tab, setTab] = useState<ReportTab>('daily');
   const [date, setDate] = useState(todayStr());
+  const [weekStart, setWeekStart] = useState(weekStartStr());
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -2956,6 +2966,11 @@ function ReportsPage({ lang }: { lang: Lang }) {
     try {
       if (tab === 'daily') {
         await api.download(`/reports/export?period=daily&date=${date}`, `pharmacy-report-daily-${date}.xlsx`);
+      } else if (tab === 'weekly') {
+        await api.download(
+          `/reports/export?period=weekly&date=${weekStart}`,
+          `pharmacy-report-weekly-${weekStart}.xlsx`
+        );
       } else if (tab === 'monthly') {
         await api.download(
           `/reports/export?period=monthly&year=${year}&month=${month}`,
@@ -2980,6 +2995,11 @@ function ReportsPage({ lang }: { lang: Lang }) {
           if (!alive) return;
           setSummary(data.summary as Summary);
           setDaySales(data.sales as SaleRow[]);
+        } else if (tab === 'weekly') {
+          const data = await api.get(`/reports/weekly?date=${weekStart}`);
+          if (!alive) return;
+          setSummary(data.summary as Summary);
+          setDays(data.days as DayRow[]);
         } else if (tab === 'monthly') {
           const data = await api.get(`/reports/monthly?year=${year}&month=${month}`);
           if (!alive) return;
@@ -2998,10 +3018,11 @@ function ReportsPage({ lang }: { lang: Lang }) {
     return () => {
       alive = false;
     };
-  }, [tab, date, year, month]);
+  }, [tab, date, weekStart, year, month]);
 
   const tabs: { key: ReportTab; label: string }[] = [
     { key: 'daily', label: t(lang, 'daily') },
+    { key: 'weekly', label: t(lang, 'weekly') },
     { key: 'monthly', label: t(lang, 'monthly') },
     { key: 'yearly', label: t(lang, 'yearly') },
   ];
@@ -3030,6 +3051,17 @@ function ReportsPage({ lang }: { lang: Lang }) {
               type="date"
               value={date}
               onChange={(e) => setDate(e.target.value)}
+            />
+          </div>
+        )}
+        {tab === 'weekly' && (
+          <div className="field">
+            <label>{t(lang, 'fromDate')}</label>
+            <input
+              className="cell-input"
+              type="date"
+              value={weekStart}
+              onChange={(e) => setWeekStart(e.target.value)}
             />
           </div>
         )}
@@ -3131,7 +3163,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
         </div>
       )}
 
-      {tab === 'monthly' && summary && (
+      {(tab === 'monthly' || tab === 'weekly') && summary && (
         <div className="panel">
           <table>
             <thead>
