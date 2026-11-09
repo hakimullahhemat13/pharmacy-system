@@ -162,6 +162,7 @@ interface PurchaseRow {
 }
 
 interface PurchaseItemDraft {
+  id?: string;
   medicine_id: string;
   batch_no: string;
   expiry_date: string;
@@ -2284,6 +2285,10 @@ function PurchasesPage({ lang }: { lang: Lang }) {
   const [supMsg, setSupMsg] = useState('');
   const [supError, setSupError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [editingId, setEditingId] = useState('');
+  const [delArm, setDelArm] = useState('');
+  const [listError, setListError] = useState('');
+  const [listMsg, setListMsg] = useState('');
 
   const loadSuppliers = async () => {
     const data = await api.get('/suppliers');
@@ -2302,6 +2307,69 @@ function PurchasesPage({ lang }: { lang: Lang }) {
     loadSuppliers().catch(() => undefined);
     loadPurchases().catch(() => undefined);
   }, []);
+
+  const resetForm = () => {
+    setRows([{ medicine_id: '', batch_no: '', expiry_date: '', quantity: '1', purchase_price: '' }]);
+    setInvoiceNo('');
+    setPaid('');
+    setSupplierId('');
+    setEditingId('');
+  };
+
+  const startEdit = async (p: PurchaseRow) => {
+    setError('');
+    setMsg('');
+    setListError('');
+    setListMsg('');
+    try {
+      const data = await api.get(`/purchases/${p.id}`);
+      const pur = data.purchase as {
+        supplier_id: string | null;
+        invoice_no: string | null;
+        paid_amount: number | string;
+        items: {
+          id: string;
+          medicine_id: string;
+          batch_no: string;
+          expiry_date: string;
+          quantity: number;
+          purchase_price: number | string;
+        }[];
+      };
+      setSupplierId(pur.supplier_id || '');
+      setInvoiceNo(pur.invoice_no || '');
+      setPaid(String(pur.paid_amount));
+      setRows(
+        pur.items.map((it) => ({
+          id: it.id,
+          medicine_id: it.medicine_id,
+          batch_no: it.batch_no,
+          expiry_date: String(it.expiry_date).slice(0, 10),
+          quantity: String(it.quantity),
+          purchase_price: String(it.purchase_price),
+        }))
+      );
+      setEditingId(p.id);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (err) {
+      setListError(err instanceof Error ? err.message : 'Error');
+    }
+  };
+
+  const doDelete = async (id: string) => {
+    setListError('');
+    setListMsg('');
+    try {
+      await api.del(`/purchases/${id}`);
+      setListMsg(`✅ ${t(lang, 'purchaseDeleted')}`);
+      setDelArm('');
+      if (editingId === id) resetForm();
+      await loadPurchases();
+    } catch (err) {
+      setListError(err instanceof Error ? err.message : 'Error');
+      setDelArm('');
+    }
+  };
 
   const setRow = (idx: number, key: keyof PurchaseItemDraft, value: string) =>
     setRows((rs) => rs.map((r, i) => (i === idx ? { ...r, [key]: value } : r)));
@@ -2345,26 +2413,36 @@ function PurchasesPage({ lang }: { lang: Lang }) {
     setMsg('');
     setBusy(true);
     try {
-      const data = await api.post('/purchases', {
+      const payload = {
         supplier_id: supplierId || undefined,
         invoice_no: invoiceNo.trim() || undefined,
         paid_amount: paid === '' ? undefined : Number(paid),
         items: rows
           .filter((r) => r.medicine_id)
           .map((r) => ({
-          medicine_id: r.medicine_id,
-          batch_no: r.batch_no.trim(),
-          expiry_date: r.expiry_date,
-          quantity: Number(r.quantity),
+            ...(r.id ? { id: r.id } : {}),
+            medicine_id: r.medicine_id,
+            batch_no: r.batch_no.trim(),
+            expiry_date: r.expiry_date,
+            quantity: Number(r.quantity),
             purchase_price: r.purchase_price === '' ? 0 : Number(r.purchase_price),
           })),
-      });
-      setMsg(
-        `✅ ${t(lang, 'purchaseDone')}: ${data.purchase.invoice_no || ''} — ${fmt(Number(data.purchase.total_amount))} ${t(lang, 'currency')}`
-      );
-      setRows([{ medicine_id: '', batch_no: '', expiry_date: '', quantity: '1', purchase_price: '' }]);
-      setInvoiceNo('');
-      setPaid('');
+      };
+      if (editingId) {
+        const data = await api.put(`/purchases/${editingId}`, payload);
+        setMsg(
+          `✅ ${t(lang, 'purchaseUpdated')}: ${data.purchase.invoice_no || ''} — ${fmt(Number(data.purchase.total_amount))} ${t(lang, 'currency')}`
+        );
+        resetForm();
+      } else {
+        const data = await api.post('/purchases', payload);
+        setMsg(
+          `✅ ${t(lang, 'purchaseDone')}: ${data.purchase.invoice_no || ''} — ${fmt(Number(data.purchase.total_amount))} ${t(lang, 'currency')}`
+        );
+        setRows([{ medicine_id: '', batch_no: '', expiry_date: '', quantity: '1', purchase_price: '' }]);
+        setInvoiceNo('');
+        setPaid('');
+      }
       await loadPurchases();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error');
@@ -2398,7 +2476,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
       </div>
 
       <div className="panel">
-        <h3>📦 {t(lang, 'newPurchase')}</h3>
+        <h3>📦 {editingId ? t(lang, 'editPurchase') : t(lang, 'newPurchase')}</h3>
         <form onSubmit={submit}>
           <div className="form-grid">
             <div className="field">
@@ -2520,13 +2598,29 @@ function PurchasesPage({ lang }: { lang: Lang }) {
           {error && <div className="error-box">{error}</div>}
           {msg && <div className="success-box">{msg}</div>}
           <button className="btn-save" type="submit" disabled={busy} style={{ width: '100%' }}>
-            {busy ? t(lang, 'loading') : t(lang, 'completePurchase')}
+            {busy ? t(lang, 'loading') : editingId ? t(lang, 'saveChanges') : t(lang, 'completePurchase')}
           </button>
+          {editingId && (
+            <button
+              className="btn-secondary"
+              type="button"
+              style={{ width: '100%', marginTop: 8 }}
+              onClick={() => {
+                resetForm();
+                setError('');
+                setMsg('');
+              }}
+            >
+              {t(lang, 'cancel')}
+            </button>
+          )}
         </form>
       </div>
 
       <div className="panel">
         <h3>📦 {t(lang, 'recentPurchases')}</h3>
+        {listError && <div className="error-box">{listError}</div>}
+        {listMsg && <div className="success-box">{listMsg}</div>}
         {purchases.length === 0 ? (
           <p className="muted">—</p>
         ) : (
@@ -2538,6 +2632,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
                 <th>{t(lang, 'dateLabel')}</th>
                 <th>{t(lang, 'lineTotal')}</th>
                 <th>{t(lang, 'paidAmount')}</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -2548,6 +2643,27 @@ function PurchasesPage({ lang }: { lang: Lang }) {
                   <td>{String(p.purchase_date).slice(0, 10)}</td>
                   <td>{fmt(Number(p.total_amount))}</td>
                   <td>{fmt(Number(p.paid_amount))}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <button className="btn small" onClick={() => startEdit(p)}>
+                      {t(lang, 'edit')}
+                    </button>{' '}
+                    {delArm === p.id ? (
+                      <button className="btn small btn-danger armed" onClick={() => doDelete(p.id)}>
+                        {t(lang, 'confirmDelete')}
+                      </button>
+                    ) : (
+                      <button
+                        className="btn small btn-danger"
+                        onClick={() => {
+                          setListError('');
+                          setListMsg('');
+                          setDelArm(p.id);
+                        }}
+                      >
+                        {t(lang, 'delete')}
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
