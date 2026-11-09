@@ -84,6 +84,10 @@ router.put('/branch', requireRole('admin'), async (req, res) => {
   if (!name || !String(name).trim()) {
     return res.status(400).json({ status: 'error', message: 'Branch name is required' });
   }
+  // Same system-wide rule: a phone number, when given, is exactly 10 digits.
+  if (phone && !/^\d{10}$/.test(String(phone).trim())) {
+    return res.status(400).json({ status: 'error', message: 'Phone number must be exactly 10 digits' });
+  }
   try {
     await pool.query('UPDATE branches SET name = ?, address = ?, phone = ? WHERE id = ?', [
       String(name).trim(),

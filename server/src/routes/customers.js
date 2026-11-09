@@ -7,6 +7,13 @@ const { authRequired } = require('../middleware/auth');
 
 const router = express.Router();
 
+// Same rule as suppliers: a mobile number, when given, is exactly
+// 10 digits. Empty stays allowed (phone is optional).
+function phoneError(phone) {
+  if (phone === null) return null;
+  return /^\d{10}$/.test(phone) ? null : 'Phone number must be exactly 10 digits';
+}
+
 // POST /api/customers  Body: { name, phone? }
 router.post('/', authRequired, async (req, res) => {
   const body = req.body || {};
@@ -15,6 +22,10 @@ router.post('/', authRequired, async (req, res) => {
     return res.status(400).json({ status: 'error', message: 'Customer name is required' });
   }
   const phone = body.phone ? String(body.phone).trim() : null;
+  const pErr = phoneError(phone);
+  if (pErr) {
+    return res.status(400).json({ status: 'error', message: pErr });
+  }
   try {
     const id = uuidv4();
     await pool.query(
@@ -117,6 +128,10 @@ router.put('/:id', authRequired, async (req, res) => {
     return res.status(400).json({ status: 'error', message: 'Customer name is required' });
   }
   const phone = body.phone ? String(body.phone).trim() : null;
+  const pErr = phoneError(phone);
+  if (pErr) {
+    return res.status(400).json({ status: 'error', message: pErr });
+  }
   try {
     const [result] = await pool.query(
       'UPDATE customers SET name = ?, phone = ? WHERE id = ? AND branch_id = ? AND is_deleted = 0',

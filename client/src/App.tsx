@@ -2282,6 +2282,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
   const [supMsg, setSupMsg] = useState('');
+  const [supError, setSupError] = useState('');
   const [busy, setBusy] = useState(false);
 
   const loadSuppliers = async () => {
@@ -2321,10 +2322,10 @@ function PurchasesPage({ lang }: { lang: Lang }) {
   const addSupplier = async (e: React.FormEvent) => {
     e.preventDefault();
     setSupMsg('');
-    setError('');
+    setSupError('');
     if (!supName.trim()) return;
     if (!validPhone(supPhone)) {
-      setError(t(lang, 'phoneInvalid'));
+      setSupError(t(lang, 'phoneInvalid'));
       return;
     }
     try {
@@ -2334,7 +2335,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
       setSupPhone('');
       await loadSuppliers();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error');
+      setSupError(err instanceof Error ? err.message : 'Error');
     }
   };
 
@@ -2389,6 +2390,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
             </div>
           </div>
           {supMsg && <div className="success-box">{supMsg}</div>}
+          {supError && <div className="error-box">{supError}</div>}
           <button className="btn-secondary" type="submit">
             {t(lang, 'save')}
           </button>
@@ -2835,6 +2837,10 @@ function CustomersPage({ lang }: { lang: Lang }) {
       setError(t(lang, 'nameRequired'));
       return;
     }
+    if (!validPhone(phone)) {
+      setError(t(lang, 'phoneInvalid'));
+      return;
+    }
     setBusy(true);
     try {
       await api.post('/customers', {
@@ -2886,6 +2892,10 @@ function CustomersPage({ lang }: { lang: Lang }) {
     setMsg('');
     if (!editName.trim()) {
       setError(t(lang, 'nameRequired'));
+      return;
+    }
+    if (!validPhone(editPhone)) {
+      setError(t(lang, 'phoneInvalid'));
       return;
     }
     setBusy(true);
@@ -2940,7 +2950,7 @@ function CustomersPage({ lang }: { lang: Lang }) {
             </div>
             <div className="field">
               <label>{t(lang, 'phone')}</label>
-              <input value={phone} onChange={(e) => setPhone(e.target.value)} />
+              <input value={phone} onChange={(e) => setPhone(e.target.value)} maxLength={10} inputMode="numeric" />
             </div>
           </div>
           {error && <div className="error-box">{error}</div>}
@@ -3010,6 +3020,8 @@ function CustomersPage({ lang }: { lang: Lang }) {
                           style={{ width: 110 }}
                           value={editPhone}
                           onChange={(e) => setEditPhone(e.target.value)}
+                          maxLength={10}
+                          inputMode="numeric"
                         />
                         <button className="btn-save" type="submit" disabled={busy}>
                           {t(lang, 'save')}
@@ -3349,6 +3361,10 @@ function SettingsPage({
     if (!branch) return;
     setBrMsg('');
     setBrError('');
+    if (branch.phone && !validPhone(branch.phone)) {
+      setBrError(t(lang, 'phoneInvalid'));
+      return;
+    }
     try {
       await api.put('/settings/branch', {
         name: branch.name,
@@ -3462,6 +3478,8 @@ function SettingsPage({
                 <input
                   value={branch.phone || ''}
                   onChange={(e) => setBranch({ ...branch, phone: e.target.value })}
+                  maxLength={10}
+                  inputMode="numeric"
                 />
               </div>
               <div className="field">
