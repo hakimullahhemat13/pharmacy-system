@@ -4,6 +4,7 @@
 //                                    plus already-expired ones that still have stock.
 //                                    This is the data behind the expiry warnings.
 const express = require('express');
+const { v4: uuidv4 } = require('uuid');
 
 const pool = require('../db');
 const { authRequired } = require('../middleware/auth');
@@ -90,6 +91,97 @@ router.get('/all-batches', authRequired, async (req, res) => {
       return { ...r, level };
     });
     return res.json({ status: 'ok', batches });
+  } catch (err) {
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+});
+
+// POST /api/stock/batches/:batchId/write-off — remove expired stock from
+// the books. Body: { quantity, reason? }. One transaction: the batch's
+// quantity_on_hand drops and an 'expired' ledger row is written, so the
+// stock count matches reality and the removal stays on record. Only
+// already-expired batches can be written off, and never more than the
+// batch still holds. No database migration is needed: the
+// stock_transactions ENUM already contains 'expired'.
+router.post('/batches/:batchId/write-off', authRequired, async (req, res) => {
+  const qty = Number((req.body || {}).quantity);
+  if (!Number.isInteger(qty) || qty <= 0) {
+    return res.status(400).json({ status: 'error', message: 'Quantity must be a whole number above 0' });
+  }
+  const reason = String((req.body || {}).reason || '').trim().slice(0, 255) || 'expired';
+  const branchId = req.user.branch_id;
+  const userId = req.user.sub;
+  const batchId = req.params.batchId;
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const [batches] = await conn.query(
+      `SELECT b.id, b.medicine_id, b.batch_no, b.expiry_date, b.quantity_on_hand,
+              m.name AS medicine_name
+       FROM medicine_batches b
+       JOIN medicines m ON m.id = b.medicine_id
+       WHERE b.id = ? AND b.branch_id = ? AND b.is_deleted = 0 LIMIT 1 FOR UPDATE`,
+      [batchId, branchId]
+    );
+    if (batches.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ status: 'error', message: 'Batch not found' });
+    }
+    const batch = batches[0];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (new Date(batch.expiry_date) >= today) {
+      await conn.rollback();
+      return res.status(400).json({ status: 'error', message: 'Only expired batches can be written off' });
+    }
+    if (qty > Number(batch.quantity_on_hand)) {
+      await conn.rollback();
+      return res.status(400).json({
+        status: 'error',
+        message: `Cannot write off ${qty}: only ${batch.quantity_on_hand} left in batch ${batch.batch_no}`,
+      });
+    }
+    await conn.query(
+      'UPDATE medicine_batches SET quantity_on_hand = quantity_on_hand - ? WHERE id = ?',
+      [qty, batchId]
+    );
+    await conn.query(
+      "INSERT INTO stock_transactions (id, branch_id, medicine_id, batch_id, type, quantity_change, reference_id, reason, created_by) VALUES (?, ?, ?, ?, 'expired', ?, ?, ?, ?)",
+      [uuidv4(), branchId, batch.medicine_id, batchId, -qty, batchId, reason, userId]
+    );
+    await conn.commit();
+    return res.json({
+      status: 'ok',
+      medicine_name: batch.medicine_name,
+      batch_no: batch.batch_no,
+      quantity: qty,
+      remaining: Number(batch.quantity_on_hand) - qty,
+    });
+  } catch (err) {
+    try { await conn.rollback(); } catch (_) { /* already rolled back */ }
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  } finally {
+    conn.release();
+  }
+});
+
+// GET /api/stock/write-offs — history of written-off stock, newest first.
+router.get('/write-offs', authRequired, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT st.created_at, st.quantity_change, st.reason,
+              m.name AS medicine_name, b.batch_no, b.expiry_date,
+              u.full_name AS written_by
+       FROM stock_transactions st
+       JOIN medicines m ON m.id = st.medicine_id
+       JOIN medicine_batches b ON b.id = st.batch_id
+       LEFT JOIN users u ON u.id = st.created_by
+       WHERE st.branch_id = ? AND st.type = 'expired'
+       ORDER BY st.created_at DESC LIMIT 50`,
+      [req.user.branch_id]
+    );
+    return res.json({ status: 'ok', writeOffs: rows });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
   }
