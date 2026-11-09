@@ -2081,7 +2081,7 @@ function SuppliersPage({ lang }: { lang: Lang }) {
             </label>
             <label>
               <span>{t(lang, 'phone')}</span>
-              <input value={phone} onChange={(e) => setPhone(e.target.value)} />
+              <input value={phone} onChange={(e) => setPhone(e.target.value)} maxLength={10} inputMode="numeric" />
             </label>
             <label>
               <span>{t(lang, 'address')}</span>
@@ -2176,7 +2176,7 @@ function SuppliersPage({ lang }: { lang: Lang }) {
               </label>
               <label>
                 <span>{t(lang, 'phone')}</span>
-                <input value={ePhone} onChange={(e) => setEPhone(e.target.value)} />
+                <input value={ePhone} onChange={(e) => setEPhone(e.target.value)} maxLength={10} inputMode="numeric" />
               </label>
               <label>
                 <span>{t(lang, 'address')}</span>
@@ -2385,7 +2385,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
             </div>
             <div className="field">
               <label>{t(lang, 'phone')}</label>
-              <input value={supPhone} onChange={(e) => setSupPhone(e.target.value)} />
+              <input value={supPhone} onChange={(e) => setSupPhone(e.target.value)} maxLength={10} inputMode="numeric" />
             </div>
           </div>
           {supMsg && <div className="success-box">{supMsg}</div>}
