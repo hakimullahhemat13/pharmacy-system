@@ -31,6 +31,7 @@ async function returnsForRange(branchId, start, end) {
             COALESCE(SUM(sr.quantity_change * si.cost_price), 0) AS cost
      FROM stock_transactions sr
      JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
+     JOIN sales sv ON sv.id = sr.reference_id AND sv.voided_at IS NULL
      WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at >= ? AND sr.created_at < ?`,
     [branchId, start, end]
   );
@@ -43,7 +44,7 @@ async function summaryForRange(branchId, start, end) {
             COALESCE(SUM(net_total), 0) AS revenue,
             COALESCE(SUM(discount), 0) AS discount_total
      FROM sales
-     WHERE branch_id = ? AND is_deleted = 0 AND sale_date >= ? AND sale_date < ?`,
+     WHERE branch_id = ? AND is_deleted = 0 AND voided_at IS NULL AND sale_date >= ? AND sale_date < ?`,
     [branchId, start, end]
   );
   const [itemRows] = await pool.query(
@@ -51,7 +52,7 @@ async function summaryForRange(branchId, start, end) {
             COALESCE(SUM(si.quantity * si.cost_price), 0) AS cost_total
      FROM sale_items si
      JOIN sales s ON s.id = si.sale_id
-     WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.sale_date >= ? AND s.sale_date < ?`,
+     WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at IS NULL AND s.sale_date >= ? AND s.sale_date < ?`,
     [branchId, start, end]
   );
   const ret = await returnsForRange(branchId, start, end);
@@ -85,7 +86,7 @@ router.get('/daily', authRequired, async (req, res) => {
               c.name AS customer_name
        FROM sales s
        LEFT JOIN customers c ON c.id = s.customer_id
-       WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.sale_date >= ? AND s.sale_date < ?
+       WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at IS NULL AND s.sale_date >= ? AND s.sale_date < ?
        ORDER BY s.sale_date ASC`,
       [req.user.branch_id, date, end]
     );
@@ -117,7 +118,7 @@ router.get('/monthly', authRequired, async (req, res) => {
          SELECT sale_id, SUM(quantity * cost_price) AS cost
          FROM sale_items GROUP BY sale_id
        ) si ON si.sale_id = s.id
-       WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.sale_date >= ? AND s.sale_date < ?
+       WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at IS NULL AND s.sale_date >= ? AND s.sale_date < ?
        GROUP BY DATE(s.sale_date)
        ORDER BY day ASC`,
       [req.user.branch_id, start, end]
@@ -128,6 +129,7 @@ router.get('/monthly', authRequired, async (req, res) => {
               COALESCE(SUM(sr.quantity_change * si.cost_price), 0) AS cost
        FROM stock_transactions sr
        JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
+       JOIN sales sv ON sv.id = sr.reference_id AND sv.voided_at IS NULL
        WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at >= ? AND sr.created_at < ?
        GROUP BY DATE(sr.created_at)`,
       [req.user.branch_id, start, end]
@@ -181,7 +183,7 @@ router.get('/yearly', authRequired, async (req, res) => {
          SELECT sale_id, SUM(quantity * cost_price) AS cost
          FROM sale_items GROUP BY sale_id
        ) si ON si.sale_id = s.id
-       WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.sale_date >= ? AND s.sale_date < ?
+       WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at IS NULL AND s.sale_date >= ? AND s.sale_date < ?
        GROUP BY MONTH(s.sale_date)
        ORDER BY month ASC`,
       [req.user.branch_id, start, end]
@@ -192,6 +194,7 @@ router.get('/yearly', authRequired, async (req, res) => {
               COALESCE(SUM(sr.quantity_change * si.cost_price), 0) AS cost
        FROM stock_transactions sr
        JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
+       JOIN sales sv ON sv.id = sr.reference_id AND sv.voided_at IS NULL
        WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at >= ? AND sr.created_at < ?
        GROUP BY MONTH(sr.created_at)`,
       [req.user.branch_id, start, end]
