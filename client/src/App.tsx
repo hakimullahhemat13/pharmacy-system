@@ -2948,6 +2948,27 @@ function ReportsPage({ lang }: { lang: Lang }) {
   const [days, setDays] = useState<DayRow[]>([]);
   const [months, setMonths] = useState<MonthRow[]>([]);
   const [error, setError] = useState('');
+  const [exporting, setExporting] = useState(false);
+
+  const doExport = async () => {
+    setError('');
+    setExporting(true);
+    try {
+      if (tab === 'daily') {
+        await api.download(`/reports/export?period=daily&date=${date}`, `pharmacy-report-daily-${date}.xlsx`);
+      } else if (tab === 'monthly') {
+        await api.download(
+          `/reports/export?period=monthly&year=${year}&month=${month}`,
+          `pharmacy-report-monthly-${year}-${month}.xlsx`
+        );
+      } else {
+        await api.download(`/reports/export?period=yearly&year=${year}`, `pharmacy-report-yearly-${year}.xlsx`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
+    setExporting(false);
+  };
 
   useEffect(() => {
     let alive = true;
@@ -3050,6 +3071,12 @@ function ReportsPage({ lang }: { lang: Lang }) {
             />
           </div>
         )}
+      </div>
+
+      <div style={{ margin: '10px 0' }}>
+        <button className="btn primary" onClick={doExport} disabled={exporting}>
+          📊 {exporting ? t(lang, 'loading') : t(lang, 'exportExcel')}
+        </button>
       </div>
 
       {error && <div className="error-box">{error}</div>}
