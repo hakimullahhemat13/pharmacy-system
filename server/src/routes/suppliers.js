@@ -13,6 +13,13 @@ const { authRequired, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
 
+// Hakimullah's rule: a mobile number, when given, is exactly 10 digits —
+// never fewer, never more. Empty stays allowed (phone is optional).
+function phoneError(phone) {
+  if (phone === null) return null;
+  return /^\d{10}$/.test(phone) ? null : 'Phone number must be exactly 10 digits';
+}
+
 // The money position with one supplier. Works on the pool or on a
 // transaction connection (anything with .query).
 async function supplierMoney(db, branchId, supplierId) {
@@ -47,6 +54,10 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
   }
   const phone = body.phone ? String(body.phone).trim() : null;
   const address = body.address ? String(body.address).trim() : null;
+  const pErr = phoneError(phone);
+  if (pErr) {
+    return res.status(400).json({ status: 'error', message: pErr });
+  }
   try {
     const id = uuidv4();
     await pool.query(
@@ -138,6 +149,10 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
   }
   const phone = body.phone ? String(body.phone).trim() : null;
   const address = body.address ? String(body.address).trim() : null;
+  const pErr = phoneError(phone);
+  if (pErr) {
+    return res.status(400).json({ status: 'error', message: pErr });
+  }
   try {
     const [result] = await pool.query(
       'UPDATE suppliers SET name = ?, phone = ?, address = ? WHERE id = ? AND branch_id = ? AND is_deleted = 0',

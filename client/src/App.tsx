@@ -208,6 +208,9 @@ function fmt(n: number): string {
   return Number(n).toLocaleString('en-US');
 }
 
+// A mobile number, when given, is exactly 10 digits (empty = not given).
+const validPhone = (p: string) => p.trim() === '' || /^\d{10}$/.test(p.trim());
+
 function LangSwitch({ lang, setLang }: { lang: Lang; setLang: (l: Lang) => void }) {
   return (
     <div className="lang-switch">
@@ -518,18 +521,73 @@ interface ExpiryBatch {
 
 type ExpiryFilter = 'all' | 'expired' | 'warning' | 'ok';
 
+interface WriteOffRow {
+  created_at: string;
+  quantity_change: number;
+  reason: string | null;
+  medicine_name: string;
+  batch_no: string;
+  expiry_date: string;
+  written_by: string | null;
+}
+
 function ExpiryPage({ lang }: { lang: Lang }) {
   const [rows, setRows] = useState<ExpiryBatch[]>([]);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<ExpiryFilter>('all');
   const [error, setError] = useState('');
+  const [writeOffs, setWriteOffs] = useState<WriteOffRow[]>([]);
+  const [woBatch, setWoBatch] = useState<ExpiryBatch | null>(null);
+  const [woQty, setWoQty] = useState('');
+  const [woReason, setWoReason] = useState('');
+  const [woBusy, setWoBusy] = useState(false);
+  const [woMsg, setWoMsg] = useState('');
+  const [woDone, setWoDone] = useState('');
 
-  useEffect(() => {
+  const loadRows = () => {
     api
       .get('/stock/all-batches')
       .then((data) => setRows(data.batches as ExpiryBatch[]))
       .catch((err) => setError(err instanceof Error ? err.message : 'Error'));
+  };
+  const loadWriteOffs = () => {
+    api
+      .get('/stock/write-offs')
+      .then((data) => setWriteOffs(data.writeOffs as WriteOffRow[]))
+      .catch(() => setWriteOffs([]));
+  };
+
+  useEffect(() => {
+    loadRows();
+    loadWriteOffs();
   }, []);
+
+  const submitWriteOff = async () => {
+    if (!woBatch) return;
+    const qty = Number(woQty);
+    if (!Number.isInteger(qty) || qty <= 0 || qty > woBatch.quantity_on_hand) {
+      setWoMsg(t(lang, 'writeOffTooMuch'));
+      return;
+    }
+    setWoBusy(true);
+    setWoMsg('');
+    try {
+      await api.post(`/stock/batches/${woBatch.batch_id}/write-off`, {
+        quantity: qty,
+        reason: woReason.trim() || undefined,
+      });
+      setWoDone(t(lang, 'writeOffDone'));
+      setWoBatch(null);
+      setWoQty('');
+      setWoReason('');
+      loadRows();
+      loadWriteOffs();
+    } catch (err) {
+      setWoMsg(err instanceof Error ? err.message : 'Error');
+    } finally {
+      setWoBusy(false);
+    }
+  };
 
   const q = query.trim().toLowerCase();
   const filtered = rows.filter((r) => {
@@ -586,6 +644,47 @@ function ExpiryPage({ lang }: { lang: Lang }) {
         onChange={(e) => setQuery(e.target.value)}
         placeholder={t(lang, 'searchExpiry')}
       />
+      {woBatch && (
+        <div className="panel">
+          <h3 style={{ marginTop: 0 }}>🗑️ {t(lang, 'writeOffTitle')}</h3>
+          <p className="muted" style={{ fontSize: 14 }}>
+            {woBatch.medicine_name} — {t(lang, 'batch')}: {woBatch.batch_no} ·{' '}
+            {t(lang, 'expiryDate')}: {String(woBatch.expiry_date).slice(0, 10)} ·{' '}
+            {t(lang, 'qty')}: {woBatch.quantity_on_hand}
+          </p>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <label>
+              {t(lang, 'writeOffQty')}{' '}
+              <input
+                type="number"
+                min={1}
+                max={woBatch.quantity_on_hand}
+                value={woQty}
+                onChange={(e) => setWoQty(e.target.value)}
+                style={{ width: 90 }}
+              />
+            </label>
+            <label>
+              {t(lang, 'writeOffReason')}{' '}
+              <input
+                type="text"
+                value={woReason}
+                onChange={(e) => setWoReason(e.target.value)}
+                placeholder={t(lang, 'writeOffReasonPh')}
+                style={{ width: 220 }}
+              />
+            </label>
+            <button className="btn-danger" onClick={submitWriteOff} disabled={woBusy}>
+              {t(lang, 'writeOffConfirm')}
+            </button>
+            <button className="btn-secondary" onClick={() => { setWoBatch(null); setWoMsg(''); }} disabled={woBusy}>
+              {t(lang, 'writeOffCancel')}
+            </button>
+          </div>
+          {woMsg && <div className="error-box" style={{ marginTop: 8 }}>{woMsg}</div>}
+        </div>
+      )}
+      {woDone && <div className="success-box">{woDone}</div>}
       <div className="panel">
         {filtered.length === 0 ? (
           <p className="empty-note">{rows.length === 0 ? t(lang, 'noBatches') : t(lang, 'noResults')}</p>
@@ -615,8 +714,55 @@ function ExpiryPage({ lang }: { lang: Lang }) {
                     <td>{b.quantity_on_hand}</td>
                     <td>{b.warn_months ?? 3}</td>
                     <td>
-                      <span className={`badge ${b.level}`}>{levelLabel(b.level)}</span>
+                      <span className={`badge ${b.level}`}>{levelLabel(b.level)}</span>{' '}
+                      {b.level === 'expired' && (
+                        <button
+                          className="btn small"
+                          onClick={() => {
+                            setWoBatch(b);
+                            setWoQty(String(b.quantity_on_hand));
+                            setWoReason('');
+                            setWoMsg('');
+                            setWoDone('');
+                          }}
+                        >
+                          {t(lang, 'writeOff')}
+                        </button>
+                      )}
                     </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      <h3 style={{ marginTop: 24 }}>🗑️ {t(lang, 'writeOffHistory')}</h3>
+      <div className="panel">
+        {writeOffs.length === 0 ? (
+          <p className="empty-note">{t(lang, 'writeOffEmpty')}</p>
+        ) : (
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>{t(lang, 'writeOffDate')}</th>
+                  <th>{t(lang, 'medicine')}</th>
+                  <th>{t(lang, 'batch')}</th>
+                  <th>{t(lang, 'expiryDate')}</th>
+                  <th>{t(lang, 'qty')}</th>
+                  <th>{t(lang, 'writeOffReason')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {writeOffs.map((w, i) => (
+                  <tr key={i}>
+                    <td>{String(w.created_at).slice(0, 10)}</td>
+                    <td>{w.medicine_name}</td>
+                    <td>{w.batch_no}</td>
+                    <td>{String(w.expiry_date).slice(0, 10)}</td>
+                    <td>{Math.abs(Number(w.quantity_change))}</td>
+                    <td>{w.reason || '—'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1840,6 +1986,10 @@ function SuppliersPage({ lang }: { lang: Lang }) {
     e.preventDefault();
     setError('');
     setMsg('');
+    if (!validPhone(phone)) {
+      setError(t(lang, 'phoneInvalid'));
+      return;
+    }
     try {
       await api.post('/suppliers', {
         name: name.trim(),
@@ -1877,6 +2027,10 @@ function SuppliersPage({ lang }: { lang: Lang }) {
     e.preventDefault();
     if (!detail) return;
     setEditMsg('');
+    if (!validPhone(ePhone)) {
+      setEditMsg(t(lang, 'phoneInvalid'));
+      return;
+    }
     try {
       await api.put(`/suppliers/${detail.id}`, {
         name: eName.trim(),
@@ -2169,6 +2323,10 @@ function PurchasesPage({ lang }: { lang: Lang }) {
     setSupMsg('');
     setError('');
     if (!supName.trim()) return;
+    if (!validPhone(supPhone)) {
+      setError(t(lang, 'phoneInvalid'));
+      return;
+    }
     try {
       await api.post('/suppliers', { name: supName.trim(), phone: supPhone.trim() || undefined });
       setSupMsg(t(lang, 'supplierAdded'));
