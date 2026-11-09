@@ -2320,6 +2320,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
   const [retError, setRetError] = useState('');
   const [retMsg, setRetMsg] = useState('');
   const [retBusy, setRetBusy] = useState(false);
+  const [dupWarn, setDupWarn] = useState(false);
 
   const loadSuppliers = async () => {
     const data = await api.get('/suppliers');
@@ -2350,6 +2351,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
     setPaid('');
     setSupplierId('');
     setEditingId('');
+    setDupWarn(false);
   };
 
   const startEdit = async (p: PurchaseRow) => {
@@ -2464,6 +2466,21 @@ function PurchasesPage({ lang }: { lang: Lang }) {
     0
   );
 
+  // Entry-time expiry warning: a row whose expiry is already past, or at most
+  // 90 days away, is named here BEFORE saving. Warning only — never a block.
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const expiryWarnings = rows
+    .filter((r) => r.medicine_id && r.expiry_date)
+    .map((r) => ({
+      name: meds.find((m) => m.id === r.medicine_id)?.name || '',
+      date: r.expiry_date,
+      days: Math.round(
+        (new Date(`${r.expiry_date}T00:00:00`).getTime() - todayStart.getTime()) / 86400000
+      ),
+    }))
+    .filter((w) => w.days <= 90);
+
   const addSupplier = async (e: React.FormEvent) => {
     e.preventDefault();
     setSupMsg('');
@@ -2493,6 +2510,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
       const payload = {
         supplier_id: supplierId || undefined,
         invoice_no: invoiceNo.trim() || undefined,
+        allow_duplicate: dupWarn || undefined,
         paid_amount: paid === '' ? undefined : Number(paid),
         items: rows
           .filter((r) => r.medicine_id)
@@ -2522,7 +2540,12 @@ function PurchasesPage({ lang }: { lang: Lang }) {
       }
       await loadPurchases();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error');
+      const m = err instanceof Error ? err.message : 'Error';
+      if (m.startsWith('DUPLICATE_INVOICE')) {
+        setDupWarn(true);
+      } else {
+        setError(m);
+      }
     }
     setBusy(false);
   };
@@ -2561,7 +2584,10 @@ function PurchasesPage({ lang }: { lang: Lang }) {
               <select
                 className="field-select"
                 value={supplierId}
-                onChange={(e) => setSupplierId(e.target.value)}
+                onChange={(e) => {
+                  setSupplierId(e.target.value);
+                  setDupWarn(false);
+                }}
               >
                 <option value="">—</option>
                 {suppliers.map((s) => (
@@ -2573,7 +2599,13 @@ function PurchasesPage({ lang }: { lang: Lang }) {
             </div>
             <div className="field">
               <label>{t(lang, 'invoiceNo')}</label>
-              <input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} />
+              <input
+                value={invoiceNo}
+                onChange={(e) => {
+                  setInvoiceNo(e.target.value);
+                  setDupWarn(false);
+                }}
+              />
             </div>
             <div className="field">
               <label>{t(lang, 'paidAmount')}</label>
@@ -2672,10 +2704,33 @@ function PurchasesPage({ lang }: { lang: Lang }) {
             </span>
           </div>
 
+          {expiryWarnings.length > 0 && (
+            <div className="error-box">
+              {expiryWarnings.map((w, i) => (
+                <div key={i}>
+                  ⚠️ {w.name} — {t(lang, 'expiryDate')}: {w.date} —{' '}
+                  {w.days < 0
+                    ? t(lang, 'expiryPastWarn')
+                    : `${t(lang, 'expirySoonWarn')} — ${w.days} ${t(lang, 'daysWord')}`}
+                </div>
+              ))}
+            </div>
+          )}
+          {dupWarn && (
+            <div className="error-box">
+              ⚠️ {t(lang, 'duplicateInvoiceWarn')}: {invoiceNo}
+            </div>
+          )}
           {error && <div className="error-box">{error}</div>}
           {msg && <div className="success-box">{msg}</div>}
           <button className="btn-save" type="submit" disabled={busy} style={{ width: '100%' }}>
-            {busy ? t(lang, 'loading') : editingId ? t(lang, 'saveChanges') : t(lang, 'completePurchase')}
+            {busy
+              ? t(lang, 'loading')
+              : dupWarn
+                ? `⚠️ ${t(lang, 'saveAnyway')}`
+                : editingId
+                  ? t(lang, 'saveChanges')
+                  : t(lang, 'completePurchase')}
           </button>
           {editingId && (
             <button

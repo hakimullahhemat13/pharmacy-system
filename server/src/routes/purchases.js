@@ -65,6 +65,22 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
     return res.status(400).json({ status: 'error', message: 'paid_amount cannot be more than the purchase total' });
   }
 
+  // Duplicate-invoice guard: the same invoice number twice for one supplier
+  // almost always means one delivery recorded twice. The client may confirm
+  // and resend with allow_duplicate to save it anyway.
+  if (supplierId && invoiceNo && !body.allow_duplicate) {
+    const [dup] = await pool.query(
+      'SELECT id FROM purchases WHERE branch_id = ? AND supplier_id = ? AND invoice_no = ? AND is_deleted = 0 LIMIT 1',
+      [branchId, supplierId, invoiceNo]
+    );
+    if (dup.length > 0) {
+      return res.status(409).json({
+        status: 'error',
+        message: `DUPLICATE_INVOICE: invoice ${invoiceNo} is already recorded for this supplier`,
+      });
+    }
+  }
+
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
@@ -352,6 +368,20 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
 
   const branchId = req.user.branch_id;
   const userId = req.user.id;
+
+  if (body.supplier_id && body.invoice_no && String(body.invoice_no).trim() && !body.allow_duplicate) {
+    const [dup] = await pool.query(
+      'SELECT id FROM purchases WHERE branch_id = ? AND supplier_id = ? AND invoice_no = ? AND is_deleted = 0 AND id <> ? LIMIT 1',
+      [branchId, String(body.supplier_id), String(body.invoice_no).trim(), req.params.id]
+    );
+    if (dup.length > 0) {
+      return res.status(409).json({
+        status: 'error',
+        message: `DUPLICATE_INVOICE: invoice ${String(body.invoice_no).trim()} is already recorded for this supplier`,
+      });
+    }
+  }
+
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
