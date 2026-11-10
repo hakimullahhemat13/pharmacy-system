@@ -236,8 +236,8 @@ th { color: #64748b; font-weight: 600; font-size: 13px; }
 .chart-legend .dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-inline-end: 4px; }
 .dot-rev { background: #64748b; }
 .dot-profit { background: #16a34a; }
-.chart { display: flex; align-items: flex-end; gap: 3px; height: 170px; overflow-x: auto; padding-top: 6px; border-bottom: 1px solid #cbd5e1; }
-.chart-col { flex: 1 1 0; min-width: 8px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
+.chart { display: flex; align-items: flex-end; gap: 6px; height: 150px; overflow-x: auto; padding-top: 6px; border-bottom: 1px solid #cbd5e1; }
+.chart-col { flex: 1 1 0; min-width: 8px; max-width: 56px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
 .chart-bars { display: flex; align-items: flex-end; gap: 2px; width: 100%; flex: 1; }
 .bar { flex: 1; border-radius: 2px 2px 0 0; min-height: 2px; }
 .bar-rev { background: #64748b; }
