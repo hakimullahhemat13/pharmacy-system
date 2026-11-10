@@ -2955,13 +2955,17 @@ function weekStartStr(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-type ReportTab = 'daily' | 'weekly' | 'monthly' | 'yearly';
+type ReportTab = 'daily' | 'weekly' | 'monthly' | 'yearly' | 'range';
 
 function ReportsPage({ lang }: { lang: Lang }) {
   const now = new Date();
   const [tab, setTab] = useState<ReportTab>('daily');
   const [date, setDate] = useState(todayStr());
   const [weekStart, setWeekStart] = useState(weekStartStr());
+  const [rangeFrom, setRangeFrom] = useState(
+    `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+  );
+  const [rangeTo, setRangeTo] = useState(todayStr());
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -3004,6 +3008,11 @@ function ReportsPage({ lang }: { lang: Lang }) {
           `/reports/export?period=weekly&date=${weekStart}`,
           `pharmacy-report-weekly-${weekStart}.xlsx`
         );
+      } else if (tab === 'range') {
+        await api.download(
+          `/reports/export?period=range&from=${rangeFrom}&to=${rangeTo}`,
+          `pharmacy-report-range-${rangeFrom}-${rangeTo}.xlsx`
+        );
       } else if (tab === 'monthly') {
         await api.download(
           `/reports/export?period=monthly&year=${year}&month=${month}`,
@@ -3038,6 +3047,11 @@ function ReportsPage({ lang }: { lang: Lang }) {
           if (!alive) return;
           setSummary(data.summary as Summary);
           setDays(data.days as DayRow[]);
+        } else if (tab === 'range') {
+          const data = await api.get(`/reports/range?from=${rangeFrom}&to=${rangeTo}`);
+          if (!alive) return;
+          setSummary(data.summary as Summary);
+          setDays(data.days as DayRow[]);
         } else {
           const data = await api.get(`/reports/yearly?year=${year}`);
           if (!alive) return;
@@ -3051,7 +3065,9 @@ function ReportsPage({ lang }: { lang: Lang }) {
               ? `period=weekly&date=${weekStart}`
               : tab === 'monthly'
                 ? `period=monthly&year=${year}&month=${month}`
-                : `period=yearly&year=${year}`;
+                : tab === 'range'
+                  ? `period=range&from=${rangeFrom}&to=${rangeTo}`
+                  : `period=yearly&year=${year}`;
         const medData = await api.get(`/reports/medicines?${medParams}`);
         if (!alive) return;
         setMedRows(medData.medicines as MedRow[]);
@@ -3062,13 +3078,14 @@ function ReportsPage({ lang }: { lang: Lang }) {
     return () => {
       alive = false;
     };
-  }, [tab, date, weekStart, year, month]);
+  }, [tab, date, weekStart, year, month, rangeFrom, rangeTo]);
 
   const tabs: { key: ReportTab; label: string }[] = [
     { key: 'daily', label: t(lang, 'daily') },
     { key: 'weekly', label: t(lang, 'weekly') },
     { key: 'monthly', label: t(lang, 'monthly') },
     { key: 'yearly', label: t(lang, 'yearly') },
+    { key: 'range', label: t(lang, 'range') },
   ];
 
   const weekEnd = (() => {
@@ -3085,7 +3102,9 @@ function ReportsPage({ lang }: { lang: Lang }) {
         ? `${t(lang, 'weekly')} — ${weekStart} → ${weekEnd}`
         : tab === 'monthly'
           ? `${t(lang, 'monthly')} — ${year}-${String(month).padStart(2, '0')}`
-          : `${t(lang, 'yearly')} — ${year}`;
+          : tab === 'range'
+            ? `${t(lang, 'range')} — ${rangeFrom} → ${rangeTo}`
+            : `${t(lang, 'yearly')} — ${year}`;
 
   return (
     <>
@@ -3124,6 +3143,28 @@ function ReportsPage({ lang }: { lang: Lang }) {
               onChange={(e) => setWeekStart(e.target.value)}
             />
           </div>
+        )}
+        {tab === 'range' && (
+          <>
+            <div className="field">
+              <label>{t(lang, 'fromDate')}</label>
+              <input
+                className="cell-input"
+                type="date"
+                value={rangeFrom}
+                onChange={(e) => setRangeFrom(e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label>{t(lang, 'toDate')}</label>
+              <input
+                className="cell-input"
+                type="date"
+                value={rangeTo}
+                onChange={(e) => setRangeTo(e.target.value)}
+              />
+            </div>
+          </>
         )}
         {tab === 'monthly' && (
           <>
@@ -3231,7 +3272,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
         </div>
       )}
 
-      {(tab === 'monthly' || tab === 'weekly') && summary && (
+      {(tab === 'monthly' || tab === 'weekly' || tab === 'range') && summary && (
         <div className="panel">
           <table>
             <thead>
@@ -3389,7 +3430,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
                 </tbody>
               </table>
             )}
-            {(tab === 'weekly' || tab === 'monthly') && (
+            {(tab === 'weekly' || tab === 'monthly' || tab === 'range') && (
               <table>
                 <thead>
                   <tr>

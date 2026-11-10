@@ -19,6 +19,21 @@ function isValidDateString(value) {
   return !Number.isNaN(new Date(`${value}T00:00:00Z`).getTime());
 }
 
+// Validate a custom from/to pair. Returns { start, end, from, to } with
+// end exclusive (the day after `to`), or null when the pair is invalid
+// or spans more than a year.
+function rangeFor(fromQ, toQ) {
+  const from = String(fromQ || '');
+  const to = String(toQ || '');
+  if (!isValidDateString(from) || !isValidDateString(to) || from > to) return null;
+  const spanDays = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000;
+  if (spanDays > 366) return null;
+  const endDt = new Date(`${to}T00:00:00Z`);
+  endDt.setUTCDate(endDt.getUTCDate() + 1);
+  const end = `${endDt.getUTCFullYear()}-${pad(endDt.getUTCMonth() + 1)}-${pad(endDt.getUTCDate())}`;
+  return { start: from, end, from, to };
+}
+
 // Returns in a period, valued at the original sale's prices: each
 // 'sale_return' ledger row joins back to its sale_items row (same sale,
 // same batch) for the unit_price / cost_price snapshot. Returns are counted
@@ -233,6 +248,22 @@ router.get('/weekly', authRequired, async (req, res) => {
   }
 });
 
+// GET /api/reports/range?from=YYYY-MM-DD&to=YYYY-MM-DD — any period the
+// user picks (both days included), at most a year.
+router.get('/range', authRequired, async (req, res) => {
+  const r = rangeFor(req.query.from, req.query.to);
+  if (!r) {
+    return res.status(400).json({ status: 'error', message: 'Give a valid from/to range (from before to, at most 1 year)' });
+  }
+  try {
+    const summary = await summaryForRange(req.user.branch_id, r.start, r.end);
+    const byDay = await dayBreakdown(req.user.branch_id, r.start, r.end);
+    return res.json({ status: 'ok', start: r.from, end: r.to, summary, days: byDay });
+  } catch (err) {
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+});
+
 // GET /api/reports/yearly?year=YYYY
 router.get('/yearly', authRequired, async (req, res) => {
   const now = new Date();
@@ -297,15 +328,22 @@ router.get('/yearly', authRequired, async (req, res) => {
   }
 });
 
-// GET /api/reports/medicines?period=daily|weekly|monthly|yearly&date=&year=&month=
+// GET /api/reports/medicines?period=daily|weekly|monthly|yearly|range&date=&year=&month=&from=&to=
 // Top medicines (by profit) for the same period the Reports page is showing.
 router.get('/medicines', authRequired, async (req, res) => {
-  const period = ['daily', 'weekly', 'monthly', 'yearly'].includes(String(req.query.period))
+  const period = ['daily', 'weekly', 'monthly', 'yearly', 'range'].includes(String(req.query.period))
     ? String(req.query.period)
     : 'daily';
   let start;
   let end;
-  if (period === 'daily' || period === 'weekly') {
+  if (period === 'range') {
+    const r = rangeFor(req.query.from, req.query.to);
+    if (!r) {
+      return res.status(400).json({ status: 'error', message: 'Give a valid from/to range (from before to, at most 1 year)' });
+    }
+    start = r.start;
+    end = r.end;
+  } else if (period === 'daily' || period === 'weekly') {
     const date = req.query.date === undefined ? fmtDate(new Date()) : String(req.query.date);
     if (!isValidDateString(date)) {
       return res.status(400).json({ status: 'error', message: 'date must be YYYY-MM-DD' });
@@ -358,7 +396,7 @@ router.get('/export', authRequired, async (req, res) => {
   }
 
   const branchId = req.user.branch_id;
-  const period = ['daily', 'weekly', 'monthly', 'yearly'].includes(String(req.query.period))
+  const period = ['daily', 'weekly', 'monthly', 'yearly', 'range'].includes(String(req.query.period))
     ? String(req.query.period)
     : 'daily';
 
@@ -391,6 +429,15 @@ router.get('/export', authRequired, async (req, res) => {
     start = date;
     label = `Weekly — ${date} to ${last}`;
     filename = `pharmacy-report-weekly-${date}.xlsx`;
+  } else if (period === 'range') {
+    const r = rangeFor(req.query.from, req.query.to);
+    if (!r) {
+      return res.status(400).json({ status: 'error', message: 'Give a valid from/to range (from before to, at most 1 year)' });
+    }
+    start = r.start;
+    end = r.end;
+    label = `Range — ${r.from} to ${r.to}`;
+    filename = `pharmacy-report-range-${r.from}-${r.to}.xlsx`;
   } else if (period === 'monthly') {
     const now = new Date();
     const year = req.query.year === undefined ? now.getFullYear() : Number(req.query.year);
@@ -475,7 +522,7 @@ router.get('/export', authRequired, async (req, res) => {
       sh.getColumn(2).numFmt = 'yyyy-mm-dd hh:mm';
       for (const col of [4, 5, 6]) sh.getColumn(col).numFmt = '#,##0.00';
       styleHeader(sh);
-    } else if (period === 'monthly' || period === 'weekly') {
+    } else if (period === 'monthly' || period === 'weekly' || period === 'range') {
       const byDay = await dayBreakdown(branchId, start, end);
       const sh = wb.addWorksheet('Days');
       sh.columns = [{ width: 14 }, { width: 10 }, { width: 16 }, { width: 16 }, { width: 16 }];
