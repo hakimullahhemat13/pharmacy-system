@@ -237,6 +237,16 @@ interface StockData {
   medicines: StockMedRow[];
 }
 
+interface PurchRow {
+  id: string | null;
+  name: string;
+  bills: number;
+  bought: number;
+  returned: number;
+  paid: number;
+  net: number;
+}
+
 type Page = 'dashboard' | 'medicines' | 'expiry' | 'sales' | 'purchases' | 'suppliers' | 'reports' | 'customers' | 'backup' | 'settings';
 
 const USER_KEY = 'pharmacy_user';
@@ -3053,6 +3063,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
   const [months, setMonths] = useState<MonthRow[]>([]);
   const [medRows, setMedRows] = useState<MedRow[]>([]);
   const [stockData, setStockData] = useState<StockData | null>(null);
+  const [purchRows, setPurchRows] = useState<PurchRow[]>([]);
   const [error, setError] = useState('');
   const [exporting, setExporting] = useState(false);
   const [printing, setPrinting] = useState(false);
@@ -3162,6 +3173,9 @@ function ReportsPage({ lang }: { lang: Lang }) {
         const medData = await api.get(`/reports/medicines?${medParams}`);
         if (!alive) return;
         setMedRows(medData.medicines as MedRow[]);
+        const purchData = await api.get(`/reports/purchases?${medParams}`);
+        if (!alive) return;
+        setPurchRows(purchData.suppliers as PurchRow[]);
       } catch (err) {
         if (alive) setError(err instanceof Error ? err.message : 'Error');
       }
@@ -3325,7 +3339,11 @@ function ReportsPage({ lang }: { lang: Lang }) {
             <div className="card-label">{t(lang, 'profit')}</div>
             <div className="card-value">{fmt(summary.profit)}</div>
             <div className="card-sub">
-              {t(lang, 'cost')}: {fmt(summary.cost_total)}
+              {t(lang, 'cost')}: {fmt(summary.cost_total)} · {t(lang, 'profitMargin')}:{' '}
+              {summary.revenue !== 0
+                ? Math.round((summary.profit / summary.revenue) * 1000) / 10
+                : 0}
+              %
             </div>
           </div>
           <div className="card">
@@ -3523,6 +3541,36 @@ function ReportsPage({ lang }: { lang: Lang }) {
         </div>
       )}
 
+      {tab !== 'stock' && summary && purchRows.length > 0 && (
+        <div className="panel">
+          <h3 style={{ marginTop: 0 }}>{t(lang, 'purchasesInPeriod')}</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>{t(lang, 'supplier')}</th>
+                <th>{t(lang, 'salesCount')}</th>
+                <th>{t(lang, 'bought')}</th>
+                <th>{t(lang, 'returnsLabel')}</th>
+                <th>{t(lang, 'netBought')}</th>
+                <th>{t(lang, 'paidCol')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {purchRows.map((r) => (
+                <tr key={r.id || 'none'}>
+                  <td>{r.name}</td>
+                  <td>{fmt(r.bills)}</td>
+                  <td>{fmt(r.bought)}</td>
+                  <td>{fmt(r.returned)}</td>
+                  <td>{fmt(r.net)}</td>
+                  <td>{fmt(r.paid)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {printing &&
         tab !== 'stock' &&
         summary &&
@@ -3551,6 +3599,15 @@ function ReportsPage({ lang }: { lang: Lang }) {
                 <tr>
                   <td>{t(lang, 'profit')}</td>
                   <td>{fmt(summary.profit)}</td>
+                </tr>
+                <tr>
+                  <td>{t(lang, 'profitMargin')}</td>
+                  <td>
+                    {summary.revenue !== 0
+                      ? Math.round((summary.profit / summary.revenue) * 1000) / 10
+                      : 0}
+                    %
+                  </td>
                 </tr>
                 <tr>
                   <td>{t(lang, 'salesCount')}</td>
@@ -3671,6 +3728,35 @@ function ReportsPage({ lang }: { lang: Lang }) {
                         <td>{fmt(m.revenue)}</td>
                         <td>{fmt(m.cost_total)}</td>
                         <td>{fmt(m.profit)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
+            {purchRows.length > 0 && (
+              <>
+                <div style={{ fontSize: 14, fontWeight: 600, marginTop: 12 }}>
+                  {t(lang, 'purchasesInPeriod')}
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>{t(lang, 'supplier')}</th>
+                      <th>{t(lang, 'bought')}</th>
+                      <th>{t(lang, 'returnsLabel')}</th>
+                      <th>{t(lang, 'netBought')}</th>
+                      <th>{t(lang, 'paidCol')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {purchRows.map((r) => (
+                      <tr key={r.id || 'none'}>
+                        <td>{r.name}</td>
+                        <td>{fmt(r.bought)}</td>
+                        <td>{fmt(r.returned)}</td>
+                        <td>{fmt(r.net)}</td>
+                        <td>{fmt(r.paid)}</td>
                       </tr>
                     ))}
                   </tbody>

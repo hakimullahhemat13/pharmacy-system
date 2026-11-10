@@ -370,51 +370,124 @@ router.get('/yearly', authRequired, async (req, res) => {
   }
 });
 
+// Resolve a report period + query params to { start, end } (end
+// exclusive), or null when the params are invalid. Shared by the
+// per-period breakdown endpoints below (medicines, purchases).
+function periodRange(period, query) {
+  if (period === 'range') {
+    const r = rangeFor(query.from, query.to);
+    return r ? { start: r.start, end: r.end } : null;
+  }
+  if (period === 'daily' || period === 'weekly') {
+    const date = query.date === undefined ? fmtDate(new Date()) : String(query.date);
+    if (!isValidDateString(date)) return null;
+    const endDt = new Date(`${date}T00:00:00Z`);
+    endDt.setUTCDate(endDt.getUTCDate() + (period === 'weekly' ? 7 : 1));
+    return { start: date, end: `${endDt.getUTCFullYear()}-${pad(endDt.getUTCMonth() + 1)}-${pad(endDt.getUTCDate())}` };
+  }
+  if (period === 'monthly') {
+    const now = new Date();
+    const year = query.year === undefined ? now.getFullYear() : Number(query.year);
+    const month = query.month === undefined ? now.getMonth() + 1 : Number(query.month);
+    if (!Number.isInteger(year) || year < 2000 || year > 2100 || !Number.isInteger(month) || month < 1 || month > 12) return null;
+    return { start: `${year}-${pad(month)}-01`, end: month === 12 ? `${year + 1}-01-01` : `${year}-${pad(month + 1)}-01` };
+  }
+  const now = new Date();
+  const year = query.year === undefined ? now.getFullYear() : Number(query.year);
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) return null;
+  return { start: `${year}-01-01`, end: `${year + 1}-01-01` };
+}
+
+// Purchases per supplier for a range: how much was bought, how much was
+// sent back (valued at the return's unit_price, counted on the return
+// day), and how much was paid — the paid_amount of the period's
+// purchases plus any later supplier payments made in the period.
+async function purchasesForRange(branchId, start, end) {
+  const [bought] = await pool.query(
+    `SELECT p.supplier_id AS sid, s.name AS name,
+            COUNT(*) AS bills,
+            COALESCE(SUM(p.total_amount), 0) AS bought,
+            COALESCE(SUM(p.paid_amount), 0) AS paid_at_purchase
+     FROM purchases p
+     LEFT JOIN suppliers s ON s.id = p.supplier_id
+     WHERE p.branch_id = ? AND p.is_deleted = 0 AND p.purchase_date >= ? AND p.purchase_date < ?
+     GROUP BY p.supplier_id, s.name`,
+    [branchId, start, end]
+  );
+  const [rets] = await pool.query(
+    `SELECT p.supplier_id AS sid,
+            COALESCE(SUM(pr.quantity * pr.unit_price), 0) AS value
+     FROM purchase_returns pr
+     JOIN purchases p ON p.id = pr.purchase_id
+     WHERE pr.branch_id = ? AND pr.is_deleted = 0 AND pr.created_at >= ? AND pr.created_at < ?
+     GROUP BY p.supplier_id`,
+    [branchId, start, end]
+  );
+  const [pays] = await pool.query(
+    `SELECT supplier_id AS sid, COALESCE(SUM(amount), 0) AS paid
+     FROM supplier_payments
+     WHERE branch_id = ? AND is_deleted = 0 AND created_at >= ? AND created_at < ?
+     GROUP BY supplier_id`,
+    [branchId, start, end]
+  );
+  const bySupplier = new Map();
+  const key = (sid) => (sid === null || sid === undefined ? '' : String(sid));
+  for (const r of bought) {
+    bySupplier.set(key(r.sid), {
+      id: r.sid || null,
+      name: r.name || '—',
+      bills: Number(r.bills),
+      bought: Number(r.bought),
+      returned: 0,
+      paid: Number(r.paid_at_purchase),
+    });
+  }
+  for (const r of rets) {
+    const row = bySupplier.get(key(r.sid)) || { id: r.sid || null, name: '—', bills: 0, bought: 0, returned: 0, paid: 0 };
+    row.returned = Number(r.value);
+    bySupplier.set(key(r.sid), row);
+  }
+  for (const r of pays) {
+    const row = bySupplier.get(key(r.sid)) || { id: r.sid || null, name: '—', bills: 0, bought: 0, returned: 0, paid: 0 };
+    row.paid += Number(r.paid);
+    bySupplier.set(key(r.sid), row);
+  }
+  const out = [...bySupplier.values()].map((r) => ({ ...r, net: r.bought - r.returned }));
+  out.sort((a, b) => b.bought - a.bought);
+  return out;
+}
+
 // GET /api/reports/medicines?period=daily|weekly|monthly|yearly|range&date=&year=&month=&from=&to=
 // Top medicines (by profit) for the same period the Reports page is showing.
 router.get('/medicines', authRequired, async (req, res) => {
   const period = ['daily', 'weekly', 'monthly', 'yearly', 'range'].includes(String(req.query.period))
     ? String(req.query.period)
     : 'daily';
-  let start;
-  let end;
-  if (period === 'range') {
-    const r = rangeFor(req.query.from, req.query.to);
-    if (!r) {
-      return res.status(400).json({ status: 'error', message: 'Give a valid from/to range (from before to, at most 1 year)' });
-    }
-    start = r.start;
-    end = r.end;
-  } else if (period === 'daily' || period === 'weekly') {
-    const date = req.query.date === undefined ? fmtDate(new Date()) : String(req.query.date);
-    if (!isValidDateString(date)) {
-      return res.status(400).json({ status: 'error', message: 'date must be YYYY-MM-DD' });
-    }
-    const endDt = new Date(`${date}T00:00:00Z`);
-    endDt.setUTCDate(endDt.getUTCDate() + (period === 'weekly' ? 7 : 1));
-    start = date;
-    end = `${endDt.getUTCFullYear()}-${pad(endDt.getUTCMonth() + 1)}-${pad(endDt.getUTCDate())}`;
-  } else if (period === 'monthly') {
-    const now = new Date();
-    const year = req.query.year === undefined ? now.getFullYear() : Number(req.query.year);
-    const month = req.query.month === undefined ? now.getMonth() + 1 : Number(req.query.month);
-    if (!Number.isInteger(year) || year < 2000 || year > 2100 || !Number.isInteger(month) || month < 1 || month > 12) {
-      return res.status(400).json({ status: 'error', message: 'Give a valid year and month (1-12)' });
-    }
-    start = `${year}-${pad(month)}-01`;
-    end = month === 12 ? `${year + 1}-01-01` : `${year}-${pad(month + 1)}-01`;
-  } else {
-    const now = new Date();
-    const year = req.query.year === undefined ? now.getFullYear() : Number(req.query.year);
-    if (!Number.isInteger(year) || year < 2000 || year > 2100) {
-      return res.status(400).json({ status: 'error', message: 'Give a valid year' });
-    }
-    start = `${year}-01-01`;
-    end = `${year + 1}-01-01`;
+  const range = periodRange(period, req.query);
+  if (!range) {
+    return res.status(400).json({ status: 'error', message: 'Give valid period parameters' });
   }
   try {
-    const medicines = await medicinesForRange(req.user.branch_id, start, end);
-    return res.json({ status: 'ok', period, start, end, medicines });
+    const medicines = await medicinesForRange(req.user.branch_id, range.start, range.end);
+    return res.json({ status: 'ok', period, start: range.start, end: range.end, medicines });
+  } catch (err) {
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+});
+
+// GET /api/reports/purchases?period=… — purchases per supplier for the
+// same period the Reports page is showing.
+router.get('/purchases', authRequired, async (req, res) => {
+  const period = ['daily', 'weekly', 'monthly', 'yearly', 'range'].includes(String(req.query.period))
+    ? String(req.query.period)
+    : 'daily';
+  const range = periodRange(period, req.query);
+  if (!range) {
+    return res.status(400).json({ status: 'error', message: 'Give valid period parameters' });
+  }
+  try {
+    const suppliers = await purchasesForRange(req.user.branch_id, range.start, range.end);
+    return res.json({ status: 'ok', period, start: range.start, end: range.end, suppliers });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
   }
@@ -571,6 +644,7 @@ router.get('/export', authRequired, async (req, res) => {
       ['Revenue (AFN)', summary.revenue, '#,##0.00'],
       ['Cost (AFN)', summary.cost_total, '#,##0.00'],
       ['Profit (AFN)', summary.profit, '#,##0.00'],
+      ['Profit margin %', summary.revenue !== 0 ? Math.round((summary.profit / summary.revenue) * 1000) / 10 : 0, '#,##0.0'],
       ['Returns (AFN)', summary.returns_total, '#,##0.00'],
       ['Returned items', summary.returned_items, '#,##0'],
       ['Discount (AFN)', summary.discount_total, '#,##0.00'],
@@ -688,6 +762,17 @@ router.get('/export', authRequired, async (req, res) => {
       }
       for (const col of [3, 4, 5]) ms.getColumn(col).numFmt = '#,##0.00';
       styleHeader(ms);
+    }
+
+    const purchRows = await purchasesForRange(branchId, start, end);
+    if (purchRows.length) {
+      const ps = wb.addWorksheet('Purchases');
+      ps.addRow(['Supplier', 'Bills', 'Bought (AFN)', 'Returned (AFN)', 'Net (AFN)', 'Paid (AFN)']);
+      for (const r of purchRows) {
+        ps.addRow([r.name, r.bills, r.bought, r.returned, r.net, r.paid]);
+      }
+      for (const col of [3, 4, 5, 6]) ps.getColumn(col).numFmt = '#,##0.00';
+      styleHeader(ps);
     }
 
     const buffer = await wb.xlsx.writeBuffer();
