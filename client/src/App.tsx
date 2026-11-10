@@ -3383,6 +3383,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
             </div>
           </div>
           <div className="panel">
+            <div className="table-scroll rows-6">
             <table>
               <thead>
                 <tr>
@@ -3405,12 +3406,14 @@ function ReportsPage({ lang }: { lang: Lang }) {
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         </>
       )}
 
       {tab === 'daily' && summary && (
         <div className="panel">
+          <div className="table-scroll rows-6">
           <table>
             <thead>
               <tr>
@@ -3432,6 +3435,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
@@ -3448,6 +3452,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
               profitLabel={t(lang, 'profit')}
             />
           )}
+          <div className="table-scroll rows-6">
           <table>
             <thead>
               <tr>
@@ -3470,6 +3475,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
@@ -3486,6 +3492,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
               profitLabel={t(lang, 'profit')}
             />
           )}
+          <div className="table-scroll rows-6">
           <table>
             <thead>
               <tr>
@@ -3510,12 +3517,14 @@ function ReportsPage({ lang }: { lang: Lang }) {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
       {tab !== 'stock' && summary && medRows.length > 0 && (
         <div className="panel">
           <h3 style={{ marginTop: 0 }}>{t(lang, 'topMedicines')}</h3>
+          <div className="table-scroll rows-6">
           <table>
             <thead>
               <tr>
@@ -3538,12 +3547,14 @@ function ReportsPage({ lang }: { lang: Lang }) {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
       {tab !== 'stock' && summary && purchRows.length > 0 && (
         <div className="panel">
           <h3 style={{ marginTop: 0 }}>{t(lang, 'purchasesInPeriod')}</h3>
+          <div className="table-scroll rows-6">
           <table>
             <thead>
               <tr>
@@ -3568,6 +3579,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 

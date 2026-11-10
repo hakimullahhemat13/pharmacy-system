@@ -154,6 +154,8 @@ th { color: #64748b; font-weight: 600; font-size: 13px; }
    (vertical scrollbar at the side) and a wide table scrolls sideways too,
    instead of stretching the whole page. The header row stays in place. */
 .table-scroll { max-height: 320px; overflow-y: auto; overflow-x: auto; }
+/* Reports tables: same scroll box, sized for six records at a time */
+.table-scroll.rows-6 { max-height: 336px; }
 .table-scroll thead th { position: sticky; top: 0; background: #fff; z-index: 1; }
 
 /* Scrollbars inside table boxes stay visible and easy to grab — the side
