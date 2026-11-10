@@ -215,6 +215,28 @@ interface MedRow {
   profit: number;
 }
 
+interface StockTotals {
+  cost_total: number;
+  sale_value: number;
+  expected_profit: number;
+  cost_expiring: number;
+  cost_expired: number;
+}
+
+interface StockMedRow {
+  id: string;
+  name: string;
+  quantity: number;
+  cost_total: number;
+  sale_value: number;
+  expected_profit: number;
+}
+
+interface StockData {
+  totals: StockTotals;
+  medicines: StockMedRow[];
+}
+
 type Page = 'dashboard' | 'medicines' | 'expiry' | 'sales' | 'purchases' | 'suppliers' | 'reports' | 'customers' | 'backup' | 'settings';
 
 const USER_KEY = 'pharmacy_user';
@@ -2955,7 +2977,7 @@ function weekStartStr(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-type ReportTab = 'daily' | 'weekly' | 'monthly' | 'yearly' | 'range';
+type ReportTab = 'daily' | 'weekly' | 'monthly' | 'yearly' | 'range' | 'stock';
 
 function ReportsPage({ lang }: { lang: Lang }) {
   const now = new Date();
@@ -2973,6 +2995,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
   const [days, setDays] = useState<DayRow[]>([]);
   const [months, setMonths] = useState<MonthRow[]>([]);
   const [medRows, setMedRows] = useState<MedRow[]>([]);
+  const [stockData, setStockData] = useState<StockData | null>(null);
   const [error, setError] = useState('');
   const [exporting, setExporting] = useState(false);
   const [printing, setPrinting] = useState(false);
@@ -3001,7 +3024,9 @@ function ReportsPage({ lang }: { lang: Lang }) {
     setError('');
     setExporting(true);
     try {
-      if (tab === 'daily') {
+      if (tab === 'stock') {
+        await api.download('/reports/export?period=stock', 'pharmacy-stock-value.xlsx');
+      } else if (tab === 'daily') {
         await api.download(`/reports/export?period=daily&date=${date}`, `pharmacy-report-daily-${date}.xlsx`);
       } else if (tab === 'weekly') {
         await api.download(
@@ -3032,6 +3057,15 @@ function ReportsPage({ lang }: { lang: Lang }) {
     (async () => {
       try {
         setError('');
+        if (tab === 'stock') {
+          const data = await api.get('/reports/stock-value');
+          if (!alive) return;
+          setStockData({
+            totals: data.totals as StockTotals,
+            medicines: data.medicines as StockMedRow[],
+          });
+          return;
+        }
         if (tab === 'daily') {
           const data = await api.get(`/reports/daily?date=${date}`);
           if (!alive) return;
@@ -3086,6 +3120,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
     { key: 'monthly', label: t(lang, 'monthly') },
     { key: 'yearly', label: t(lang, 'yearly') },
     { key: 'range', label: t(lang, 'range') },
+    { key: 'stock', label: t(lang, 'stockValue') },
   ];
 
   const weekEnd = (() => {
@@ -3213,7 +3248,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
         <button
           className="btn"
           onClick={() => setPrinting(true)}
-          disabled={!summary}
+          disabled={tab === 'stock' ? !stockData : !summary}
           style={{ marginInlineStart: 8 }}
         >
           🖨️ {t(lang, 'printPdf')}
@@ -3222,7 +3257,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
 
       {error && <div className="error-box">{error}</div>}
       {!summary && !error && <p className="muted">{t(lang, 'loading')}</p>}
-      {summary && (
+      {tab !== 'stock' && summary && (
         <div className="cards">
           <div className="card">
             <div className="card-label">{t(lang, 'revenue')}</div>
@@ -3244,6 +3279,59 @@ function ReportsPage({ lang }: { lang: Lang }) {
             </div>
           </div>
         </div>
+      )}
+
+      {tab === 'stock' && stockData && (
+        <>
+          <div className="cards">
+            <div className="card">
+              <div className="card-label">{t(lang, 'totalStockValue')}</div>
+              <div className="card-value">{fmt(stockData.totals.cost_total)}</div>
+              <div className="card-sub">{t(lang, 'currency')}</div>
+            </div>
+            <div className="card profit">
+              <div className="card-label">{t(lang, 'saleValue')}</div>
+              <div className="card-value">{fmt(stockData.totals.sale_value)}</div>
+              <div className="card-sub">
+                {t(lang, 'expectedProfit')}: {fmt(stockData.totals.expected_profit)}
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-label">{t(lang, 'expiringValue')}</div>
+              <div className="card-value">{fmt(stockData.totals.cost_expiring)}</div>
+              <div className="card-sub">{t(lang, 'currency')}</div>
+            </div>
+            <div className="card">
+              <div className="card-label">{t(lang, 'expiredValue')}</div>
+              <div className="card-value">{fmt(stockData.totals.cost_expired)}</div>
+              <div className="card-sub">{t(lang, 'currency')}</div>
+            </div>
+          </div>
+          <div className="panel">
+            <table>
+              <thead>
+                <tr>
+                  <th>{t(lang, 'medicine')}</th>
+                  <th>{t(lang, 'qty')}</th>
+                  <th>{t(lang, 'totalStockValue')}</th>
+                  <th>{t(lang, 'saleValue')}</th>
+                  <th>{t(lang, 'expectedProfit')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stockData.medicines.map((m) => (
+                  <tr key={m.id}>
+                    <td>{m.name}</td>
+                    <td>{fmt(m.quantity)}</td>
+                    <td>{fmt(m.cost_total)}</td>
+                    <td>{fmt(m.sale_value)}</td>
+                    <td>{fmt(m.expected_profit)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
 
       {tab === 'daily' && summary && (
@@ -3328,7 +3416,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
         </div>
       )}
 
-      {summary && medRows.length > 0 && (
+      {tab !== 'stock' && summary && medRows.length > 0 && (
         <div className="panel">
           <h3 style={{ marginTop: 0 }}>{t(lang, 'topMedicines')}</h3>
           <table>
@@ -3357,6 +3445,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
       )}
 
       {printing &&
+        tab !== 'stock' &&
         summary &&
         createPortal(
           <div id="report-print" dir={lang === 'en' ? 'ltr' : 'rtl'}>
@@ -3509,6 +3598,72 @@ function ReportsPage({ lang }: { lang: Lang }) {
                 </table>
               </>
             )}
+            <div style={{ marginTop: 10, fontSize: 11 }}>{new Date().toLocaleString()}</div>
+          </div>,
+          document.body
+        )}
+
+      {printing &&
+        tab === 'stock' &&
+        stockData &&
+        createPortal(
+          <div id="report-print" dir={lang === 'en' ? 'ltr' : 'rtl'}>
+            <div style={{ textAlign: 'center', marginBottom: 10 }}>
+              <div style={{ fontSize: 20, fontWeight: 700 }}>{branch?.name || 'Pharmacy'}</div>
+              {branch?.address && <div>{branch.address}</div>}
+              {branch?.phone && <div>{branch.phone}</div>}
+              <div style={{ fontSize: 15, fontWeight: 600, marginTop: 6 }}>
+                {t(lang, 'reports')} — {t(lang, 'stockValue')}
+              </div>
+            </div>
+            <table>
+              <tbody>
+                <tr>
+                  <td>{t(lang, 'totalStockValue')}</td>
+                  <td>
+                    {fmt(stockData.totals.cost_total)} {t(lang, 'currency')}
+                  </td>
+                </tr>
+                <tr>
+                  <td>{t(lang, 'saleValue')}</td>
+                  <td>{fmt(stockData.totals.sale_value)}</td>
+                </tr>
+                <tr>
+                  <td>{t(lang, 'expectedProfit')}</td>
+                  <td>{fmt(stockData.totals.expected_profit)}</td>
+                </tr>
+                <tr>
+                  <td>{t(lang, 'expiringValue')}</td>
+                  <td>{fmt(stockData.totals.cost_expiring)}</td>
+                </tr>
+                <tr>
+                  <td>{t(lang, 'expiredValue')}</td>
+                  <td>{fmt(stockData.totals.cost_expired)}</td>
+                </tr>
+              </tbody>
+            </table>
+            <table>
+              <thead>
+                <tr>
+                  <th>{t(lang, 'medicine')}</th>
+                  <th>{t(lang, 'qty')}</th>
+                  <th>{t(lang, 'totalStockValue')}</th>
+                  <th>{t(lang, 'saleValue')}</th>
+                  <th>{t(lang, 'expectedProfit')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stockData.medicines.map((m) => (
+                  <tr key={m.id}>
+                    <td>{m.name}</td>
+                    <td>{fmt(m.quantity)}</td>
+                    <td>{fmt(m.cost_total)}</td>
+                    <td>{fmt(m.sale_value)}</td>
+                    <td>{fmt(m.expected_profit)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
             <div style={{ marginTop: 10, fontSize: 11 }}>{new Date().toLocaleString()}</div>
           </div>,
           document.body

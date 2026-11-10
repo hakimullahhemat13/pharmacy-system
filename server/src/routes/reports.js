@@ -129,6 +129,48 @@ async function medicinesForRange(branchId, start, end) {
   return out.slice(0, 100);
 }
 
+// What the shelves are worth right now, per medicine and in total:
+// cost value = quantity on hand × the batch's purchase price. Expired
+// batches still count in the total (the money was spent) but are split
+// out, and only sellable batches (not expired) carry a sale value.
+async function stockValue(branchId) {
+  const [rows] = await pool.query(
+    `SELECT m.id AS id, m.name AS name, m.sale_price AS sale_price,
+            COALESCE(SUM(b.quantity_on_hand), 0) AS qty_all,
+            COALESCE(SUM(b.quantity_on_hand * b.purchase_price), 0) AS cost_all,
+            COALESCE(SUM(CASE WHEN b.expiry_date >= CURDATE() THEN b.quantity_on_hand ELSE 0 END), 0) AS qty_sellable,
+            COALESCE(SUM(CASE WHEN b.expiry_date >= CURDATE() THEN b.quantity_on_hand * b.purchase_price ELSE 0 END), 0) AS cost_sellable,
+            COALESCE(SUM(CASE WHEN b.expiry_date < CURDATE() THEN b.quantity_on_hand * b.purchase_price ELSE 0 END), 0) AS cost_expired,
+            COALESCE(SUM(CASE WHEN b.expiry_date >= CURDATE() AND b.expiry_date <= CURDATE() + INTERVAL 90 DAY THEN b.quantity_on_hand * b.purchase_price ELSE 0 END), 0) AS cost_expiring
+     FROM medicines m
+     JOIN medicine_batches b ON b.medicine_id = m.id AND b.branch_id = m.branch_id AND b.is_deleted = 0
+     WHERE m.branch_id = ? AND m.is_deleted = 0
+     GROUP BY m.id, m.name, m.sale_price
+     HAVING qty_all > 0
+     ORDER BY cost_all DESC`,
+    [branchId]
+  );
+  const medicines = rows.map((r) => {
+    const saleValue = Number(r.qty_sellable) * Number(r.sale_price);
+    return {
+      id: r.id,
+      name: r.name,
+      quantity: Number(r.qty_all),
+      cost_total: Number(r.cost_all),
+      sale_value: saleValue,
+      expected_profit: saleValue - Number(r.cost_sellable),
+    };
+  });
+  const totals = {
+    cost_total: medicines.reduce((a, m) => a + m.cost_total, 0),
+    sale_value: medicines.reduce((a, m) => a + m.sale_value, 0),
+    expected_profit: medicines.reduce((a, m) => a + m.expected_profit, 0),
+    cost_expiring: rows.reduce((a, r) => a + Number(r.cost_expiring), 0),
+    cost_expired: rows.reduce((a, r) => a + Number(r.cost_expired), 0),
+  };
+  return { totals, medicines };
+}
+
 // GET /api/reports/daily?date=YYYY-MM-DD
 router.get('/daily', authRequired, async (req, res) => {
   const date = req.query.date === undefined ? fmtDate(new Date()) : String(req.query.date);
@@ -384,6 +426,16 @@ router.get('/medicines', authRequired, async (req, res) => {
 // exceljs is required lazily so a server without the package still runs —
 // only this endpoint fails, and its message carries the install command.
 // The breakdown merges below intentionally mirror /monthly and /yearly.
+// GET /api/reports/stock-value — current shelf value (not period-based).
+router.get('/stock-value', authRequired, async (req, res) => {
+  try {
+    const data = await stockValue(req.user.branch_id);
+    return res.json({ status: 'ok', totals: data.totals, medicines: data.medicines });
+  } catch (err) {
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+});
+
 router.get('/export', authRequired, async (req, res) => {
   let ExcelJS;
   try {
@@ -396,9 +448,49 @@ router.get('/export', authRequired, async (req, res) => {
   }
 
   const branchId = req.user.branch_id;
-  const period = ['daily', 'weekly', 'monthly', 'yearly', 'range'].includes(String(req.query.period))
+  const period = ['daily', 'weekly', 'monthly', 'yearly', 'range', 'stock'].includes(String(req.query.period))
     ? String(req.query.period)
     : 'daily';
+
+  if (period === 'stock') {
+    try {
+      const data = await stockValue(branchId);
+      const wb = new ExcelJS.Workbook();
+      wb.creator = 'Pharmacy System';
+      wb.created = new Date();
+      const ws = wb.addWorksheet('Summary');
+      ws.columns = [{ width: 24 }, { width: 20 }];
+      const title = ws.addRow(['Pharmacy report', 'Stock value']);
+      title.font = { bold: true, size: 14 };
+      ws.addRow([]);
+      const pairs = [
+        ['Total value (cost, AFN)', data.totals.cost_total, '#,##0.00'],
+        ['Sale value (sellable, AFN)', data.totals.sale_value, '#,##0.00'],
+        ['Expected profit (AFN)', data.totals.expected_profit, '#,##0.00'],
+        ['Expiring within 90 days (cost, AFN)', data.totals.cost_expiring, '#,##0.00'],
+        ['Expired on hand (cost, AFN)', data.totals.cost_expired, '#,##0.00'],
+      ];
+      for (const [name, value, fmt] of pairs) {
+        const row = ws.addRow([name, value]);
+        row.getCell(1).font = { bold: true };
+        row.getCell(2).numFmt = fmt;
+      }
+      const sh = wb.addWorksheet('Stock');
+      sh.addRow(['Medicine', 'Qty', 'Cost value (AFN)', 'Sale value (AFN)', 'Expected profit (AFN)']);
+      for (const m of data.medicines) {
+        sh.addRow([m.name, m.quantity, m.cost_total, m.sale_value, m.expected_profit]);
+      }
+      for (const col of [3, 4, 5]) sh.getColumn(col).numFmt = '#,##0.00';
+      sh.getRow(1).font = { bold: true };
+      sh.views = [{ state: 'frozen', ySplit: 1 }];
+      const buffer = await wb.xlsx.writeBuffer();
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', 'attachment; filename="pharmacy-stock-value.xlsx"');
+      return res.send(buffer);
+    } catch (err) {
+      return res.status(500).json({ status: 'error', message: err.code || err.message });
+    }
+  }
 
   let start;
   let end;
