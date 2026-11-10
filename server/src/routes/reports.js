@@ -70,6 +70,50 @@ async function summaryForRange(branchId, start, end) {
   };
 }
 
+// Per-medicine sales for a range: quantity, revenue, cost and profit per
+// medicine, with the range's returns netted off each medicine (same
+// convention as the summaries). Sorted most-profitable first.
+async function medicinesForRange(branchId, start, end) {
+  const [rows] = await pool.query(
+    `SELECT m.id AS id, m.name AS name,
+            COALESCE(SUM(si.quantity), 0) AS qty,
+            COALESCE(SUM(si.quantity * si.unit_price), 0) AS revenue,
+            COALESCE(SUM(si.quantity * si.cost_price), 0) AS cost
+     FROM sale_items si
+     JOIN sales s ON s.id = si.sale_id
+     JOIN medicines m ON m.id = si.medicine_id
+     WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at IS NULL AND s.sale_date >= ? AND s.sale_date < ?
+     GROUP BY m.id, m.name`,
+    [branchId, start, end]
+  );
+  const [rets] = await pool.query(
+    `SELECT si.medicine_id AS mid,
+            COALESCE(SUM(sr.quantity_change), 0) AS qty,
+            COALESCE(SUM(sr.quantity_change * si.unit_price), 0) AS value,
+            COALESCE(SUM(sr.quantity_change * si.cost_price), 0) AS cost
+     FROM stock_transactions sr
+     JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
+     JOIN sales sv ON sv.id = sr.reference_id AND sv.voided_at IS NULL
+     WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at >= ? AND sr.created_at < ?
+     GROUP BY si.medicine_id`,
+    [branchId, start, end]
+  );
+  const retByMed = new Map(
+    rets.map((r) => [String(r.mid), { qty: Number(r.qty), value: Number(r.value), cost: Number(r.cost) }])
+  );
+  const out = [];
+  for (const r of rows) {
+    const ret = retByMed.get(String(r.id)) || { qty: 0, value: 0, cost: 0 };
+    const quantity = Number(r.qty) - ret.qty;
+    const revenue = Number(r.revenue) - ret.value;
+    const cost = Number(r.cost) - ret.cost;
+    if (quantity === 0 && revenue === 0) continue;
+    out.push({ id: r.id, name: r.name, quantity, revenue, cost_total: cost, profit: revenue - cost });
+  }
+  out.sort((a, b) => b.profit - a.profit || b.quantity - a.quantity);
+  return out.slice(0, 100);
+}
+
 // GET /api/reports/daily?date=YYYY-MM-DD
 router.get('/daily', authRequired, async (req, res) => {
   const date = req.query.date === undefined ? fmtDate(new Date()) : String(req.query.date);
@@ -253,7 +297,50 @@ router.get('/yearly', authRequired, async (req, res) => {
   }
 });
 
-// GET /api/reports/export?period=daily|monthly|yearly&date=&year=&month=
+// GET /api/reports/medicines?period=daily|weekly|monthly|yearly&date=&year=&month=
+// Top medicines (by profit) for the same period the Reports page is showing.
+router.get('/medicines', authRequired, async (req, res) => {
+  const period = ['daily', 'weekly', 'monthly', 'yearly'].includes(String(req.query.period))
+    ? String(req.query.period)
+    : 'daily';
+  let start;
+  let end;
+  if (period === 'daily' || period === 'weekly') {
+    const date = req.query.date === undefined ? fmtDate(new Date()) : String(req.query.date);
+    if (!isValidDateString(date)) {
+      return res.status(400).json({ status: 'error', message: 'date must be YYYY-MM-DD' });
+    }
+    const endDt = new Date(`${date}T00:00:00Z`);
+    endDt.setUTCDate(endDt.getUTCDate() + (period === 'weekly' ? 7 : 1));
+    start = date;
+    end = `${endDt.getUTCFullYear()}-${pad(endDt.getUTCMonth() + 1)}-${pad(endDt.getUTCDate())}`;
+  } else if (period === 'monthly') {
+    const now = new Date();
+    const year = req.query.year === undefined ? now.getFullYear() : Number(req.query.year);
+    const month = req.query.month === undefined ? now.getMonth() + 1 : Number(req.query.month);
+    if (!Number.isInteger(year) || year < 2000 || year > 2100 || !Number.isInteger(month) || month < 1 || month > 12) {
+      return res.status(400).json({ status: 'error', message: 'Give a valid year and month (1-12)' });
+    }
+    start = `${year}-${pad(month)}-01`;
+    end = month === 12 ? `${year + 1}-01-01` : `${year}-${pad(month + 1)}-01`;
+  } else {
+    const now = new Date();
+    const year = req.query.year === undefined ? now.getFullYear() : Number(req.query.year);
+    if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+      return res.status(400).json({ status: 'error', message: 'Give a valid year' });
+    }
+    start = `${year}-01-01`;
+    end = `${year + 1}-01-01`;
+  }
+  try {
+    const medicines = await medicinesForRange(req.user.branch_id, start, end);
+    return res.json({ status: 'ok', period, start, end, medicines });
+  } catch (err) {
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+});
+
+// GET /api/reports/export?period=daily|weekly|monthly|yearly&date=&year=&month=
 // The same numbers the Reports page shows, as a real .xlsx download: a
 // Summary sheet plus the period's detail rows (bills / days / months).
 // exceljs is required lazily so a server without the package still runs —
@@ -451,6 +538,17 @@ router.get('/export', authRequired, async (req, res) => {
       }
       for (const col of [3, 4, 5]) sh.getColumn(col).numFmt = '#,##0.00';
       styleHeader(sh);
+    }
+
+    const medRows = await medicinesForRange(branchId, start, end);
+    if (medRows.length) {
+      const ms = wb.addWorksheet('Medicines');
+      ms.addRow(['Medicine', 'Qty', 'Revenue (AFN)', 'Cost (AFN)', 'Profit (AFN)']);
+      for (const m of medRows) {
+        ms.addRow([m.name, m.quantity, m.revenue, m.cost_total, m.profit]);
+      }
+      for (const col of [3, 4, 5]) ms.getColumn(col).numFmt = '#,##0.00';
+      styleHeader(ms);
     }
 
     const buffer = await wb.xlsx.writeBuffer();

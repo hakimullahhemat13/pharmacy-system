@@ -18,7 +18,7 @@ interface Summary {
   cost_total: number;
   discount_total: number;
   profit: number;
-  returns_value?: number;
+  returns_total?: number;
   returned_items?: number;
 }
 
@@ -201,6 +201,15 @@ interface DayRow {
 interface MonthRow {
   month: number;
   sales_count: number;
+  revenue: number;
+  cost_total: number;
+  profit: number;
+}
+
+interface MedRow {
+  id: string;
+  name: string;
+  quantity: number;
   revenue: number;
   cost_total: number;
   profit: number;
@@ -2959,6 +2968,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
   const [daySales, setDaySales] = useState<SaleRow[]>([]);
   const [days, setDays] = useState<DayRow[]>([]);
   const [months, setMonths] = useState<MonthRow[]>([]);
+  const [medRows, setMedRows] = useState<MedRow[]>([]);
   const [error, setError] = useState('');
   const [exporting, setExporting] = useState(false);
   const [printing, setPrinting] = useState(false);
@@ -3034,6 +3044,17 @@ function ReportsPage({ lang }: { lang: Lang }) {
           setSummary(data.summary as Summary);
           setMonths(data.months as MonthRow[]);
         }
+        const medParams =
+          tab === 'daily'
+            ? `period=daily&date=${date}`
+            : tab === 'weekly'
+              ? `period=weekly&date=${weekStart}`
+              : tab === 'monthly'
+                ? `period=monthly&year=${year}&month=${month}`
+                : `period=yearly&year=${year}`;
+        const medData = await api.get(`/reports/medicines?${medParams}`);
+        if (!alive) return;
+        setMedRows(medData.medicines as MedRow[]);
       } catch (err) {
         if (alive) setError(err instanceof Error ? err.message : 'Error');
       }
@@ -3266,6 +3287,34 @@ function ReportsPage({ lang }: { lang: Lang }) {
         </div>
       )}
 
+      {summary && medRows.length > 0 && (
+        <div className="panel">
+          <h3 style={{ marginTop: 0 }}>{t(lang, 'topMedicines')}</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>{t(lang, 'medicine')}</th>
+                <th>{t(lang, 'qty')}</th>
+                <th>{t(lang, 'revenue')}</th>
+                <th>{t(lang, 'cost')}</th>
+                <th>{t(lang, 'profit')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {medRows.map((m) => (
+                <tr key={m.id}>
+                  <td>{m.name}</td>
+                  <td>{fmt(m.quantity)}</td>
+                  <td>{fmt(m.revenue)}</td>
+                  <td>{fmt(m.cost_total)}</td>
+                  <td>{fmt(m.profit)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {printing &&
         summary &&
         createPortal(
@@ -3308,11 +3357,11 @@ function ReportsPage({ lang }: { lang: Lang }) {
                     <td>{fmt(summary.discount_total)}</td>
                   </tr>
                 )}
-                {Number(summary.returns_value || 0) > 0 && (
+                {Number(summary.returns_total || 0) > 0 && (
                   <tr>
                     <td>{t(lang, 'returnsLabel')}</td>
                     <td>
-                      {fmt(summary.returns_value || 0)} ({fmt(summary.returned_items || 0)})
+                      {fmt(summary.returns_total || 0)} ({fmt(summary.returned_items || 0)})
                     </td>
                   </tr>
                 )}
@@ -3389,6 +3438,35 @@ function ReportsPage({ lang }: { lang: Lang }) {
                   ))}
                 </tbody>
               </table>
+            )}
+            {medRows.length > 0 && (
+              <>
+                <div style={{ fontSize: 14, fontWeight: 600, marginTop: 12 }}>
+                  {t(lang, 'topMedicines')}
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>{t(lang, 'medicine')}</th>
+                      <th>{t(lang, 'qty')}</th>
+                      <th>{t(lang, 'revenue')}</th>
+                      <th>{t(lang, 'cost')}</th>
+                      <th>{t(lang, 'profit')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {medRows.map((m) => (
+                      <tr key={m.id}>
+                        <td>{m.name}</td>
+                        <td>{fmt(m.quantity)}</td>
+                        <td>{fmt(m.revenue)}</td>
+                        <td>{fmt(m.cost_total)}</td>
+                        <td>{fmt(m.profit)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
             )}
             <div style={{ marginTop: 10, fontSize: 11 }}>{new Date().toLocaleString()}</div>
           </div>,
