@@ -1,6 +1,6 @@
 # Pharmacy Management System
 
-A complete management system for a pharmacy — medicines and stock, purchases and supplier accounts, customers, a fast point-of-sale with credit sales and returns, and daily-to-yearly profit reports with Excel export — built to run on the pharmacy's own computer, in **Pashto, Dari and English**.
+A complete management system for a pharmacy — medicines and stock, purchases and supplier accounts, customers, a fast point-of-sale with credit sales and returns, and rich profit reports (daily to yearly, custom ranges, charts, Excel export and print/PDF) — built to run on the pharmacy's own computer, in **Pashto, Dari and English**.
 
 ![Dashboard](docs/screenshots/dashboard.png)
 
@@ -23,7 +23,10 @@ A full-stack web application that runs locally (no internet needed) and handles 
 - **Sales returns & void** — a bill can be corrected after the fact: returned items go back into the exact batch they were sold from (never more than was sold), or a mistaken bill can be **voided** in one click, returning everything to the shelf; returned and voided bills are marked in the list, and reports exclude them truthfully
 - **Customers** — a register with search by name or phone, a full purchase history per customer, dues at a glance, and edit / soft-delete
 - **Expiry dates page & write-off** — every batch in one list, flagged OK / warning / critical / expired with a per-medicine warning period (in months, default 3); expired stock is **written off** formally — quantity, reason and user recorded in a history — instead of silently disappearing
-- **Reports** — **daily, weekly, monthly and yearly** reports with revenue, cost of goods and **real profit** (each sale keeps a snapshot of its batch cost, so reports stay correct even when prices change), plus one-click **export to Excel (.xlsx)** for every period
+- **Reports** — **daily, weekly, monthly and yearly** reports plus a **custom date range**, with revenue, cost of goods, **real profit** (each sale keeps a snapshot of its batch cost, so reports stay correct even when prices change) and the **profit-margin %** on the summary cards
+- **Charts & breakdowns** — a bar chart of revenue and profit per day or month (negative-profit days turn red), **Top medicines** by profit for every period, and **purchases per supplier** (bought, returned, net, paid) so both sides of the money are visible
+- **Stock value report** — what the shelf is worth right now: cost value, sale value and expected profit per medicine, with the value of stock expiring within 90 days and of expired stock shown separately — the report that exposes medicines priced at or below cost
+- **Print, PDF & Excel** — every report prints on A4 (or saves as PDF) with the pharmacy's header, and exports to **Excel (.xlsx)** with Summary, detail, Medicines and Purchases sheets; long tables sit in scroll boxes that show six records at a time
 - **Settings & user management** — every user can change their own password and interface language; admins manage the pharmacy's branch details and user accounts (roles: admin / pharmacist / cashier, with activate / deactivate)
 - **Backup & restore** — admins can download a full database backup and restore from one, right inside the app
 - **Three languages** — Pashto (default, RTL), Dari (RTL) and English (LTR), switchable at any time; phone numbers are validated system-wide (exactly 10 digits)
@@ -117,12 +120,12 @@ Log in with the admin user and the system is ready.
 | Purchases | `GET/POST /api/purchases`, `GET/PUT/DELETE /api/purchases/:id`, `POST /api/purchases/:id/return` |
 | Sales | `GET/POST /api/sales`, `POST /api/sales/:id/return`, `POST /api/sales/:id/payment`, `POST /api/sales/:id/void` |
 | Customers | `GET/POST /api/customers`, `GET /api/customers/:id/history`, `PUT/DELETE /api/customers/:id` |
-| Reports | `GET /api/reports/daily`, `/weekly`, `/monthly`, `/yearly`, `GET /api/reports/export` (Excel) |
+| Reports | `GET /api/reports/daily`, `/weekly`, `/monthly`, `/yearly`, `/range`, `/medicines`, `/purchases`, `/stock-value`, `GET /api/reports/export` (Excel) |
 | Settings | `POST /api/settings/password`, `PUT /api/settings/language`, `GET/PUT /api/settings/branch`, `GET/POST /api/settings/users` |
 | Backup | `GET /api/backup/download`, `POST /api/backup/restore` (admin only) |
 
 ## Status & roadmap
 
-Phase 1 (local, single computer) is **complete and in daily-test use**: medicines, purchases with guards, supplier accounts, point of sale with receipts, credit sales, returns and voids, customers, expiry tracking with write-offs, reports with Excel export, settings with user management, and in-app backup & restore — all verified live, in three languages.
+Phase 1 (local, single computer) is **complete and in daily-test use**: medicines, purchases with guards, supplier accounts, point of sale with receipts, credit sales, returns and voids, customers, expiry tracking with write-offs, reports with charts, per-period medicine and supplier breakdowns, a stock-value report, Excel export and print/PDF, settings with user management, and in-app backup & restore — all verified live, in three languages.
 
 Planned next (Phase 2): optional online access and multi-branch synchronisation, and a mobile companion app.
