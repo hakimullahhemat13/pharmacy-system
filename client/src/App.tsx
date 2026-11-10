@@ -2983,6 +2983,7 @@ function BarChart({
 }) {
   const max = Math.max(1, ...points.map((p) => Math.max(p.revenue, Math.abs(p.profit))));
   const showLabels = points.length <= 31;
+  const showValues = points.length <= 20;
   return (
     <div className="chart-wrap">
       <div className="chart-legend">
@@ -3002,13 +3003,19 @@ function BarChart({
           >
             <div className="chart-bars">
               <div
-                className="bar bar-rev"
-                style={{ height: `${Math.max(2, (p.revenue / max) * 100)}%` }}
-              />
+                className="bar-col"
+                style={{ height: `${Math.max(4, (p.revenue / max) * 100)}%` }}
+              >
+                {showValues && <span className="bar-val">{fmt(p.revenue)}</span>}
+                <div className="bar bar-rev" />
+              </div>
               <div
-                className={`bar ${p.profit < 0 ? 'bar-neg' : 'bar-profit'}`}
-                style={{ height: `${Math.max(2, (Math.abs(p.profit) / max) * 100)}%` }}
-              />
+                className="bar-col"
+                style={{ height: `${Math.max(4, (Math.abs(p.profit) / max) * 100)}%` }}
+              >
+                {showValues && <span className="bar-val">{fmt(p.profit)}</span>}
+                <div className={`bar ${p.profit < 0 ? 'bar-neg' : 'bar-profit'}`} />
+              </div>
             </div>
             {showLabels && <div className="chart-label">{p.label}</div>}
           </div>

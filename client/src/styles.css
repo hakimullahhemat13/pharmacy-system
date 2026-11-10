@@ -237,8 +237,11 @@ th { color: #64748b; font-weight: 600; font-size: 13px; }
 .dot-rev { background: #64748b; }
 .dot-profit { background: #16a34a; }
 .chart { display: flex; align-items: flex-end; gap: 6px; height: 150px; overflow-x: auto; padding-top: 6px; border-bottom: 1px solid #cbd5e1; }
-.chart-col { flex: 1 1 0; min-width: 8px; max-width: 56px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
+.chart-col { flex: 1 1 0; min-width: 8px; max-width: 92px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
 .chart-bars { display: flex; align-items: flex-end; gap: 2px; width: 100%; flex: 1; }
+.bar-col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; min-height: 0; }
+.bar-col .bar { flex: 1; width: 100%; }
+.bar-val { font-size: 10px; color: #334155; text-align: center; line-height: 1.2; margin-bottom: 2px; white-space: nowrap; }
 .bar { flex: 1; border-radius: 2px 2px 0 0; min-height: 2px; }
 .bar-rev { background: #64748b; }
 .bar-profit { background: #16a34a; }
