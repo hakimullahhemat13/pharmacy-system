@@ -3383,7 +3383,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
             </div>
           </div>
           <div className="panel">
-            <div className="table-scroll rows-6">
+            <div className="table-scroll rows-6" style={{ maxHeight: 268, overflowY: 'auto', overflowX: 'auto', border: '1px solid #cbd5e1', borderRadius: 10 }}>
             <table>
               <thead>
                 <tr>
@@ -3413,7 +3413,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
 
       {tab === 'daily' && summary && (
         <div className="panel">
-          <div className="table-scroll rows-6">
+          <div className="table-scroll rows-6" style={{ maxHeight: 268, overflowY: 'auto', overflowX: 'auto', border: '1px solid #cbd5e1', borderRadius: 10 }}>
           <table>
             <thead>
               <tr>
@@ -3452,7 +3452,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
               profitLabel={t(lang, 'profit')}
             />
           )}
-          <div className="table-scroll rows-6">
+          <div className="table-scroll rows-6" style={{ maxHeight: 268, overflowY: 'auto', overflowX: 'auto', border: '1px solid #cbd5e1', borderRadius: 10 }}>
           <table>
             <thead>
               <tr>
@@ -3492,7 +3492,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
               profitLabel={t(lang, 'profit')}
             />
           )}
-          <div className="table-scroll rows-6">
+          <div className="table-scroll rows-6" style={{ maxHeight: 268, overflowY: 'auto', overflowX: 'auto', border: '1px solid #cbd5e1', borderRadius: 10 }}>
           <table>
             <thead>
               <tr>
@@ -3524,7 +3524,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
       {tab !== 'stock' && summary && medRows.length > 0 && (
         <div className="panel">
           <h3 style={{ marginTop: 0 }}>{t(lang, 'topMedicines')}</h3>
-          <div className="table-scroll rows-6">
+          <div className="table-scroll rows-6" style={{ maxHeight: 268, overflowY: 'auto', overflowX: 'auto', border: '1px solid #cbd5e1', borderRadius: 10 }}>
           <table>
             <thead>
               <tr>
@@ -3554,7 +3554,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
       {tab !== 'stock' && summary && purchRows.length > 0 && (
         <div className="panel">
           <h3 style={{ marginTop: 0 }}>{t(lang, 'purchasesInPeriod')}</h3>
-          <div className="table-scroll rows-6">
+          <div className="table-scroll rows-6" style={{ maxHeight: 268, overflowY: 'auto', overflowX: 'auto', border: '1px solid #cbd5e1', borderRadius: 10 }}>
           <table>
             <thead>
               <tr>
