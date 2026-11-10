@@ -2968,6 +2968,56 @@ function todayStr(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+// Simple CSS bar chart for the reports: revenue (grey) and profit
+// (green, red when negative) per day or month. No chart library — the
+// bars are divs, so it works offline and adds no weight. Exact figures
+// stay in the table below it; hovering a column shows both values.
+function BarChart({
+  points,
+  revLabel,
+  profitLabel,
+}: {
+  points: { label: string; revenue: number; profit: number }[];
+  revLabel: string;
+  profitLabel: string;
+}) {
+  const max = Math.max(1, ...points.map((p) => Math.max(p.revenue, Math.abs(p.profit))));
+  const showLabels = points.length <= 31;
+  return (
+    <div className="chart-wrap">
+      <div className="chart-legend">
+        <span>
+          <i className="dot dot-rev" /> {revLabel}
+        </span>
+        <span>
+          <i className="dot dot-profit" /> {profitLabel}
+        </span>
+      </div>
+      <div className="chart">
+        {points.map((p) => (
+          <div
+            className="chart-col"
+            key={p.label}
+            title={`${p.label} · ${revLabel}: ${fmt(p.revenue)} · ${profitLabel}: ${fmt(p.profit)}`}
+          >
+            <div className="chart-bars">
+              <div
+                className="bar bar-rev"
+                style={{ height: `${Math.max(2, (p.revenue / max) * 100)}%` }}
+              />
+              <div
+                className={`bar ${p.profit < 0 ? 'bar-neg' : 'bar-profit'}`}
+                style={{ height: `${Math.max(2, (Math.abs(p.profit) / max) * 100)}%` }}
+              />
+            </div>
+            {showLabels && <div className="chart-label">{p.label}</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // The most recent Saturday (start of the Afghan work week) as YYYY-MM-DD.
 function weekStartStr(): string {
   const d = new Date();
@@ -3362,6 +3412,17 @@ function ReportsPage({ lang }: { lang: Lang }) {
 
       {(tab === 'monthly' || tab === 'weekly' || tab === 'range') && summary && (
         <div className="panel">
+          {days.length > 0 && (
+            <BarChart
+              points={days.map((d) => ({
+                label: String(d.day).slice(5),
+                revenue: d.revenue,
+                profit: d.profit,
+              }))}
+              revLabel={t(lang, 'revenue')}
+              profitLabel={t(lang, 'profit')}
+            />
+          )}
           <table>
             <thead>
               <tr>
@@ -3389,6 +3450,17 @@ function ReportsPage({ lang }: { lang: Lang }) {
 
       {tab === 'yearly' && summary && (
         <div className="panel">
+          {months.length > 0 && (
+            <BarChart
+              points={months.map((m) => ({
+                label: `${year}-${String(m.month).padStart(2, '0')}`,
+                revenue: m.revenue,
+                profit: m.profit,
+              }))}
+              revLabel={t(lang, 'revenue')}
+              profitLabel={t(lang, 'profit')}
+            />
+          )}
           <table>
             <thead>
               <tr>
