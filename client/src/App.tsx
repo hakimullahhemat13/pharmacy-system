@@ -18,6 +18,8 @@ interface Summary {
   cost_total: number;
   discount_total: number;
   profit: number;
+  returns_value?: number;
+  returned_items?: number;
 }
 
 interface Batch {
@@ -2959,6 +2961,27 @@ function ReportsPage({ lang }: { lang: Lang }) {
   const [months, setMonths] = useState<MonthRow[]>([]);
   const [error, setError] = useState('');
   const [exporting, setExporting] = useState(false);
+  const [printing, setPrinting] = useState(false);
+  const [branch, setBranch] = useState<BranchInfo | null>(null);
+
+  useEffect(() => {
+    api
+      .get('/settings/branch')
+      .then((data) => setBranch(data.branch as BranchInfo))
+      .catch(() => undefined);
+  }, []);
+
+  // Print the report sheet as soon as it has rendered (same pattern as
+  // the receipt): the browser dialog offers both the printer and
+  // "Save as PDF", and the browser renders Pashto text correctly.
+  useEffect(() => {
+    if (!printing) return;
+    const timer = setTimeout(() => {
+      window.print();
+      setPrinting(false);
+    }, 80);
+    return () => clearTimeout(timer);
+  }, [printing]);
 
   const doExport = async () => {
     setError('');
@@ -3026,6 +3049,22 @@ function ReportsPage({ lang }: { lang: Lang }) {
     { key: 'monthly', label: t(lang, 'monthly') },
     { key: 'yearly', label: t(lang, 'yearly') },
   ];
+
+  const weekEnd = (() => {
+    const d = new Date(`${weekStart}T00:00:00`);
+    if (Number.isNaN(d.getTime())) return weekStart;
+    d.setDate(d.getDate() + 6);
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  })();
+  const periodTitle =
+    tab === 'daily'
+      ? `${t(lang, 'daily')} — ${date}`
+      : tab === 'weekly'
+        ? `${t(lang, 'weekly')} — ${weekStart} → ${weekEnd}`
+        : tab === 'monthly'
+          ? `${t(lang, 'monthly')} — ${year}-${String(month).padStart(2, '0')}`
+          : `${t(lang, 'yearly')} — ${year}`;
 
   return (
     <>
@@ -3108,6 +3147,14 @@ function ReportsPage({ lang }: { lang: Lang }) {
       <div style={{ margin: '10px 0' }}>
         <button className="btn primary" onClick={doExport} disabled={exporting}>
           📊 {exporting ? t(lang, 'loading') : t(lang, 'exportExcel')}
+        </button>
+        <button
+          className="btn"
+          onClick={() => setPrinting(true)}
+          disabled={!summary}
+          style={{ marginInlineStart: 8 }}
+        >
+          🖨️ {t(lang, 'printPdf')}
         </button>
       </div>
 
@@ -3218,6 +3265,135 @@ function ReportsPage({ lang }: { lang: Lang }) {
           </table>
         </div>
       )}
+
+      {printing &&
+        summary &&
+        createPortal(
+          <div id="report-print" dir={lang === 'en' ? 'ltr' : 'rtl'}>
+            <div style={{ textAlign: 'center', marginBottom: 10 }}>
+              <div style={{ fontSize: 20, fontWeight: 700 }}>{branch?.name || 'Pharmacy'}</div>
+              {branch?.address && <div>{branch.address}</div>}
+              {branch?.phone && <div>{branch.phone}</div>}
+              <div style={{ fontSize: 15, fontWeight: 600, marginTop: 6 }}>
+                {t(lang, 'reports')} — {periodTitle}
+              </div>
+            </div>
+            <table>
+              <tbody>
+                <tr>
+                  <td>{t(lang, 'revenue')}</td>
+                  <td>
+                    {fmt(summary.revenue)} {t(lang, 'currency')}
+                  </td>
+                </tr>
+                <tr>
+                  <td>{t(lang, 'cost')}</td>
+                  <td>{fmt(summary.cost_total)}</td>
+                </tr>
+                <tr>
+                  <td>{t(lang, 'profit')}</td>
+                  <td>{fmt(summary.profit)}</td>
+                </tr>
+                <tr>
+                  <td>{t(lang, 'salesCount')}</td>
+                  <td>{fmt(summary.sales_count)}</td>
+                </tr>
+                <tr>
+                  <td>{t(lang, 'itemsSold')}</td>
+                  <td>{fmt(summary.items_sold)}</td>
+                </tr>
+                {Number(summary.discount_total) > 0 && (
+                  <tr>
+                    <td>{t(lang, 'discount')}</td>
+                    <td>{fmt(summary.discount_total)}</td>
+                  </tr>
+                )}
+                {Number(summary.returns_value || 0) > 0 && (
+                  <tr>
+                    <td>{t(lang, 'returnsLabel')}</td>
+                    <td>
+                      {fmt(summary.returns_value || 0)} ({fmt(summary.returned_items || 0)})
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+            {tab === 'daily' && (
+              <table>
+                <thead>
+                  <tr>
+                    <th>{t(lang, 'invoice')}</th>
+                    <th>{t(lang, 'customer')}</th>
+                    <th>{t(lang, 'lineTotal')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {daySales.map((s) => (
+                    <tr key={s.id}>
+                      <td>
+                        {s.invoice_no} · {String(s.sale_date).slice(11, 16)}
+                      </td>
+                      <td>{s.customer_name || t(lang, 'walkIn')}</td>
+                      <td>{fmt(Number(s.net_total))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {(tab === 'weekly' || tab === 'monthly') && (
+              <table>
+                <thead>
+                  <tr>
+                    <th>{t(lang, 'dateLabel')}</th>
+                    <th>{t(lang, 'salesCount')}</th>
+                    <th>{t(lang, 'revenue')}</th>
+                    <th>{t(lang, 'cost')}</th>
+                    <th>{t(lang, 'profit')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {days.map((d) => (
+                    <tr key={d.day}>
+                      <td>{String(d.day).slice(0, 10)}</td>
+                      <td>{fmt(d.sales_count)}</td>
+                      <td>{fmt(d.revenue)}</td>
+                      <td>{fmt(d.cost_total)}</td>
+                      <td>{fmt(d.profit)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {tab === 'yearly' && (
+              <table>
+                <thead>
+                  <tr>
+                    <th>{t(lang, 'month')}</th>
+                    <th>{t(lang, 'salesCount')}</th>
+                    <th>{t(lang, 'revenue')}</th>
+                    <th>{t(lang, 'cost')}</th>
+                    <th>{t(lang, 'profit')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {months.map((m) => (
+                    <tr key={m.month}>
+                      <td>
+                        {year}-{String(m.month).padStart(2, '0')}
+                      </td>
+                      <td>{fmt(m.sales_count)}</td>
+                      <td>{fmt(m.revenue)}</td>
+                      <td>{fmt(m.cost_total)}</td>
+                      <td>{fmt(m.profit)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <div style={{ marginTop: 10, fontSize: 11 }}>{new Date().toLocaleString()}</div>
+          </div>,
+          document.body
+        )}
     </>
   );
 }

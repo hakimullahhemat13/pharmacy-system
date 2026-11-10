@@ -212,6 +212,24 @@ th { color: #64748b; font-weight: 600; font-size: 13px; }
     background: #fff;
   }
 }
+/* Printable report sheet (A4): same portal pattern as the receipt.
+   Hidden on screen; when printing, #root is already removed by the
+   receipt rules above, so ONLY this sheet prints. The browser dialog
+   covers both asks: a real printer, or "Save as PDF". */
+#report-print { display: none; }
+@media print {
+  #report-print {
+    display: block;
+    padding: 10mm;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: #000;
+    background: #fff;
+  }
+  #report-print table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  #report-print th, #report-print td { border: 1px solid #999; padding: 4px 6px; text-align: start; }
+}
+
 tr.row-expired td { background: #fff7f7; }
 
 .empty-note { color: #16a34a; font-size: 15px; padding: 8px 0 2px; }
