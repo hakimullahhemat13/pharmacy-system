@@ -2533,6 +2533,10 @@ function SuppliersPage({ lang }: { lang: Lang }) {
   const [payAmount, setPayAmount] = useState('');
   const [payMsg, setPayMsg] = useState('');
   const [payError, setPayError] = useState('');
+  const [supFormOpen, setSupFormOpen] = useState(false);
+  const [scrollToDetail, setScrollToDetail] = useState(false);
+  const [delArm, setDelArm] = useState('');
+  const detailRef = useRef<HTMLDivElement>(null);
 
   const load = async () => {
     const data = await api.get('/suppliers');
@@ -2541,6 +2545,36 @@ function SuppliersPage({ lang }: { lang: Lang }) {
   useEffect(() => {
     load().catch((err) => setError(err instanceof Error ? err.message : 'Error'));
   }, []);
+
+  // After an Edit click from the list, bring the account panel (with the
+  // edit form) into view once it has loaded. Refreshes after a save or a
+  // payment do not scroll — the flag is only set by the Edit button.
+  useEffect(() => {
+    if (detail && scrollToDetail) {
+      detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setScrollToDetail(false);
+    }
+  }, [detail, scrollToDetail]);
+
+  const editFromList = (id: string) => {
+    setScrollToDetail(true);
+    openDetail(id);
+  };
+
+  const doDelete = async (id: string) => {
+    setError('');
+    setMsg('');
+    try {
+      await api.del(`/suppliers/${id}`);
+      setMsg(`✅ ${t(lang, 'supplierDeleted')}`);
+      setDelArm('');
+      if (detail && detail.id === id) setDetail(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+      setDelArm('');
+    }
+  };
 
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2560,6 +2594,7 @@ function SuppliersPage({ lang }: { lang: Lang }) {
       setName('');
       setPhone('');
       setAddress('');
+      setSupFormOpen(false);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error');
@@ -2627,34 +2662,93 @@ function SuppliersPage({ lang }: { lang: Lang }) {
   const shown = list.filter(
     (s) => !query.trim() || s.name.toLowerCase().includes(query.trim().toLowerCase())
   );
+  const totalPurchased = list.reduce((s, r) => s + Number(r.purchases_total || 0), 0);
+  const totalPaid = list.reduce((s, r) => s + Number(r.paid_total || 0), 0);
+  const totalDue = list.reduce((s, r) => s + Number(r.due_total || 0), 0);
 
   return (
     <>
-      <h2>{t(lang, 'suppliers')}</h2>
+      <div className="dash-head">
+        <h2>
+          {t(lang, 'suppliers')} <span className="count-badge neutral">{list.length}</span>
+        </h2>
+        {!supFormOpen && (
+          <button
+            className="btn-primary"
+            style={{ width: 'auto', marginTop: 0 }}
+            onClick={() => {
+              setError('');
+              setMsg('');
+              setSupFormOpen(true);
+            }}
+          >
+            🏭 {t(lang, 'addSupplier')}
+          </button>
+        )}
+      </div>
+      <div className="cards dash-cards">
+        <div className="card dash-card accent-blue">
+          <div className="card-top">
+            <span className="card-icon">🏭</span>
+            <span className="card-label">{t(lang, 'suppliers')}</span>
+          </div>
+          <div className="card-value">{fmt(list.length)}</div>
+        </div>
+        <div className="card dash-card accent-purple">
+          <div className="card-top">
+            <span className="card-icon">📦</span>
+            <span className="card-label">{t(lang, 'totalPurchased')}</span>
+          </div>
+          <div className="card-value">{fmt(totalPurchased)}</div>
+          <div className="card-sub">{t(lang, 'currency')}</div>
+        </div>
+        <div className="card dash-card accent-teal">
+          <div className="card-top">
+            <span className="card-icon">💵</span>
+            <span className="card-label">{t(lang, 'paidAmount')}</span>
+          </div>
+          <div className="card-value">{fmt(totalPaid)}</div>
+          <div className="card-sub">{t(lang, 'currency')}</div>
+        </div>
+        <div className="card dash-card accent-amber">
+          <div className="card-top">
+            <span className="card-icon">⚠️</span>
+            <span className="card-label">{t(lang, 'due')}</span>
+          </div>
+          <div className="card-value">{fmt(totalDue)}</div>
+          <div className="card-sub">{t(lang, 'currency')}</div>
+        </div>
+      </div>
+      {msg && <div className="success-box">{msg}</div>}
+      {error && <div className="error-box">{error}</div>}
+
+      {supFormOpen && (
       <div className="panel">
         <h3>🏭 {t(lang, 'addSupplier')}</h3>
         <form onSubmit={add}>
           <div className="form-grid">
-            <label>
-              <span>{t(lang, 'name')} *</span>
+            <div className="field">
+              <label>{t(lang, 'name')} *</label>
               <input value={name} onChange={(e) => setName(e.target.value)} />
-            </label>
-            <label>
-              <span>{t(lang, 'phone')}</span>
+            </div>
+            <div className="field">
+              <label>{t(lang, 'phone')}</label>
               <input value={phone} onChange={(e) => setPhone(e.target.value)} maxLength={10} inputMode="numeric" />
-            </label>
-            <label>
-              <span>{t(lang, 'address')}</span>
+            </div>
+            <div className="field">
+              <label>{t(lang, 'address')}</label>
               <input value={address} onChange={(e) => setAddress(e.target.value)} />
-            </label>
+            </div>
           </div>
-          <button className="btn primary" type="submit">
+          <button className="btn-secondary" type="submit">
             {t(lang, 'save')}
+          </button>{' '}
+          <button className="btn-secondary" type="button" onClick={() => setSupFormOpen(false)}>
+            {t(lang, 'cancel')}
           </button>
         </form>
-        {msg && <p className="ok">{msg}</p>}
-        {error && <p className="err">{error}</p>}
       </div>
+      )}
 
       <div className="panel">
         <input
@@ -2684,17 +2778,36 @@ function SuppliersPage({ lang }: { lang: Lang }) {
                   <td>{fmt(Number(s.paid_total))}</td>
                   <td>
                     {Number(s.due_total) > 0 ? (
-                      <span className="badge credit">
+                      <span className="badge warning">
                         {t(lang, 'due')}: {fmt(Number(s.due_total))}
                       </span>
                     ) : (
                       '—'
                     )}
                   </td>
-                  <td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <button className="btn small" onClick={() => editFromList(s.id)}>
+                      {t(lang, 'edit')}
+                    </button>{' '}
                     <button className="btn small" onClick={() => openDetail(s.id)}>
                       {t(lang, 'supplierAccount')}
-                    </button>
+                    </button>{' '}
+                    {delArm === s.id ? (
+                      <button className="btn small btn-danger armed" onClick={() => doDelete(s.id)}>
+                        {t(lang, 'confirmDeleteIt')}
+                      </button>
+                    ) : (
+                      <button
+                        className="btn small btn-danger"
+                        onClick={() => {
+                          setError('');
+                          setMsg('');
+                          setDelArm(s.id);
+                        }}
+                      >
+                        {t(lang, 'delete')}
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -2711,7 +2824,7 @@ function SuppliersPage({ lang }: { lang: Lang }) {
       </div>
 
       {detail && (
-        <div className="panel">
+        <div className="panel" ref={detailRef}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <h3 style={{ margin: 0 }}>
               {t(lang, 'supplierAccount')}: {detail.name}
@@ -2720,54 +2833,70 @@ function SuppliersPage({ lang }: { lang: Lang }) {
               ✕
             </button>
           </div>
-          <p style={{ fontSize: 15, margin: '10px 0' }}>
-            {t(lang, 'totalPurchased')}: <b>{fmt(Number(detail.purchases_total))}</b>
-            {' · '}
-            {t(lang, 'paidAmount')}: <b>{fmt(Number(detail.paid_total))}</b>
-            {' · '}
-            {t(lang, 'due')}: <b>{fmt(Number(detail.due_total))}</b> {t(lang, 'currency')}
-          </p>
+          <div className="detail-stats">
+            <div className="detail-stat">
+              <span className="detail-stat-label">{t(lang, 'totalPurchased')}</span>
+              <span className="detail-stat-value">
+                {fmt(Number(detail.purchases_total))} {t(lang, 'currency')}
+              </span>
+            </div>
+            <div className="detail-stat">
+              <span className="detail-stat-label">{t(lang, 'paidAmount')}</span>
+              <span className="detail-stat-value">
+                {fmt(Number(detail.paid_total))} {t(lang, 'currency')}
+              </span>
+            </div>
+            <div className="detail-stat">
+              <span className="detail-stat-label">{t(lang, 'due')}</span>
+              <span
+                className={`detail-stat-value ${Number(detail.due_total) > 0 ? 'qty-low' : ''}`}
+              >
+                {fmt(Number(detail.due_total))} {t(lang, 'currency')}
+              </span>
+            </div>
+          </div>
 
           <form onSubmit={saveEdit}>
             <div className="form-grid">
-              <label>
-                <span>{t(lang, 'name')} *</span>
+              <div className="field">
+                <label>{t(lang, 'name')} *</label>
                 <input value={eName} onChange={(e) => setEName(e.target.value)} />
-              </label>
-              <label>
-                <span>{t(lang, 'phone')}</span>
+              </div>
+              <div className="field">
+                <label>{t(lang, 'phone')}</label>
                 <input value={ePhone} onChange={(e) => setEPhone(e.target.value)} maxLength={10} inputMode="numeric" />
-              </label>
-              <label>
-                <span>{t(lang, 'address')}</span>
+              </div>
+              <div className="field">
+                <label>{t(lang, 'address')}</label>
                 <input value={eAddress} onChange={(e) => setEAddress(e.target.value)} />
-              </label>
+              </div>
             </div>
-            <button className="btn" type="submit">
+            <button className="btn-secondary" type="submit">
               {t(lang, 'save')}
             </button>
             {editMsg && <span style={{ marginInlineStart: 10 }}>{editMsg}</span>}
           </form>
 
           {Number(detail.due_total) > 0 && (
-            <form onSubmit={recordPayment} style={{ marginTop: 14 }}>
-              <div className="form-grid">
-                <label>
-                  <span>{t(lang, 'paidAmount')}</span>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={payAmount}
-                    onChange={(e) => setPayAmount(e.target.value)}
-                  />
-                </label>
+            <form
+              onSubmit={recordPayment}
+              style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginTop: 14 }}
+            >
+              <div className="field" style={{ maxWidth: 220 }}>
+                <label>{t(lang, 'paidAmount')}</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={payAmount}
+                  onChange={(e) => setPayAmount(e.target.value)}
+                />
               </div>
-              <button className="btn primary" type="submit">
+              <button className="btn-save" type="submit">
                 {t(lang, 'recordPayment')}
               </button>
-              {payMsg && <p className="ok">{payMsg}</p>}
-              {payError && <p className="err">{payError}</p>}
+              {payMsg && <span style={{ marginInlineStart: 4 }}>{payMsg}</span>}
+              {payError && <span style={{ marginInlineStart: 4 }}>{payError}</span>}
             </form>
           )}
 
@@ -2794,6 +2923,7 @@ function SuppliersPage({ lang }: { lang: Lang }) {
           )}
 
           <h4>{t(lang, 'purchasesHistory')}</h4>
+          <div className="table-scroll">
           <table className="table">
             <thead>
               <tr>
@@ -2801,31 +2931,38 @@ function SuppliersPage({ lang }: { lang: Lang }) {
                 <th>{t(lang, 'date')}</th>
                 <th>{t(lang, 'netTotal')}</th>
                 <th>{t(lang, 'paidAmount')}</th>
+                <th>{t(lang, 'due')}</th>
               </tr>
             </thead>
             <tbody>
-              {detail.purchases.map((p) => (
-                <tr key={p.id}>
-                  <td>
-                    {p.invoice_no || '—'}{' '}
-                    {Number(p.returned_total || 0) > 0 && (
-                      <span className="badge warning">↩️ {t(lang, 'returnedPartial')}</span>
-                    )}
-                  </td>
-                  <td>{String(p.purchase_date).slice(0, 10)}</td>
-                  <td>{fmt(Number(p.total_amount) - Number(p.returned_total || 0))}</td>
-                  <td>{fmt(Number(p.paid_amount))}</td>
-                </tr>
-              ))}
+              {detail.purchases.map((p) => {
+                const netP = Number(p.total_amount) - Number(p.returned_total || 0);
+                const dueP = Math.max(0, netP - Number(p.paid_amount));
+                return (
+                  <tr key={p.id}>
+                    <td>
+                      {p.invoice_no || '—'}{' '}
+                      {Number(p.returned_total || 0) > 0 && (
+                        <span className="badge warning">↩️ {t(lang, 'returnedPartial')}</span>
+                      )}
+                    </td>
+                    <td>{String(p.purchase_date).slice(0, 10)}</td>
+                    <td>{fmt(netP)}</td>
+                    <td>{fmt(Number(p.paid_amount))}</td>
+                    <td className={dueP > 0 ? 'qty-low' : 'muted'}>{dueP > 0 ? fmt(dueP) : '—'}</td>
+                  </tr>
+                );
+              })}
               {detail.purchases.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="muted">
+                  <td colSpan={5} className="muted">
                     {t(lang, 'noResults')}
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </>

@@ -190,6 +190,36 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
   }
 });
 
+// DELETE /api/suppliers/:id  (admin or pharmacist) — soft delete.
+// Blocked while the pharmacy still owes this supplier: settle the due
+// first, so no money trail is hidden. Purchase history keeps showing the
+// supplier's name (purchases join suppliers without an is_deleted filter).
+router.delete('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      'SELECT id, name FROM suppliers WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
+      [req.params.id, req.user.branch_id]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ status: 'error', message: 'Supplier not found' });
+    }
+    const money = await supplierMoney(pool, req.user.branch_id, req.params.id);
+    if (money.due_total > 0) {
+      return res.status(400).json({
+        status: 'error',
+        message: `Cannot delete ${rows[0].name}: ${money.due_total} AFN still due. Record the payment first.`,
+      });
+    }
+    await pool.query('UPDATE suppliers SET is_deleted = 1 WHERE id = ? AND branch_id = ?', [
+      req.params.id,
+      req.user.branch_id,
+    ]);
+    return res.json({ status: 'ok' });
+  } catch (err) {
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+});
+
 // POST /api/suppliers/:id/payment  (admin or pharmacist)  Body: { amount }
 // Records a later payment toward what the pharmacy owes this supplier.
 // Never more than the current due.
