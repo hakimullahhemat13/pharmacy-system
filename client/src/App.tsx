@@ -360,7 +360,7 @@ export default function App() {
         </button>
       </aside>
       <main className="main">
-        {page === 'dashboard' && <Dashboard lang={lang} />}
+        {page === 'dashboard' && <Dashboard lang={lang} userName={user.full_name} onNavigate={setPage} />}
         {page === 'medicines' && <Medicines lang={lang} />}
         {page === 'expiry' && <ExpiryPage lang={lang} />}
         {page === 'sales' && <SalesPage lang={lang} />}
@@ -456,10 +456,36 @@ function Login({
   );
 }
 
-function Dashboard({ lang }: { lang: Lang }) {
+// Short weekday names for the dashboard 7-day chart (index 0 = Sunday,
+// matching Date.getDay()).
+const WEEKDAY_SHORT: Record<Lang, string[]> = {
+  ps: ['یک', 'دو', 'سه', 'څلور', 'پنج', 'جمع', 'شنبه'],
+  fa: ['یک', 'دو', 'سه', 'چهار', 'پنج', 'جمع', 'شنبه'],
+  en: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+};
+
+function daysAgoStr(n: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  const pad = (x: number) => String(x).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function Dashboard({
+  lang,
+  userName,
+  onNavigate,
+}: {
+  lang: Lang;
+  userName: string;
+  onNavigate: (p: Page) => void;
+}) {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [batches, setBatches] = useState<Batch[]>([]);
   const [stock, setStock] = useState<StockRow[]>([]);
+  const [weekDays, setWeekDays] = useState<{ label: string; revenue: number; profit: number }[]>([]);
+  const [stockTotals, setStockTotals] = useState<{ cost_total: number; sale_value: number } | null>(null);
+  const [recentBills, setRecentBills] = useState<SaleRow[]>([]);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -478,13 +504,56 @@ function Dashboard({ lang }: { lang: Lang }) {
       } catch (err) {
         if (alive) setError(err instanceof Error ? err.message : 'Error');
       }
+      // The chart and the stock-value card are extras: if either call fails,
+      // the rest of the dashboard still shows.
+      try {
+        const [range, sv, recent] = await Promise.all([
+          api.get(`/reports/range?from=${daysAgoStr(6)}&to=${todayStr()}`).catch(() => null),
+          api.get('/reports/stock-value').catch(() => null),
+          api.get('/sales').catch(() => null),
+        ]);
+        if (!alive) return;
+        if (range && Array.isArray(range.days)) {
+          const byDay = new Map<string, { revenue: number; profit: number }>(
+            range.days.map((d: { day: string; revenue: number; profit: number }) => [
+              String(d.day),
+              { revenue: Number(d.revenue), profit: Number(d.profit) },
+            ])
+          );
+          const pts: { label: string; revenue: number; profit: number }[] = [];
+          for (let i = 6; i >= 0; i--) {
+            const ds = daysAgoStr(i);
+            const row = byDay.get(ds) || { revenue: 0, profit: 0 };
+            pts.push({
+              label: WEEKDAY_SHORT[lang][new Date(`${ds}T00:00:00`).getDay()],
+              revenue: row.revenue,
+              profit: row.profit,
+            });
+          }
+          setWeekDays(pts);
+        }
+        if (sv && sv.totals) {
+          setStockTotals({
+            cost_total: Number(sv.totals.cost_total),
+            sale_value: Number(sv.totals.sale_value),
+          });
+        }
+        if (recent && Array.isArray(recent.sales)) {
+          setRecentBills((recent.sales as SaleRow[]).slice(0, 5));
+        }
+      } catch {
+        // Extras stay hidden; the core dashboard already rendered.
+      }
     })();
     return () => {
       alive = false;
     };
   }, []);
 
-  const lowCount = stock.filter((s) => s.low_stock).length;
+  const lowStockRows = stock
+    .filter((s) => s.low_stock)
+    .sort((a, b) => Number(a.total_quantity) - Number(b.total_quantity));
+  const lowCount = lowStockRows.length;
   const levelLabel = (level: Batch['level']) =>
     level === 'expired'
       ? t(lang, 'levelExpired')
@@ -493,74 +562,251 @@ function Dashboard({ lang }: { lang: Lang }) {
         : level === 'warning'
           ? t(lang, 'levelWarning')
           : t(lang, 'levelOk');
+  const margin =
+    summary && summary.revenue !== 0
+      ? Math.round((summary.profit / summary.revenue) * 1000) / 10
+      : 0;
 
   return (
     <>
-      <h2>{t(lang, 'dashboard')}</h2>
+      <div className="dash-head">
+        <div>
+          <h2>{t(lang, 'dashboard')}</h2>
+          <div className="dash-sub">
+            {t(lang, 'welcomeBack')}, {userName} 👋
+          </div>
+        </div>
+        <span className="dash-date">📅 {todayStr()}</span>
+      </div>
       {error && <div className="error-box">{error}</div>}
       {!summary && !error && <p className="muted">{t(lang, 'loading')}</p>}
+
+      <div className="quick-actions">
+        <span className="qa-label">{t(lang, 'quickActions')}</span>
+        <button className="btn-primary" onClick={() => onNavigate('sales')}>
+          🧾 {t(lang, 'newSale')}
+        </button>
+        <button className="btn-secondary" onClick={() => onNavigate('purchases')}>
+          📦 {t(lang, 'newPurchase')}
+        </button>
+        <button className="btn-secondary" onClick={() => onNavigate('medicines')}>
+          💊 {t(lang, 'addMedicine')}
+        </button>
+        <button className="btn-secondary" onClick={() => onNavigate('reports')}>
+          📊 {t(lang, 'viewReports')}
+        </button>
+      </div>
+
       {summary && (
-        <div className="cards">
-          <div className="card">
-            <div className="card-label">{t(lang, 'todayRevenue')}</div>
+        <div className="cards dash-cards">
+          <div className="card dash-card accent-green">
+            <div className="card-top">
+              <span className="card-icon">💰</span>
+              <span className="card-label">{t(lang, 'todayRevenue')}</span>
+            </div>
             <div className="card-value">{fmt(summary.revenue)}</div>
             <div className="card-sub">{t(lang, 'currency')}</div>
           </div>
-          <div className="card profit">
-            <div className="card-label">{t(lang, 'todayProfit')}</div>
-            <div className="card-value">{fmt(summary.profit)}</div>
-            <div className="card-sub">{t(lang, 'currency')}</div>
+          <div className="card dash-card accent-teal">
+            <div className="card-top">
+              <span className="card-icon">📈</span>
+              <span className="card-label">{t(lang, 'todayProfit')}</span>
+            </div>
+            <div className="card-value profit-value">{fmt(summary.profit)}</div>
+            <div className="card-sub">
+              {t(lang, 'profitMargin')}: {margin}%
+            </div>
           </div>
-          <div className="card">
-            <div className="card-label">{t(lang, 'todayBills')}</div>
+          <div className="card dash-card accent-blue">
+            <div className="card-top">
+              <span className="card-icon">🧾</span>
+              <span className="card-label">{t(lang, 'todayBills')}</span>
+            </div>
             <div className="card-value">{fmt(summary.sales_count)}</div>
             <div className="card-sub">
               {t(lang, 'itemsSold')}: {fmt(summary.items_sold)}
             </div>
           </div>
-          <div className="card">
-            <div className="card-label">{t(lang, 'totalMedicines')}</div>
+          <div className="card dash-card accent-purple">
+            <div className="card-top">
+              <span className="card-icon">💊</span>
+              <span className="card-label">{t(lang, 'totalMedicines')}</span>
+            </div>
             <div className="card-value">{fmt(stock.length)}</div>
-            <div className="card-sub">
+            <div className={lowCount > 0 ? 'card-sub alert' : 'card-sub'}>
               {t(lang, 'lowStock')}: {fmt(lowCount)}
             </div>
           </div>
+          {stockTotals && (
+            <div className="card dash-card accent-amber">
+              <div className="card-top">
+                <span className="card-icon">🏷️</span>
+                <span className="card-label">{t(lang, 'stockValue')}</span>
+              </div>
+              <div className="card-value">{fmt(stockTotals.sale_value)}</div>
+              <div className="card-sub">
+                {t(lang, 'cost')}: {fmt(stockTotals.cost_total)}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      <div className="panel">
-        <h3>⚠️ {t(lang, 'expiryWarnings')}</h3>
-        {batches.length === 0 ? (
-          <p className="empty-note">{t(lang, 'noWarnings')}</p>
-        ) : (
+      {weekDays.length > 0 && (
+        <div className="panel">
+          <h3>📊 {t(lang, 'last7Days')}</h3>
+          <BarChart points={weekDays} revLabel={t(lang, 'revenue')} profitLabel={t(lang, 'profit')} />
+        </div>
+      )}
+
+      <div className="dash-grid">
+        <div className="panel">
+          <h3 className="panel-head">
+            <span>
+              ⚠️ {t(lang, 'expiryWarnings')} <span className="count-badge">{batches.length}</span>
+            </span>
+            <button className="link-btn" onClick={() => onNavigate('expiry')}>
+              {t(lang, 'viewAll')}
+            </button>
+          </h3>
+          {batches.length === 0 ? (
+            <p className="empty-note">{t(lang, 'noWarnings')}</p>
+          ) : (
+            <div className="table-scroll rows-6-dash">
+              <table>
+                <thead>
+                  <tr>
+                    <th>{t(lang, 'medicine')}</th>
+                    <th>{t(lang, 'batch')}</th>
+                    <th>{t(lang, 'expiryDate')}</th>
+                    <th>{t(lang, 'daysLeft')}</th>
+                    <th>{t(lang, 'qty')}</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {batches.map((b) => (
+                    <tr key={b.batch_id} className={b.level === 'expired' ? 'row-expired' : ''}>
+                      <td>{b.medicine_name}</td>
+                      <td>{b.batch_no}</td>
+                      <td>{String(b.expiry_date).slice(0, 10)}</td>
+                      <td>{b.days_remaining}</td>
+                      <td>{b.quantity_on_hand}</td>
+                      <td>
+                        <span className={`badge ${b.level}`}>{levelLabel(b.level)}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        <div className="panel">
+          <h3 className="panel-head">
+            <span>
+              📉 {t(lang, 'lowStock')} <span className="count-badge warn">{lowCount}</span>
+            </span>
+            <button className="link-btn" onClick={() => onNavigate('medicines')}>
+              {t(lang, 'viewAll')}
+            </button>
+          </h3>
+          {lowStockRows.length === 0 ? (
+            <p className="empty-note">{t(lang, 'noLowStock')}</p>
+          ) : (
+            <div className="table-scroll rows-6-dash">
+              <table>
+                <thead>
+                  <tr>
+                    <th>{t(lang, 'medicine')}</th>
+                    <th>{t(lang, 'onHand')}</th>
+                    <th>{t(lang, 'minStockLabel')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lowStockRows.map((s) => (
+                    <tr key={s.medicine_id}>
+                      <td>{s.name}</td>
+                      <td className={Number(s.total_quantity) === 0 ? 'qty-zero' : ''}>
+                        {fmt(Number(s.total_quantity))}
+                      </td>
+                      <td>{fmt(Number(s.min_stock))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {recentBills.length > 0 && (
+        <div className="panel">
+          <h3 className="panel-head">
+            <span>🧾 {t(lang, 'recentBills')}</span>
+            <button className="link-btn" onClick={() => onNavigate('sales')}>
+              {t(lang, 'viewAll')}
+            </button>
+          </h3>
           <table>
             <thead>
               <tr>
-                <th>{t(lang, 'medicine')}</th>
-                <th>{t(lang, 'batch')}</th>
-                <th>{t(lang, 'expiryDate')}</th>
-                <th>{t(lang, 'daysLeft')}</th>
-                <th>{t(lang, 'qty')}</th>
-                <th></th>
+                <th>{t(lang, 'invoice')}</th>
+                <th>{t(lang, 'customer')}</th>
+                <th>{t(lang, 'itemsSold')}</th>
+                <th>{t(lang, 'total')}</th>
               </tr>
             </thead>
             <tbody>
-              {batches.map((b) => (
-                <tr key={b.batch_id} className={b.level === 'expired' ? 'row-expired' : ''}>
-                  <td>{b.medicine_name}</td>
-                  <td>{b.batch_no}</td>
-                  <td>{String(b.expiry_date).slice(0, 10)}</td>
-                  <td>{b.days_remaining}</td>
-                  <td>{b.quantity_on_hand}</td>
-                  <td>
-                    <span className={`badge ${b.level}`}>{levelLabel(b.level)}</span>
-                  </td>
-                </tr>
-              ))}
+              {recentBills.map((s) => {
+                const soldQty = Number(s.items_sold || 0);
+                const retQty = Number(s.items_returned || 0);
+                const refunded = Number(s.refunded_total || 0);
+                const displayTotal = Math.max(0, Number(s.net_total) - refunded);
+                const due = Number(s.due_amount || 0);
+                const isVoided = Number(s.voided || 0) === 1;
+                const fullyReturned = soldQty > 0 && retQty >= soldQty;
+                const partiallyReturned = retQty > 0 && !fullyReturned;
+                return (
+                  <tr
+                    key={s.id}
+                    style={fullyReturned || isVoided ? { opacity: 0.65 } : undefined}
+                  >
+                    <td>
+                      {s.invoice_no}
+                      <span className="muted">
+                        {' '}
+                        · {String(s.sale_date).slice(0, 10)} {String(s.sale_date).slice(11, 16)}
+                      </span>{' '}
+                      {isVoided ? (
+                        <span className="badge expired">🚫 {t(lang, 'voidedFull')}</span>
+                      ) : fullyReturned ? (
+                        <span className="badge returned">↩️ {t(lang, 'returnedFull')}</span>
+                      ) : partiallyReturned ? (
+                        <span className="badge warning">↩️ {t(lang, 'returnedPartial')}</span>
+                      ) : null}
+                    </td>
+                    <td>{s.customer_name || t(lang, 'walkIn')}</td>
+                    <td>{fmt(soldQty - retQty)}</td>
+                    <td>
+                      {fmt(displayTotal)}
+                      {due > 0 && (
+                        <>
+                          {' '}
+                          <span className="badge warning">
+                            {t(lang, 'credit')}: {fmt(due)}
+                          </span>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
-        )}
-      </div>
+        </div>
+      )}
     </>
   );
 }
@@ -3016,14 +3262,18 @@ function BarChart({
                 className="bar-col"
                 style={{ height: `${Math.max(4, (p.revenue / max) * 100)}%` }}
               >
-                {showValues && <span className="bar-val">{fmt(p.revenue)}</span>}
+                {showValues && p.revenue !== 0 && (
+                  <span className="bar-val">{fmt(p.revenue)}</span>
+                )}
                 <div className="bar bar-rev" />
               </div>
               <div
                 className="bar-col"
                 style={{ height: `${Math.max(4, (Math.abs(p.profit) / max) * 100)}%` }}
               >
-                {showValues && <span className="bar-val">{fmt(p.profit)}</span>}
+                {showValues && p.profit !== 0 && (
+                  <span className="bar-val">{fmt(p.profit)}</span>
+                )}
                 <div className={`bar ${p.profit < 0 ? 'bar-neg' : 'bar-profit'}`} />
               </div>
             </div>
