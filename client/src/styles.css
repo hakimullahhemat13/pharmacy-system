@@ -85,8 +85,8 @@ input { font-family: inherit; }
 .sidebar {
   width: 228px;
   flex-shrink: 0;
-  background: #14532d;
-  color: #e7f5ec;
+  background: #1e2d50;
+  color: #dbe4f5;
   padding: 18px 12px;
   display: flex;
   flex-direction: column;
@@ -101,14 +101,28 @@ input { font-family: inherit; }
   text-align: start;
   background: transparent;
   border: none;
-  color: #e7f5ec;
+  color: #dbe4f5;
   font-size: 15px;
   padding: 10px 12px;
   border-radius: 8px;
 }
-.sidebar .nav-icon { font-size: 17px; width: 22px; text-align: center; flex-shrink: 0; }
+.sidebar .nav-icon { font-size: 17px; width: 22px; text-align: center; flex-shrink: 0; display: inline-block; }
+.sidebar button.nav:hover .nav-icon { animation: nav-icon-hop 0.5s ease; }
+.sidebar button.nav:active .nav-icon { animation: nav-icon-pop 0.3s ease; }
+@keyframes nav-icon-hop {
+  0% { transform: translateY(0); }
+  35% { transform: translateY(-4px); }
+  65% { transform: translateY(0); }
+  85% { transform: translateY(-2px); }
+  100% { transform: translateY(0); }
+}
+@keyframes nav-icon-pop {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.4); }
+  100% { transform: scale(1); }
+}
 .sidebar button.nav:hover { background: rgba(255, 255, 255, 0.12); }
-.sidebar button.nav.active { background: #16a34a; color: #fff; font-weight: 600; }
+.sidebar button.nav.active { background: #2563eb; color: #fff; font-weight: 600; }
 .sidebar .spacer { flex: 1; }
 .sidebar .user-box { font-size: 13px; padding: 10px; opacity: 0.9; line-height: 1.7; }
 .sidebar button.logout {
