@@ -473,3 +473,24 @@ tr.highlight td { background: #ecfdf5; font-weight: 600; }
 .accent-red .card-icon { background: #fef2f2; }
 tr.row-warning td { background: #fffdf5; }
 .days-neg { color: #dc2626; font-weight: 700; }
+
+/* ---- Sales (POS): today strip, empty hint, result rows, steppers ---- */
+.today-strip {
+  background: #f0fdf4; border: 1px solid #bbf7d0; color: #14532d;
+  border-radius: 999px; padding: 8px 14px; font-size: 14px; font-weight: 600; white-space: nowrap;
+}
+.pos-hint { text-align: center; padding: 30px 12px; color: #94a3b8; }
+.pos-hint-icon { font-size: 32px; margin-bottom: 6px; }
+.pos-hint p { margin: 0; font-size: 14.5px; }
+.r-name { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.r-generic { color: #94a3b8; font-size: 12.5px; }
+.pos-bill { position: sticky; top: 16px; }
+.qty-stepper { display: flex; align-items: center; gap: 4px; }
+.qty-stepper button {
+  width: 27px; height: 30px; border: 1px solid #cbd5e1; background: #fff;
+  border-radius: 6px; font-size: 16px; line-height: 1; cursor: pointer; color: #475569;
+}
+.qty-stepper button:hover { background: #f0fdf4; border-color: #16a34a; }
+.qty-stepper .qty-input { width: 52px; text-align: center; }
+.grand-amount { color: #14532d; font-size: 21px; }
+.total-row.credit-preview { color: #b45309; font-weight: 600; }

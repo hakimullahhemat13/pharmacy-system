@@ -1706,6 +1706,7 @@ function SalesPage({ lang }: { lang: Lang }) {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [branch, setBranch] = useState<BranchInfo | null>(null);
+  const [today, setToday] = useState<Summary | null>(null);
   const [receipt, setReceipt] = useState<SaleDetail | null>(null);
   const [payAmount, setPayAmount] = useState('');
   const [payMsg, setPayMsg] = useState('');
@@ -1726,6 +1727,14 @@ function SalesPage({ lang }: { lang: Lang }) {
     const data = await api.get('/stock');
     setStock(data.stock as StockRow[]);
   };
+  const loadToday = async () => {
+    try {
+      const data = await api.get('/reports/daily');
+      setToday(data.summary as Summary);
+    } catch {
+      setToday(null);
+    }
+  };
   const loadRecent = async () => {
     const params = new URLSearchParams();
     if (billQuery.trim()) params.set('q', billQuery.trim());
@@ -1738,6 +1747,7 @@ function SalesPage({ lang }: { lang: Lang }) {
 
   useEffect(() => {
     loadStock().catch((err) => setError(err instanceof Error ? err.message : 'Error'));
+    loadToday();
     api
       .get('/customers')
       .then((data) => setCustomers(data.customers as Customer[]))
@@ -1833,6 +1843,7 @@ function SalesPage({ lang }: { lang: Lang }) {
     setBill((b) => b.filter((i) => i.medicine_id !== medicineId));
 
   const subtotal = bill.reduce((sum, i) => sum + i.unit_price * i.quantity, 0);
+  const totalItems = bill.reduce((sum, i) => sum + i.quantity, 0);
   const discountNum = discount === '' ? 0 : Number(discount) || 0;
   const net = Math.max(0, subtotal - discountNum);
   const paidNum = paid === '' ? net : Number(paid) || 0;
@@ -1869,7 +1880,7 @@ function SalesPage({ lang }: { lang: Lang }) {
       setDiscount('');
       setPaid('');
       setCustomerId('');
-      await Promise.all([loadStock(), loadRecent()]);
+      await Promise.all([loadStock(), loadRecent(), loadToday()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error');
     }
@@ -1981,7 +1992,15 @@ function SalesPage({ lang }: { lang: Lang }) {
 
   return (
     <>
-      <h2>{t(lang, 'sales')}</h2>
+      <div className="dash-head">
+        <h2>{t(lang, 'sales')}</h2>
+        {today && (
+          <span className="today-strip">
+            {t(lang, 'todayRevenue')}: {fmt(Number(today.sales_count))} · {fmt(Number(today.revenue))}{' '}
+            {t(lang, 'currency')}
+          </span>
+        )}
+      </div>
       <div className="pos-grid" onClick={refocusOnClick}>
         <div className="panel" style={{ marginTop: 0 }}>
           <form onSubmit={onSearchSubmit}>
@@ -1994,6 +2013,12 @@ function SalesPage({ lang }: { lang: Lang }) {
               autoFocus
             />
           </form>
+          {!q && (
+            <div className="pos-hint">
+              <div className="pos-hint-icon">🔍</div>
+              <p>{t(lang, 'posHint')}</p>
+            </div>
+          )}
           {q && results.length === 0 && (
             <p className="muted" style={{ fontSize: 15 }}>
               {t(lang, 'noResults')}
@@ -2001,8 +2026,13 @@ function SalesPage({ lang }: { lang: Lang }) {
           )}
           {results.map((r) => (
             <button key={r.medicine_id} className="result-row" onClick={() => addToBill(r)}>
-              <span>{r.name}</span>
-              <span className="r-stock">
+              <span className="r-name">
+                <span>{r.name}</span>
+                {r.generic_name && <span className="r-generic">{r.generic_name}</span>}
+              </span>
+              <span
+                className={`r-stock ${Number(r.total_quantity) === 0 ? 'qty-zero' : r.low_stock ? 'qty-low' : ''}`}
+              >
                 {t(lang, 'available')}: {fmt(r.total_quantity)}
               </span>
               <span className="r-price">
@@ -2012,8 +2042,11 @@ function SalesPage({ lang }: { lang: Lang }) {
           ))}
         </div>
 
-        <div className="panel" style={{ marginTop: 0 }}>
-          <h3>🧾 {t(lang, 'bill')}</h3>
+        <div className="panel pos-bill" style={{ marginTop: 0 }}>
+          <h3>
+            🧾 {t(lang, 'bill')}{' '}
+            {bill.length > 0 && <span className="count-badge neutral">{totalItems}</span>}
+          </h3>
           {bill.length === 0 ? (
             <p className="muted" style={{ fontSize: 15 }}>
               {t(lang, 'billEmpty')}
@@ -2035,14 +2068,22 @@ function SalesPage({ lang }: { lang: Lang }) {
                     <td>{i.name}</td>
                     <td>{fmt(i.unit_price)}</td>
                     <td>
-                      <input
-                        className="qty-input"
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={i.quantity}
-                        onChange={(e) => setQty(i.medicine_id, Number(e.target.value))}
-                      />
+                      <div className="qty-stepper">
+                        <button type="button" onClick={() => setQty(i.medicine_id, i.quantity - 1)}>
+                          −
+                        </button>
+                        <input
+                          className="qty-input"
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={i.quantity}
+                          onChange={(e) => setQty(i.medicine_id, Number(e.target.value))}
+                        />
+                        <button type="button" onClick={() => setQty(i.medicine_id, i.quantity + 1)}>
+                          +
+                        </button>
+                      </div>
                     </td>
                     <td>{fmt(i.unit_price * i.quantity)}</td>
                     <td>
@@ -2091,7 +2132,7 @@ function SalesPage({ lang }: { lang: Lang }) {
           </div>
           <div className="total-row grand">
             <span>{t(lang, 'netTotal')}</span>
-            <span>
+            <span className="grand-amount">
               {fmt(net)} {t(lang, 'currency')}
             </span>
           </div>
@@ -2108,7 +2149,7 @@ function SalesPage({ lang }: { lang: Lang }) {
             />
           </div>
           {duePreview > 0 && (
-            <div className="total-row">
+            <div className="total-row credit-preview">
               <span>
                 {t(lang, 'dueAmount')} ({t(lang, 'credit')})
               </span>
@@ -2128,6 +2169,20 @@ function SalesPage({ lang }: { lang: Lang }) {
           >
             {busy ? t(lang, 'loading') : t(lang, 'completeSale')}
           </button>
+          {bill.length > 0 && (
+            <button
+              className="btn-secondary"
+              style={{ width: '100%', marginTop: 8 }}
+              onClick={() => {
+                setBill([]);
+                setDiscount('');
+                setPaid('');
+                setError('');
+              }}
+            >
+              🗑️ {t(lang, 'clearBill')}
+            </button>
+          )}
           {lastSaleId && (
             <button
               className="btn-secondary"
@@ -2141,7 +2196,9 @@ function SalesPage({ lang }: { lang: Lang }) {
       </div>
 
       <div className="panel">
-        <h3>🧾 {t(lang, 'recentBills')}</h3>
+        <h3>
+          🧾 {t(lang, 'recentBills')} <span className="count-badge neutral">{recent.length}</span>
+        </h3>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
           <input
             className="field-select"
