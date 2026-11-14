@@ -2862,6 +2862,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
   const [retMsg, setRetMsg] = useState('');
   const [retBusy, setRetBusy] = useState(false);
   const [dupWarn, setDupWarn] = useState(false);
+  const [supFormOpen, setSupFormOpen] = useState(false);
 
   const loadSuppliers = async () => {
     const data = await api.get('/suppliers');
@@ -3006,6 +3007,14 @@ function PurchasesPage({ lang }: { lang: Lang }) {
     (sum, r) => sum + (Number(r.quantity) || 0) * (Number(r.purchase_price) || 0),
     0
   );
+  // Due preview only once a paid amount has actually been typed.
+  const duePreview = paid !== '' ? Math.max(0, total - (Number(paid) || 0)) : 0;
+  const detailDue = detail
+    ? Math.max(
+        0,
+        Number(detail.total_amount) - Number(detail.returned_total || 0) - Number(detail.paid_amount)
+      )
+    : 0;
 
   // Entry-time expiry warning: a row whose expiry is already past, or at most
   // 90 days away, is named here BEFORE saving. Warning only — never a block.
@@ -3022,6 +3031,17 @@ function PurchasesPage({ lang }: { lang: Lang }) {
     }))
     .filter((w) => w.days <= 90);
 
+  // Tint the expiry cell itself at the field: amber ≤90 days, red when past.
+  const expiryCellClass = (dateStr: string) => {
+    if (!dateStr) return '';
+    const days = Math.round(
+      (new Date(`${dateStr}T00:00:00`).getTime() - todayStart.getTime()) / 86400000
+    );
+    if (days < 0) return 'cell-past';
+    if (days <= 90) return 'cell-warn';
+    return '';
+  };
+
   const addSupplier = async (e: React.FormEvent) => {
     e.preventDefault();
     setSupMsg('');
@@ -3036,6 +3056,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
       setSupMsg(t(lang, 'supplierAdded'));
       setSupName('');
       setSupPhone('');
+      setSupFormOpen(false);
       await loadSuppliers();
     } catch (err) {
       setSupError(err instanceof Error ? err.message : 'Error');
@@ -3093,9 +3114,26 @@ function PurchasesPage({ lang }: { lang: Lang }) {
 
   return (
     <>
-      <h2>{t(lang, 'purchases')}</h2>
+      <div className="dash-head">
+        <h2>{t(lang, 'purchases')}</h2>
+        {!supFormOpen && (
+          <button
+            className="btn-primary"
+            style={{ width: 'auto', marginTop: 0 }}
+            onClick={() => {
+              setSupError('');
+              setSupMsg('');
+              setSupFormOpen(true);
+            }}
+          >
+            🏭 {t(lang, 'addSupplier')}
+          </button>
+        )}
+      </div>
+      {supMsg && <div className="success-box">{supMsg}</div>}
 
-      <div className="panel" style={{ marginTop: 0 }}>
+      {supFormOpen && (
+      <div className="panel">
         <h3>🏭 {t(lang, 'addSupplier')}</h3>
         <form onSubmit={addSupplier}>
           <div className="form-grid">
@@ -3108,13 +3146,16 @@ function PurchasesPage({ lang }: { lang: Lang }) {
               <input value={supPhone} onChange={(e) => setSupPhone(e.target.value)} maxLength={10} inputMode="numeric" />
             </div>
           </div>
-          {supMsg && <div className="success-box">{supMsg}</div>}
           {supError && <div className="error-box">{supError}</div>}
           <button className="btn-secondary" type="submit">
             {t(lang, 'save')}
+          </button>{' '}
+          <button className="btn-secondary" type="button" onClick={() => setSupFormOpen(false)}>
+            {t(lang, 'cancel')}
           </button>
         </form>
       </div>
+      )}
 
       <div className="panel">
         <h3>📦 {editingId ? t(lang, 'editPurchase') : t(lang, 'newPurchase')}</h3>
@@ -3198,7 +3239,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
                   </td>
                   <td>
                     <input
-                      className="cell-input"
+                      className={`cell-input ${expiryCellClass(r.expiry_date)}`}
                       type="date"
                       value={r.expiry_date}
                       onChange={(e) => setRow(idx, 'expiry_date', e.target.value)}
@@ -3224,7 +3265,9 @@ function PurchasesPage({ lang }: { lang: Lang }) {
                       onChange={(e) => setRow(idx, 'purchase_price', e.target.value)}
                     />
                   </td>
-                  <td>{fmt((Number(r.quantity) || 0) * (Number(r.purchase_price) || 0))}</td>
+                  <td className="line-total-cell">
+                    {fmt((Number(r.quantity) || 0) * (Number(r.purchase_price) || 0))}
+                  </td>
                   <td>
                     <button type="button" className="btn-remove" onClick={() => removeRow(idx)}>
                       ✕
@@ -3240,10 +3283,18 @@ function PurchasesPage({ lang }: { lang: Lang }) {
 
           <div className="total-row grand">
             <span>{t(lang, 'lineTotal')}</span>
-            <span>
+            <span className="grand-amount">
               {fmt(total)} {t(lang, 'currency')}
             </span>
           </div>
+          {duePreview > 0 && (
+            <div className="total-row credit-preview">
+              <span>{t(lang, 'dueAmount')}</span>
+              <span>
+                {fmt(duePreview)} {t(lang, 'currency')}
+              </span>
+            </div>
+          )}
 
           {expiryWarnings.length > 0 && (
             <div className="error-box">
@@ -3291,7 +3342,9 @@ function PurchasesPage({ lang }: { lang: Lang }) {
       </div>
 
       <div className="panel">
-        <h3>📦 {t(lang, 'recentPurchases')}</h3>
+        <h3>
+          📦 {t(lang, 'recentPurchases')} <span className="count-badge neutral">{purchases.length}</span>
+        </h3>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
           <input
             className="field-select"
@@ -3333,6 +3386,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
                   <th>{t(lang, 'dateLabel')}</th>
                   <th>{t(lang, 'lineTotal')}</th>
                   <th>{t(lang, 'paidAmount')}</th>
+                  <th>{t(lang, 'due')}</th>
                   <th></th>
                 </tr>
               </thead>
@@ -3340,6 +3394,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
                 {purchases.map((p) => {
                   const returned = Number(p.returned_total || 0);
                   const net = Number(p.total_amount) - returned;
+                  const due = Math.max(0, net - Number(p.paid_amount));
                   return (
                     <tr key={p.id}>
                       <td>
@@ -3355,6 +3410,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
                       <td>{String(p.purchase_date).slice(0, 10)}</td>
                       <td>{fmt(net)}</td>
                       <td>{fmt(Number(p.paid_amount))}</td>
+                      <td className={due > 0 ? 'qty-low' : 'muted'}>{due > 0 ? fmt(due) : '—'}</td>
                       <td style={{ whiteSpace: 'nowrap' }}>
                         <button className="btn small" onClick={() => openDetail(p.id)}>
                           {t(lang, 'purchaseDetails')}
@@ -3398,22 +3454,27 @@ function PurchasesPage({ lang }: { lang: Lang }) {
               ✕
             </button>
           </div>
-          <p style={{ fontSize: 15, margin: '10px 0' }}>
-            {t(lang, 'lineTotal')}: <b>{fmt(Number(detail.total_amount) - Number(detail.returned_total || 0))}</b>
-            {' · '}
-            {t(lang, 'paidAmount')}: <b>{fmt(Number(detail.paid_amount))}</b>
-            {' · '}
-            {t(lang, 'due')}:{' '}
-            <b>
-              {fmt(
-                Math.max(
-                  0,
-                  Number(detail.total_amount) - Number(detail.returned_total || 0) - Number(detail.paid_amount)
-                )
-              )}
-            </b>{' '}
-            {t(lang, 'currency')}
-          </p>
+          <div className="detail-stats">
+            <div className="detail-stat">
+              <span className="detail-stat-label">{t(lang, 'lineTotal')}</span>
+              <span className="detail-stat-value">
+                {fmt(Number(detail.total_amount) - Number(detail.returned_total || 0))}{' '}
+                {t(lang, 'currency')}
+              </span>
+            </div>
+            <div className="detail-stat">
+              <span className="detail-stat-label">{t(lang, 'paidAmount')}</span>
+              <span className="detail-stat-value">
+                {fmt(Number(detail.paid_amount))} {t(lang, 'currency')}
+              </span>
+            </div>
+            <div className="detail-stat">
+              <span className="detail-stat-label">{t(lang, 'due')}</span>
+              <span className={`detail-stat-value ${detailDue > 0 ? 'qty-low' : ''}`}>
+                {fmt(detailDue)} {t(lang, 'currency')}
+              </span>
+            </div>
+          </div>
           <table className="table">
             <thead>
               <tr>
@@ -3422,6 +3483,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
                 <th>{t(lang, 'expiryDate')}</th>
                 <th>{t(lang, 'quantity')}</th>
                 <th>{t(lang, 'returnedQty')}</th>
+                <th>{t(lang, 'remaining')}</th>
                 <th>{t(lang, 'returnQty')}</th>
                 <th>{t(lang, 'purchasePrice')}</th>
                 <th>{t(lang, 'lineTotal')}</th>
@@ -3437,6 +3499,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
                     <td>{String(it.expiry_date).slice(0, 10)}</td>
                     <td>{it.quantity}</td>
                     <td>{Number(it.returned_quantity) || '—'}</td>
+                    <td>{maxRet}</td>
                     <td>
                       {maxRet > 0 ? (
                         <input

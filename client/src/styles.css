@@ -494,3 +494,11 @@ tr.row-warning td { background: #fffdf5; }
 .qty-stepper .qty-input { width: 52px; text-align: center; }
 .grand-amount { color: #14532d; font-size: 21px; }
 .total-row.credit-preview { color: #b45309; font-weight: 600; }
+
+/* ---- Purchases: expiry cell tints, detail stats strip ---- */
+.cell-input.cell-warn { border-color: #f59e0b; background: #fffbeb; }
+.cell-input.cell-past { border-color: #dc2626; background: #fef2f2; }
+.line-total-cell { font-weight: 600; }
+.detail-stats { display: flex; gap: 28px; flex-wrap: wrap; margin: 12px 0; }
+.detail-stat-label { display: block; font-size: 13px; color: #64748b; margin-bottom: 2px; }
+.detail-stat-value { font-size: 17px; font-weight: 700; }
