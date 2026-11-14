@@ -94,7 +94,9 @@ input { font-family: inherit; }
 }
 .sidebar .brand { font-size: 16.5px; font-weight: 700; padding: 4px 10px 16px; line-height: 1.5; }
 .sidebar button.nav {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: 100%;
   text-align: start;
   background: transparent;
@@ -104,6 +106,7 @@ input { font-family: inherit; }
   padding: 10px 12px;
   border-radius: 8px;
 }
+.sidebar .nav-icon { font-size: 17px; width: 22px; text-align: center; flex-shrink: 0; }
 .sidebar button.nav:hover { background: rgba(255, 255, 255, 0.12); }
 .sidebar button.nav.active { background: #16a34a; color: #fff; font-weight: 600; }
 .sidebar .spacer { flex: 1; }
@@ -228,8 +231,33 @@ th { color: #64748b; font-weight: 600; font-size: 13px; }
     color: #000;
     background: #fff;
   }
-  #report-print table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-  #report-print th, #report-print td { border: 1px solid #999; padding: 4px 6px; text-align: start; }
+  #report-print .print-head {
+    text-align: center;
+    margin-bottom: 12px;
+    border-bottom: 2px solid #14532d;
+    padding-bottom: 8px;
+  }
+  #report-print .print-brand { font-size: 22px; font-weight: 700; color: #14532d; }
+  #report-print .print-title { font-size: 15px; font-weight: 600; margin-top: 6px; }
+  #report-print table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+  #report-print thead { display: table-header-group; }
+  #report-print tr { page-break-inside: avoid; }
+  #report-print th { background: #f1f5f9; }
+  #report-print th, #report-print td { border: 1px solid #94a3b8; padding: 5px 8px; text-align: start; }
+  #report-print td.num, #report-print th.num { text-align: end; }
+  #report-print table.print-nums td + td, #report-print table.print-nums th + th { text-align: end; }
+  #report-print .print-summary td:first-child { background: #f8fafc; width: 55%; }
+  #report-print .print-summary td:last-child { font-weight: 600; text-align: end; }
+  #report-print .print-summary tr.profit-row td { border-top: 2px solid #14532d; }
+  #report-print .print-section {
+    font-size: 14px; font-weight: 700; margin-top: 16px;
+    border-bottom: 1px solid #cbd5e1; padding-bottom: 3px;
+  }
+  #report-print tfoot td { font-weight: 700; background: #f8fafc; }
+  #report-print .print-footer {
+    margin-top: 14px; border-top: 1px solid #cbd5e1;
+    padding-top: 6px; font-size: 11px; color: #64748b;
+  }
 }
 
 /* Reports bar chart (pure CSS bars — see BarChart in App.tsx) */

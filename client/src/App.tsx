@@ -80,6 +80,7 @@ interface SaleDetail {
   paid_amount: number | string | null;
   voided_at: string | null;
   customer_name: string | null;
+  seller_name?: string | null;
   items: SaleItemDetail[];
   payments?: SalePayment[];
   paid_total?: number;
@@ -104,6 +105,10 @@ interface CustomerHistorySale {
   sale_date: string;
   net_total: number | string;
   items: number;
+  refunded_total?: number | string;
+  paid_total?: number | string;
+  due_amount?: number | string;
+  voided?: number;
 }
 
 interface BillItem {
@@ -119,6 +124,7 @@ interface SaleRow {
   sale_date: string;
   net_total: number | string;
   customer_name: string | null;
+  seller_name?: string | null;
   items_sold?: number;
   items_returned?: number;
   refunded_total?: number;
@@ -325,18 +331,30 @@ export default function App() {
     );
   }
 
-  const menu: { key: Page; label: string }[] = [
-    { key: 'dashboard', label: t(lang, 'dashboard') },
-    { key: 'medicines', label: t(lang, 'medicines') },
-    { key: 'expiry', label: t(lang, 'expiryDates') },
-    { key: 'sales', label: t(lang, 'sales') },
-    { key: 'purchases', label: t(lang, 'purchases') },
-    { key: 'suppliers', label: t(lang, 'suppliers') },
-    { key: 'reports', label: t(lang, 'reports') },
-    { key: 'customers', label: t(lang, 'customers') },
-    { key: 'settings', label: t(lang, 'settings') },
-    ...(user.role === 'admin' ? [{ key: 'backup' as Page, label: t(lang, 'backup') }] : []),
+  // Sections each role may open. The server enforces the same rules on
+  // every route, so hiding a menu item is never the only protection.
+  const allowedPages: Page[] =
+    user.role === 'cashier'
+      ? ['dashboard', 'sales', 'customers', 'settings', 'backup']
+      : user.role === 'pharmacist'
+        ? ['dashboard', 'medicines', 'expiry', 'sales', 'purchases', 'suppliers', 'reports', 'customers', 'settings', 'backup']
+        : ['dashboard', 'medicines', 'expiry', 'sales', 'purchases', 'suppliers', 'reports', 'customers', 'settings', 'backup'];
+  // Menu order: daily work first, then stock, buying, people, analysis,
+  // and the system sections (backup, settings) last.
+  const allMenu: { key: Page; label: string; icon: string }[] = [
+    { key: 'dashboard', label: t(lang, 'dashboard'), icon: '🏠' },
+    { key: 'sales', label: t(lang, 'sales'), icon: '🧾' },
+    { key: 'medicines', label: t(lang, 'medicines'), icon: '💊' },
+    { key: 'expiry', label: t(lang, 'expiryDates'), icon: '📅' },
+    { key: 'purchases', label: t(lang, 'purchases'), icon: '📦' },
+    { key: 'suppliers', label: t(lang, 'suppliers'), icon: '🚚' },
+    { key: 'customers', label: t(lang, 'customers'), icon: '👥' },
+    { key: 'reports', label: t(lang, 'reports'), icon: '📊' },
+    { key: 'backup', label: t(lang, 'backup'), icon: '💾' },
+    { key: 'settings', label: t(lang, 'settings'), icon: '⚙️' },
   ];
+  const menu = allMenu.filter((m) => allowedPages.includes(m.key));
+  const visiblePage = allowedPages.includes(page) ? page : 'dashboard';
 
   return (
     <div className="app">
@@ -345,9 +363,10 @@ export default function App() {
         {menu.map((m) => (
           <button
             key={m.key}
-            className={`nav${page === m.key ? ' active' : ''}`}
+            className={`nav${visiblePage === m.key ? ' active' : ''}`}
             onClick={() => setPage(m.key)}
           >
+            <span className="nav-icon">{m.icon}</span>
             {m.label}
           </button>
         ))}
@@ -358,20 +377,20 @@ export default function App() {
           <span className="muted">{user.username} · {user.role}</span>
         </div>
         <button className="logout" onClick={logout}>
-          {t(lang, 'logout')}
+          🚪 {t(lang, 'logout')}
         </button>
       </aside>
       <main className="main">
-        {page === 'dashboard' && <Dashboard lang={lang} userName={user.full_name} onNavigate={setPage} />}
-        {page === 'medicines' && <Medicines lang={lang} />}
-        {page === 'expiry' && <ExpiryPage lang={lang} />}
-        {page === 'sales' && <SalesPage lang={lang} />}
-        {page === 'purchases' && <PurchasesPage lang={lang} />}
-        {page === 'suppliers' && <SuppliersPage lang={lang} />}
-        {page === 'reports' && <ReportsPage lang={lang} />}
-        {page === 'customers' && <CustomersPage lang={lang} />}
-        {page === 'backup' && <BackupPage lang={lang} onLogout={logout} />}
-        {page === 'settings' && <SettingsPage lang={lang} user={user} setLang={setLang} />}
+        {visiblePage === 'dashboard' && <Dashboard lang={lang} userName={user.full_name} role={user.role} onNavigate={setPage} />}
+        {visiblePage === 'medicines' && <Medicines lang={lang} />}
+        {visiblePage === 'expiry' && <ExpiryPage lang={lang} />}
+        {visiblePage === 'sales' && <SalesPage lang={lang} role={user.role} />}
+        {visiblePage === 'purchases' && <PurchasesPage lang={lang} />}
+        {visiblePage === 'suppliers' && <SuppliersPage lang={lang} />}
+        {visiblePage === 'reports' && <ReportsPage lang={lang} />}
+        {visiblePage === 'customers' && <CustomersPage lang={lang} role={user.role} />}
+        {visiblePage === 'backup' && <BackupPage lang={lang} isAdmin={user.role === 'admin'} onLogout={logout} />}
+        {visiblePage === 'settings' && <SettingsPage lang={lang} user={user} setLang={setLang} />}
         {page !== 'dashboard' && page !== 'medicines' && page !== 'expiry' && page !== 'sales' && page !== 'purchases' && page !== 'suppliers' && page !== 'reports' && page !== 'customers' && page !== 'backup' && page !== 'settings' && (
           <>
             <h2>{menu.find((m) => m.key === page)?.label}</h2>
@@ -476,12 +495,17 @@ function daysAgoStr(n: number): string {
 function Dashboard({
   lang,
   userName,
+  role,
   onNavigate,
 }: {
   lang: Lang;
   userName: string;
+  role: string;
   onNavigate: (p: Page) => void;
 }) {
+  // A cashier sees their own sales only — no profit, no stock value, no
+  // chart, and no shortcuts into sections they cannot open.
+  const isCashier = role === 'cashier';
   const [summary, setSummary] = useState<Summary | null>(null);
   const [batches, setBatches] = useState<Batch[]>([]);
   const [stock, setStock] = useState<StockRow[]>([]);
@@ -588,15 +612,19 @@ function Dashboard({
         <button className="btn-primary" onClick={() => onNavigate('sales')}>
           🧾 {t(lang, 'newSale')}
         </button>
-        <button className="btn-secondary" onClick={() => onNavigate('purchases')}>
-          📦 {t(lang, 'newPurchase')}
-        </button>
-        <button className="btn-secondary" onClick={() => onNavigate('medicines')}>
-          💊 {t(lang, 'addMedicine')}
-        </button>
-        <button className="btn-secondary" onClick={() => onNavigate('reports')}>
-          📊 {t(lang, 'viewReports')}
-        </button>
+        {!isCashier && (
+          <>
+            <button className="btn-secondary" onClick={() => onNavigate('purchases')}>
+              📦 {t(lang, 'newPurchase')}
+            </button>
+            <button className="btn-secondary" onClick={() => onNavigate('medicines')}>
+              💊 {t(lang, 'addMedicine')}
+            </button>
+            <button className="btn-secondary" onClick={() => onNavigate('reports')}>
+              📊 {t(lang, 'viewReports')}
+            </button>
+          </>
+        )}
       </div>
 
       {summary && (
@@ -609,16 +637,18 @@ function Dashboard({
             <div className="card-value">{fmt(summary.revenue)}</div>
             <div className="card-sub">{t(lang, 'currency')}</div>
           </div>
-          <div className="card dash-card accent-teal">
-            <div className="card-top">
-              <span className="card-icon">📈</span>
-              <span className="card-label">{t(lang, 'todayProfit')}</span>
+          {!isCashier && (
+            <div className="card dash-card accent-teal">
+              <div className="card-top">
+                <span className="card-icon">📈</span>
+                <span className="card-label">{t(lang, 'todayProfit')}</span>
+              </div>
+              <div className="card-value profit-value">{fmt(summary.profit)}</div>
+              <div className="card-sub">
+                {t(lang, 'profitMargin')}: {margin}%
+              </div>
             </div>
-            <div className="card-value profit-value">{fmt(summary.profit)}</div>
-            <div className="card-sub">
-              {t(lang, 'profitMargin')}: {margin}%
-            </div>
-          </div>
+          )}
           <div className="card dash-card accent-blue">
             <div className="card-top">
               <span className="card-icon">🧾</span>
@@ -629,16 +659,18 @@ function Dashboard({
               {t(lang, 'itemsSold')}: {fmt(summary.items_sold)}
             </div>
           </div>
-          <div className="card dash-card accent-purple">
-            <div className="card-top">
-              <span className="card-icon">💊</span>
-              <span className="card-label">{t(lang, 'totalMedicines')}</span>
+          {!isCashier && (
+            <div className="card dash-card accent-purple">
+              <div className="card-top">
+                <span className="card-icon">💊</span>
+                <span className="card-label">{t(lang, 'totalMedicines')}</span>
+              </div>
+              <div className="card-value">{fmt(stock.length)}</div>
+              <div className={lowCount > 0 ? 'card-sub alert' : 'card-sub'}>
+                {t(lang, 'lowStock')}: {fmt(lowCount)}
+              </div>
             </div>
-            <div className="card-value">{fmt(stock.length)}</div>
-            <div className={lowCount > 0 ? 'card-sub alert' : 'card-sub'}>
-              {t(lang, 'lowStock')}: {fmt(lowCount)}
-            </div>
-          </div>
+          )}
           {stockTotals && (
             <div className="card dash-card accent-amber">
               <div className="card-top">
@@ -654,7 +686,7 @@ function Dashboard({
         </div>
       )}
 
-      {weekDays.length > 0 && (
+      {!isCashier && weekDays.length > 0 && (
         <div className="panel">
           <h3>📊 {t(lang, 'last7Days')}</h3>
           <BarChart points={weekDays} revLabel={t(lang, 'revenue')} profitLabel={t(lang, 'profit')} />
@@ -667,9 +699,11 @@ function Dashboard({
             <span>
               ⚠️ {t(lang, 'expiryWarnings')} <span className="count-badge">{batches.length}</span>
             </span>
-            <button className="link-btn" onClick={() => onNavigate('expiry')}>
-              {t(lang, 'viewAll')}
-            </button>
+            {!isCashier && (
+              <button className="link-btn" onClick={() => onNavigate('expiry')}>
+                {t(lang, 'viewAll')}
+              </button>
+            )}
           </h3>
           {batches.length === 0 ? (
             <p className="empty-note">{t(lang, 'noWarnings')}</p>
@@ -710,9 +744,11 @@ function Dashboard({
             <span>
               📉 {t(lang, 'lowStock')} <span className="count-badge warn">{lowCount}</span>
             </span>
-            <button className="link-btn" onClick={() => onNavigate('medicines')}>
-              {t(lang, 'viewAll')}
-            </button>
+            {!isCashier && (
+              <button className="link-btn" onClick={() => onNavigate('medicines')}>
+                {t(lang, 'viewAll')}
+              </button>
+            )}
           </h3>
           {lowStockRows.length === 0 ? (
             <p className="empty-note">{t(lang, 'noLowStock')}</p>
@@ -756,6 +792,7 @@ function Dashboard({
               <tr>
                 <th>{t(lang, 'invoice')}</th>
                 <th>{t(lang, 'customer')}</th>
+                <th>{t(lang, 'seller')}</th>
                 <th>{t(lang, 'itemsSold')}</th>
                 <th>{t(lang, 'total')}</th>
               </tr>
@@ -790,6 +827,7 @@ function Dashboard({
                       ) : null}
                     </td>
                     <td>{s.customer_name || t(lang, 'walkIn')}</td>
+                    <td>{s.seller_name || '—'}</td>
                     <td>{fmt(soldQty - retQty)}</td>
                     <td>
                       {fmt(displayTotal)}
@@ -1684,7 +1722,10 @@ function Medicines({ lang }: { lang: Lang }) {
   );
 }
 
-function SalesPage({ lang }: { lang: Lang }) {
+function SalesPage({ lang, role }: { lang: Lang; role: string }) {
+  // A cashier sells and views their own bills; returns, voids and credit
+  // payments need a pharmacist or admin (the server enforces this too).
+  const canManage = role !== 'cashier';
   const [stock, setStock] = useState<StockRow[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [recent, setRecent] = useState<SaleRow[]>([]);
@@ -2235,6 +2276,7 @@ function SalesPage({ lang }: { lang: Lang }) {
               <tr>
                 <th>{t(lang, 'invoice')}</th>
                 <th>{t(lang, 'customer')}</th>
+                <th>{t(lang, 'seller')}</th>
                 <th>{t(lang, 'lineTotal')}</th>
                 <th></th>
               </tr>
@@ -2266,6 +2308,7 @@ function SalesPage({ lang }: { lang: Lang }) {
                       ) : null}
                     </td>
                     <td>{s.customer_name || t(lang, 'walkIn')}</td>
+                    <td>{s.seller_name || '—'}</td>
                     <td>
                       {fmt(displayTotal)}
                       {due > 0 && (
@@ -2282,9 +2325,16 @@ function SalesPage({ lang }: { lang: Lang }) {
                         <button className="btn-secondary" onClick={() => printSale(s.id)}>
                           🧾 {t(lang, 'printReceipt')}
                         </button>
-                        {!fullyReturned && !isVoided && (
+                        {canManage ? (
+                          !fullyReturned &&
+                          !isVoided && (
+                            <button className="btn-secondary" onClick={() => openReturn(s.id)}>
+                              ↩️ {t(lang, 'returnSale')}
+                            </button>
+                          )
+                        ) : (
                           <button className="btn-secondary" onClick={() => openReturn(s.id)}>
-                            ↩️ {t(lang, 'returnSale')}
+                            👁️ {t(lang, 'viewBtn')}
                           </button>
                         )}
                       </div>
@@ -2304,7 +2354,8 @@ function SalesPage({ lang }: { lang: Lang }) {
             ↩️ {t(lang, 'billDetails')} — {detail.invoice_no}
             <span className="muted" style={{ fontSize: 14 }}>
               {' '}
-              · {detail.customer_name || t(lang, 'walkIn')} · {fmt(Number(detail.net_total))}{' '}
+              · {detail.customer_name || t(lang, 'walkIn')} · {t(lang, 'seller')}:{' '}
+              {detail.seller_name || '—'} · {fmt(Number(detail.net_total))}{' '}
               {t(lang, 'currency')}
             </span>
           </h3>
@@ -2315,8 +2366,8 @@ function SalesPage({ lang }: { lang: Lang }) {
                 <th>{t(lang, 'salePrice')}</th>
                 <th>{t(lang, 'soldQty')}</th>
                 <th>{t(lang, 'returnedQty')}</th>
-                <th>{t(lang, 'returnQty')}</th>
-                <th>{t(lang, 'lineTotal')}</th>
+                {canManage && <th>{t(lang, 'returnQty')}</th>}
+                {canManage && <th>{t(lang, 'lineTotal')}</th>}
               </tr>
             </thead>
             <tbody>
@@ -2332,31 +2383,35 @@ function SalesPage({ lang }: { lang: Lang }) {
                     <td>{fmt(Number(it.unit_price))}</td>
                     <td>{fmt(it.quantity)}</td>
                     <td>{fmt(it.returned_quantity)}</td>
-                    <td>
-                      <input
-                        className="qty-input"
-                        type="number"
-                        min="0"
-                        max={left}
-                        step="1"
-                        value={retQtys[it.item_id] ?? ''}
-                        onChange={(e) =>
-                          setRetQtys((m) => ({ ...m, [it.item_id]: e.target.value }))
-                        }
-                      />
-                    </td>
-                    <td>{fmt(rq * Number(it.unit_price))}</td>
+                    {canManage && (
+                      <td>
+                        <input
+                          className="qty-input"
+                          type="number"
+                          min="0"
+                          max={left}
+                          step="1"
+                          value={retQtys[it.item_id] ?? ''}
+                          onChange={(e) =>
+                            setRetQtys((m) => ({ ...m, [it.item_id]: e.target.value }))
+                          }
+                        />
+                      </td>
+                    )}
+                    {canManage && <td>{fmt(rq * Number(it.unit_price))}</td>}
                   </tr>
                 );
               })}
             </tbody>
           </table>
-          <div className="total-row grand">
-            <span>{t(lang, 'refundTotal')}</span>
-            <span>
-              {fmt(refundPreview)} {t(lang, 'currency')}
-            </span>
-          </div>
+          {canManage && (
+            <div className="total-row grand">
+              <span>{t(lang, 'refundTotal')}</span>
+              <span>
+                {fmt(refundPreview)} {t(lang, 'currency')}
+              </span>
+            </div>
+          )}
 
           <div className="total-row">
             <span>{t(lang, 'paidTotal')}</span>
@@ -2385,7 +2440,7 @@ function SalesPage({ lang }: { lang: Lang }) {
             </div>
           ))}
 
-          {detailDue > 0 && !detail.voided_at && (
+          {canManage && detailDue > 0 && !detail.voided_at && (
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
               <input
                 className="discount-input"
@@ -2407,15 +2462,17 @@ function SalesPage({ lang }: { lang: Lang }) {
           {retError && <div className="error-box">{retError}</div>}
           {retMsg && <div className="success-box">{retMsg}</div>}
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            <button className="btn-save" onClick={submitReturn} disabled={retBusy}>
-              {retBusy ? t(lang, 'loading') : t(lang, 'doReturn')}
-            </button>
+            {canManage && (
+              <button className="btn-save" onClick={submitReturn} disabled={retBusy}>
+                {retBusy ? t(lang, 'loading') : t(lang, 'doReturn')}
+              </button>
+            )}
             <button className="btn-secondary" onClick={() => setReceipt(detail)} disabled={retBusy}>
               🧾 {t(lang, 'printReceipt')}
             </button>
             {detail.voided_at ? (
               <span className="badge expired">🚫 {t(lang, 'voidedFull')}</span>
-            ) : !detailAllReturned ? (
+            ) : canManage && !detailAllReturned ? (
               <button
                 className={voidArm ? 'btn-danger armed' : 'btn-danger'}
                 onClick={submitVoid}
@@ -2449,6 +2506,11 @@ function SalesPage({ lang }: { lang: Lang }) {
             <div>
               {t(lang, 'customer')}: {receipt.customer_name || t(lang, 'walkIn')}
             </div>
+            {receipt.seller_name && (
+              <div>
+                {t(lang, 'seller')}: {receipt.seller_name}
+              </div>
+            )}
           </div>
           <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 6 }}>
             <tbody>
@@ -3914,9 +3976,26 @@ function ReportsPage({ lang }: { lang: Lang }) {
             ? `${t(lang, 'range')} — ${rangeFrom} → ${rangeTo}`
             : `${t(lang, 'yearly')} — ${year}`;
 
+  const negStyle = (v: number | string) =>
+    Number(v) < 0 ? { color: '#dc2626' } : undefined;
+
   return (
     <>
-      <h2>{t(lang, 'reports')}</h2>
+      <div className="dash-head">
+        <h2>{t(lang, 'reports')}</h2>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn primary" onClick={doExport} disabled={exporting}>
+            📊 {exporting ? t(lang, 'loading') : t(lang, 'exportExcel')}
+          </button>
+          <button
+            className="btn"
+            onClick={() => setPrinting(true)}
+            disabled={tab === 'stock' ? !stockData : !summary}
+          >
+            🖨️ {t(lang, 'printPdf')}
+          </button>
+        </div>
+      </div>
       <div className="tabs">
         {tabs.map((tb) => (
           <button
@@ -4014,32 +4093,26 @@ function ReportsPage({ lang }: { lang: Lang }) {
         )}
       </div>
 
-      <div style={{ margin: '10px 0' }}>
-        <button className="btn primary" onClick={doExport} disabled={exporting}>
-          📊 {exporting ? t(lang, 'loading') : t(lang, 'exportExcel')}
-        </button>
-        <button
-          className="btn"
-          onClick={() => setPrinting(true)}
-          disabled={tab === 'stock' ? !stockData : !summary}
-          style={{ marginInlineStart: 8 }}
-        >
-          🖨️ {t(lang, 'printPdf')}
-        </button>
-      </div>
-
       {error && <div className="error-box">{error}</div>}
       {!summary && !error && <p className="muted">{t(lang, 'loading')}</p>}
       {tab !== 'stock' && summary && (
-        <div className="cards">
-          <div className="card">
-            <div className="card-label">{t(lang, 'revenue')}</div>
+        <div className="cards dash-cards">
+          <div className="card dash-card accent-green">
+            <div className="card-top">
+              <span className="card-icon">💰</span>
+              <span className="card-label">{t(lang, 'revenue')}</span>
+            </div>
             <div className="card-value">{fmt(summary.revenue)}</div>
             <div className="card-sub">{t(lang, 'currency')}</div>
           </div>
-          <div className="card profit">
-            <div className="card-label">{t(lang, 'profit')}</div>
-            <div className="card-value">{fmt(summary.profit)}</div>
+          <div className="card dash-card accent-teal">
+            <div className="card-top">
+              <span className="card-icon">📈</span>
+              <span className="card-label">{t(lang, 'profit')}</span>
+            </div>
+            <div className="card-value" style={negStyle(summary.profit)}>
+              {fmt(summary.profit)}
+            </div>
             <div className="card-sub">
               {t(lang, 'cost')}: {fmt(summary.cost_total)} · {t(lang, 'profitMargin')}:{' '}
               {summary.revenue !== 0
@@ -4048,38 +4121,63 @@ function ReportsPage({ lang }: { lang: Lang }) {
               %
             </div>
           </div>
-          <div className="card">
-            <div className="card-label">{t(lang, 'salesCount')}</div>
+          <div className="card dash-card accent-blue">
+            <div className="card-top">
+              <span className="card-icon">🧾</span>
+              <span className="card-label">{t(lang, 'salesCount')}</span>
+            </div>
             <div className="card-value">{fmt(summary.sales_count)}</div>
             <div className="card-sub">
               {t(lang, 'itemsSold')}: {fmt(summary.items_sold)}
             </div>
           </div>
+          {Number(summary.returns_total || 0) > 0 && (
+            <div className="card dash-card accent-amber">
+              <div className="card-top">
+                <span className="card-icon">↩️</span>
+                <span className="card-label">{t(lang, 'returnsLabel')}</span>
+              </div>
+              <div className="card-value">{fmt(summary.returns_total || 0)}</div>
+              <div className="card-sub">{t(lang, 'currency')}</div>
+            </div>
+          )}
         </div>
       )}
 
       {tab === 'stock' && stockData && (
         <>
-          <div className="cards">
-            <div className="card">
-              <div className="card-label">{t(lang, 'totalStockValue')}</div>
+          <div className="cards dash-cards">
+            <div className="card dash-card accent-blue">
+              <div className="card-top">
+                <span className="card-icon">🏷️</span>
+                <span className="card-label">{t(lang, 'totalStockValue')}</span>
+              </div>
               <div className="card-value">{fmt(stockData.totals.cost_total)}</div>
               <div className="card-sub">{t(lang, 'currency')}</div>
             </div>
-            <div className="card profit">
-              <div className="card-label">{t(lang, 'saleValue')}</div>
+            <div className="card dash-card accent-green">
+              <div className="card-top">
+                <span className="card-icon">💰</span>
+                <span className="card-label">{t(lang, 'saleValue')}</span>
+              </div>
               <div className="card-value">{fmt(stockData.totals.sale_value)}</div>
               <div className="card-sub">
                 {t(lang, 'expectedProfit')}: {fmt(stockData.totals.expected_profit)}
               </div>
             </div>
-            <div className="card">
-              <div className="card-label">{t(lang, 'expiringValue')}</div>
+            <div className="card dash-card accent-amber">
+              <div className="card-top">
+                <span className="card-icon">⚠️</span>
+                <span className="card-label">{t(lang, 'expiringValue')}</span>
+              </div>
               <div className="card-value">{fmt(stockData.totals.cost_expiring)}</div>
               <div className="card-sub">{t(lang, 'currency')}</div>
             </div>
-            <div className="card">
-              <div className="card-label">{t(lang, 'expiredValue')}</div>
+            <div className="card dash-card accent-red">
+              <div className="card-top">
+                <span className="card-icon">⛔</span>
+                <span className="card-label">{t(lang, 'expiredValue')}</span>
+              </div>
               <div className="card-value">{fmt(stockData.totals.cost_expired)}</div>
               <div className="card-sub">{t(lang, 'currency')}</div>
             </div>
@@ -4103,7 +4201,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
                     <td>{fmt(m.quantity)}</td>
                     <td>{fmt(m.cost_total)}</td>
                     <td>{fmt(m.sale_value)}</td>
-                    <td>{fmt(m.expected_profit)}</td>
+                    <td style={negStyle(m.expected_profit)}>{fmt(m.expected_profit)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -4115,26 +4213,39 @@ function ReportsPage({ lang }: { lang: Lang }) {
 
       {tab === 'daily' && summary && (
         <div className="panel">
+          <div className="panel-head">
+            <h3 style={{ marginTop: 0 }}>🧾 {t(lang, 'recentBills')}</h3>
+            <span className="count-badge neutral">{daySales.length}</span>
+          </div>
           <div className="table-scroll rows-6" style={{ maxHeight: 268, overflowY: 'auto', overflowX: 'auto', border: '1px solid #cbd5e1', borderRadius: 10 }}>
           <table>
             <thead>
               <tr>
                 <th>{t(lang, 'invoice')}</th>
                 <th>{t(lang, 'customer')}</th>
+                <th>{t(lang, 'seller')}</th>
                 <th>{t(lang, 'lineTotal')}</th>
+                <th>{t(lang, 'returnsLabel')}</th>
+                <th>{t(lang, 'netCol')}</th>
               </tr>
             </thead>
             <tbody>
-              {daySales.map((s) => (
-                <tr key={s.id}>
-                  <td>
-                    {s.invoice_no}
-                    <span className="muted"> · {String(s.sale_date).slice(11, 16)}</span>
-                  </td>
-                  <td>{s.customer_name || t(lang, 'walkIn')}</td>
-                  <td>{fmt(Number(s.net_total))}</td>
-                </tr>
-              ))}
+              {daySales.map((s) => {
+                const refunded = Number(s.refunded_total || 0);
+                return (
+                  <tr key={s.id}>
+                    <td>
+                      {s.invoice_no}
+                      <span className="muted"> · {String(s.sale_date).slice(11, 16)}</span>
+                    </td>
+                    <td>{s.customer_name || t(lang, 'walkIn')}</td>
+                    <td>{s.seller_name || '—'}</td>
+                    <td>{fmt(Number(s.net_total))}</td>
+                    <td>{refunded > 0 ? fmt(refunded) : '—'}</td>
+                    <td>{fmt(Number(s.net_total) - refunded)}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           </div>
@@ -4172,7 +4283,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
                   <td>{fmt(d.sales_count)}</td>
                   <td>{fmt(d.revenue)}</td>
                   <td>{fmt(d.cost_total)}</td>
-                  <td>{fmt(d.profit)}</td>
+                  <td style={negStyle(d.profit)}>{fmt(d.profit)}</td>
                 </tr>
               ))}
             </tbody>
@@ -4214,7 +4325,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
                   <td>{fmt(m.sales_count)}</td>
                   <td>{fmt(m.revenue)}</td>
                   <td>{fmt(m.cost_total)}</td>
-                  <td>{fmt(m.profit)}</td>
+                  <td style={negStyle(m.profit)}>{fmt(m.profit)}</td>
                 </tr>
               ))}
             </tbody>
@@ -4225,7 +4336,9 @@ function ReportsPage({ lang }: { lang: Lang }) {
 
       {tab !== 'stock' && summary && medRows.length > 0 && (
         <div className="panel">
-          <h3 style={{ marginTop: 0 }}>{t(lang, 'topMedicines')}</h3>
+          <h3 style={{ marginTop: 0 }}>
+            {t(lang, 'topMedicines')} <span className="count-badge neutral">{medRows.length}</span>
+          </h3>
           <div className="table-scroll rows-6" style={{ maxHeight: 268, overflowY: 'auto', overflowX: 'auto', border: '1px solid #cbd5e1', borderRadius: 10 }}>
           <table>
             <thead>
@@ -4244,7 +4357,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
                   <td>{fmt(m.quantity)}</td>
                   <td>{fmt(m.revenue)}</td>
                   <td>{fmt(m.cost_total)}</td>
-                  <td>{fmt(m.profit)}</td>
+                  <td style={negStyle(m.profit)}>{fmt(m.profit)}</td>
                 </tr>
               ))}
             </tbody>
@@ -4255,7 +4368,10 @@ function ReportsPage({ lang }: { lang: Lang }) {
 
       {tab !== 'stock' && summary && purchRows.length > 0 && (
         <div className="panel">
-          <h3 style={{ marginTop: 0 }}>{t(lang, 'purchasesInPeriod')}</h3>
+          <h3 style={{ marginTop: 0 }}>
+            {t(lang, 'purchasesInPeriod')}{' '}
+            <span className="count-badge neutral">{purchRows.length}</span>
+          </h3>
           <div className="table-scroll rows-6" style={{ maxHeight: 268, overflowY: 'auto', overflowX: 'auto', border: '1px solid #cbd5e1', borderRadius: 10 }}>
           <table>
             <thead>
@@ -4290,15 +4406,15 @@ function ReportsPage({ lang }: { lang: Lang }) {
         summary &&
         createPortal(
           <div id="report-print" dir={lang === 'en' ? 'ltr' : 'rtl'}>
-            <div style={{ textAlign: 'center', marginBottom: 10 }}>
-              <div style={{ fontSize: 20, fontWeight: 700 }}>{branch?.name || 'Pharmacy'}</div>
+            <div className="print-head">
+              <div className="print-brand">{branch?.name || 'Pharmacy'}</div>
               {branch?.address && <div>{branch.address}</div>}
               {branch?.phone && <div>{branch.phone}</div>}
-              <div style={{ fontSize: 15, fontWeight: 600, marginTop: 6 }}>
+              <div className="print-title">
                 {t(lang, 'reports')} — {periodTitle}
               </div>
             </div>
-            <table>
+            <table className="print-summary">
               <tbody>
                 <tr>
                   <td>{t(lang, 'revenue')}</td>
@@ -4308,11 +4424,15 @@ function ReportsPage({ lang }: { lang: Lang }) {
                 </tr>
                 <tr>
                   <td>{t(lang, 'cost')}</td>
-                  <td>{fmt(summary.cost_total)}</td>
+                  <td>
+                    {fmt(summary.cost_total)} {t(lang, 'currency')}
+                  </td>
                 </tr>
-                <tr>
+                <tr className="profit-row">
                   <td>{t(lang, 'profit')}</td>
-                  <td>{fmt(summary.profit)}</td>
+                  <td>
+                    {fmt(summary.profit)} {t(lang, 'currency')}
+                  </td>
                 </tr>
                 <tr>
                   <td>{t(lang, 'profitMargin')}</td>
@@ -4334,14 +4454,17 @@ function ReportsPage({ lang }: { lang: Lang }) {
                 {Number(summary.discount_total) > 0 && (
                   <tr>
                     <td>{t(lang, 'discount')}</td>
-                    <td>{fmt(summary.discount_total)}</td>
+                    <td>
+                      {fmt(summary.discount_total)} {t(lang, 'currency')}
+                    </td>
                   </tr>
                 )}
                 {Number(summary.returns_total || 0) > 0 && (
                   <tr>
                     <td>{t(lang, 'returnsLabel')}</td>
                     <td>
-                      {fmt(summary.returns_total || 0)} ({fmt(summary.returned_items || 0)})
+                      {fmt(summary.returns_total || 0)} {t(lang, 'currency')} (
+                      {fmt(summary.returned_items || 0)})
                     </td>
                   </tr>
                 )}
@@ -4353,24 +4476,52 @@ function ReportsPage({ lang }: { lang: Lang }) {
                   <tr>
                     <th>{t(lang, 'invoice')}</th>
                     <th>{t(lang, 'customer')}</th>
-                    <th>{t(lang, 'lineTotal')}</th>
+                    <th>{t(lang, 'seller')}</th>
+                    <th className="num">{t(lang, 'lineTotal')}</th>
+                    <th className="num">{t(lang, 'returnsLabel')}</th>
+                    <th className="num">{t(lang, 'netCol')}</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {daySales.map((s) => (
-                    <tr key={s.id}>
-                      <td>
-                        {s.invoice_no} · {String(s.sale_date).slice(11, 16)}
-                      </td>
-                      <td>{s.customer_name || t(lang, 'walkIn')}</td>
-                      <td>{fmt(Number(s.net_total))}</td>
-                    </tr>
-                  ))}
+                  {daySales.map((s) => {
+                    const refunded = Number(s.refunded_total || 0);
+                    return (
+                      <tr key={s.id}>
+                        <td>
+                          {s.invoice_no} · {String(s.sale_date).slice(11, 16)}
+                        </td>
+                        <td>{s.customer_name || t(lang, 'walkIn')}</td>
+                        <td>{s.seller_name || '—'}</td>
+                        <td className="num">{fmt(Number(s.net_total))}</td>
+                        <td className="num">{refunded > 0 ? fmt(refunded) : '—'}</td>
+                        <td className="num">{fmt(Number(s.net_total) - refunded)}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
+                <tfoot>
+                  <tr>
+                    <td colSpan={3}>{t(lang, 'lineTotal')}</td>
+                    <td className="num">
+                      {fmt(daySales.reduce((sum, s) => sum + Number(s.net_total), 0))}
+                    </td>
+                    <td className="num">
+                      {fmt(daySales.reduce((sum, s) => sum + Number(s.refunded_total || 0), 0))}
+                    </td>
+                    <td className="num">
+                      {fmt(
+                        daySales.reduce(
+                          (sum, s) => sum + Number(s.net_total) - Number(s.refunded_total || 0),
+                          0
+                        )
+                      )}
+                    </td>
+                  </tr>
+                </tfoot>
               </table>
             )}
             {(tab === 'weekly' || tab === 'monthly' || tab === 'range') && (
-              <table>
+              <table className="print-nums">
                 <thead>
                   <tr>
                     <th>{t(lang, 'dateLabel')}</th>
@@ -4394,7 +4545,7 @@ function ReportsPage({ lang }: { lang: Lang }) {
               </table>
             )}
             {tab === 'yearly' && (
-              <table>
+              <table className="print-nums">
                 <thead>
                   <tr>
                     <th>{t(lang, 'month')}</th>
@@ -4421,10 +4572,8 @@ function ReportsPage({ lang }: { lang: Lang }) {
             )}
             {medRows.length > 0 && (
               <>
-                <div style={{ fontSize: 14, fontWeight: 600, marginTop: 12 }}>
-                  {t(lang, 'topMedicines')}
-                </div>
-                <table>
+                <div className="print-section">{t(lang, 'topMedicines')}</div>
+                <table className="print-nums">
                   <thead>
                     <tr>
                       <th>{t(lang, 'medicine')}</th>
@@ -4445,15 +4594,22 @@ function ReportsPage({ lang }: { lang: Lang }) {
                       </tr>
                     ))}
                   </tbody>
+                  <tfoot>
+                    <tr>
+                      <td>{t(lang, 'lineTotal')}</td>
+                      <td>{fmt(medRows.reduce((sum, m) => sum + Number(m.quantity), 0))}</td>
+                      <td>{fmt(medRows.reduce((sum, m) => sum + Number(m.revenue), 0))}</td>
+                      <td>{fmt(medRows.reduce((sum, m) => sum + Number(m.cost_total), 0))}</td>
+                      <td>{fmt(medRows.reduce((sum, m) => sum + Number(m.profit), 0))}</td>
+                    </tr>
+                  </tfoot>
                 </table>
               </>
             )}
             {purchRows.length > 0 && (
               <>
-                <div style={{ fontSize: 14, fontWeight: 600, marginTop: 12 }}>
-                  {t(lang, 'purchasesInPeriod')}
-                </div>
-                <table>
+                <div className="print-section">{t(lang, 'purchasesInPeriod')}</div>
+                <table className="print-nums">
                   <thead>
                     <tr>
                       <th>{t(lang, 'supplier')}</th>
@@ -4474,10 +4630,21 @@ function ReportsPage({ lang }: { lang: Lang }) {
                       </tr>
                     ))}
                   </tbody>
+                  <tfoot>
+                    <tr>
+                      <td>{t(lang, 'lineTotal')}</td>
+                      <td>{fmt(purchRows.reduce((sum, r) => sum + Number(r.bought), 0))}</td>
+                      <td>{fmt(purchRows.reduce((sum, r) => sum + Number(r.returned), 0))}</td>
+                      <td>{fmt(purchRows.reduce((sum, r) => sum + Number(r.net), 0))}</td>
+                      <td>{fmt(purchRows.reduce((sum, r) => sum + Number(r.paid), 0))}</td>
+                    </tr>
+                  </tfoot>
                 </table>
               </>
             )}
-            <div style={{ marginTop: 10, fontSize: 11 }}>{new Date().toLocaleString()}</div>
+            <div className="print-footer">
+              {t(lang, 'generatedOn')}: {new Date().toLocaleString()}
+            </div>
           </div>,
           document.body
         )}
@@ -4487,15 +4654,15 @@ function ReportsPage({ lang }: { lang: Lang }) {
         stockData &&
         createPortal(
           <div id="report-print" dir={lang === 'en' ? 'ltr' : 'rtl'}>
-            <div style={{ textAlign: 'center', marginBottom: 10 }}>
-              <div style={{ fontSize: 20, fontWeight: 700 }}>{branch?.name || 'Pharmacy'}</div>
+            <div className="print-head">
+              <div className="print-brand">{branch?.name || 'Pharmacy'}</div>
               {branch?.address && <div>{branch.address}</div>}
               {branch?.phone && <div>{branch.phone}</div>}
-              <div style={{ fontSize: 15, fontWeight: 600, marginTop: 6 }}>
+              <div className="print-title">
                 {t(lang, 'reports')} — {t(lang, 'stockValue')}
               </div>
             </div>
-            <table>
+            <table className="print-summary">
               <tbody>
                 <tr>
                   <td>{t(lang, 'totalStockValue')}</td>
@@ -4505,23 +4672,31 @@ function ReportsPage({ lang }: { lang: Lang }) {
                 </tr>
                 <tr>
                   <td>{t(lang, 'saleValue')}</td>
-                  <td>{fmt(stockData.totals.sale_value)}</td>
+                  <td>
+                    {fmt(stockData.totals.sale_value)} {t(lang, 'currency')}
+                  </td>
                 </tr>
-                <tr>
+                <tr className="profit-row">
                   <td>{t(lang, 'expectedProfit')}</td>
-                  <td>{fmt(stockData.totals.expected_profit)}</td>
+                  <td>
+                    {fmt(stockData.totals.expected_profit)} {t(lang, 'currency')}
+                  </td>
                 </tr>
                 <tr>
                   <td>{t(lang, 'expiringValue')}</td>
-                  <td>{fmt(stockData.totals.cost_expiring)}</td>
+                  <td>
+                    {fmt(stockData.totals.cost_expiring)} {t(lang, 'currency')}
+                  </td>
                 </tr>
                 <tr>
                   <td>{t(lang, 'expiredValue')}</td>
-                  <td>{fmt(stockData.totals.cost_expired)}</td>
+                  <td>
+                    {fmt(stockData.totals.cost_expired)} {t(lang, 'currency')}
+                  </td>
                 </tr>
               </tbody>
             </table>
-            <table>
+            <table className="print-nums">
               <thead>
                 <tr>
                   <th>{t(lang, 'medicine')}</th>
@@ -4543,7 +4718,9 @@ function ReportsPage({ lang }: { lang: Lang }) {
                 ))}
               </tbody>
             </table>
-            <div style={{ marginTop: 10, fontSize: 11 }}>{new Date().toLocaleString()}</div>
+            <div className="print-footer">
+              {t(lang, 'generatedOn')}: {new Date().toLocaleString()}
+            </div>
           </div>,
           document.body
         )}
@@ -4551,7 +4728,10 @@ function ReportsPage({ lang }: { lang: Lang }) {
   );
 }
 
-function CustomersPage({ lang }: { lang: Lang }) {
+function CustomersPage({ lang, role }: { lang: Lang; role: string }) {
+  // A cashier adds and views customers; editing, deleting and collecting
+  // credit need a pharmacist or admin (the server enforces this too).
+  const canManage = role !== 'cashier';
   const [rows, setRows] = useState<CustomerFull[]>([]);
   const [query, setQuery] = useState('');
   const [name, setName] = useState('');
@@ -4570,6 +4750,13 @@ function CustomersPage({ lang }: { lang: Lang }) {
   const [editName, setEditName] = useState('');
   const [editPhone, setEditPhone] = useState('');
   const [deletingId, setDeletingId] = useState('');
+  const [formOpen, setFormOpen] = useState(false);
+  const [dueFilter, setDueFilter] = useState<'all' | 'due'>('all');
+  const [paySaleId, setPaySaleId] = useState('');
+  const [payAmount, setPayAmount] = useState('');
+  const [payMsg, setPayMsg] = useState('');
+  const [payError, setPayError] = useState('');
+  const [payBusy, setPayBusy] = useState(false);
 
   const load = async () => {
     const data = await api.get('/customers');
@@ -4583,10 +4770,13 @@ function CustomersPage({ lang }: { lang: Lang }) {
   const q = query.trim().toLowerCase();
   const filtered = rows.filter(
     (r) =>
-      !q ||
-      r.name.toLowerCase().includes(q) ||
-      (r.phone || '').toLowerCase().includes(q)
+      (!q ||
+        r.name.toLowerCase().includes(q) ||
+        (r.phone || '').toLowerCase().includes(q)) &&
+      (dueFilter === 'all' ? true : Number(r.due_total || 0) > 0)
   );
+  const withDueCount = rows.filter((r) => Number(r.due_total || 0) > 0).length;
+  const totalDue = rows.reduce((sum, r) => sum + Number(r.due_total || 0), 0);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -4609,6 +4799,7 @@ function CustomersPage({ lang }: { lang: Lang }) {
       setMsg(t(lang, 'customerAdded'));
       setName('');
       setPhone('');
+      setFormOpen(false);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error');
@@ -4676,6 +4867,32 @@ function CustomersPage({ lang }: { lang: Lang }) {
     setBusy(false);
   };
 
+  // Collect credit right here: a payment against one of this customer's
+  // bills, using the same guarded endpoint as the Sales page (the server
+  // rejects anything above what is still due on the bill).
+  const submitPayment = async () => {
+    if (!history || !paySaleId) return;
+    setPayError('');
+    setPayMsg('');
+    const amount = Number(payAmount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setPayError(t(lang, 'paidAmount'));
+      return;
+    }
+    setPayBusy(true);
+    try {
+      await api.post(`/sales/${paySaleId}/payment`, { amount });
+      setPayMsg(t(lang, 'paymentDone'));
+      setPayAmount('');
+      setPaySaleId('');
+      await load();
+      await selectCustomer(history.customer);
+    } catch (err) {
+      setPayError(err instanceof Error ? err.message : 'Error');
+    }
+    setPayBusy(false);
+  };
+
   const removeCustomer = async (id: string) => {
     setError('');
     setMsg('');
@@ -4697,9 +4914,53 @@ function CustomersPage({ lang }: { lang: Lang }) {
 
   return (
     <>
-      <h2>{t(lang, 'customers')}</h2>
+      <div className="dash-head">
+        <h2>
+          {t(lang, 'customers')} <span className="count-badge neutral">{rows.length}</span>
+        </h2>
+        {!formOpen && (
+          <button
+            className="btn-primary"
+            style={{ width: 'auto', marginTop: 0 }}
+            onClick={() => {
+              setError('');
+              setMsg('');
+              setFormOpen(true);
+            }}
+          >
+            ➕ {t(lang, 'addCustomer')}
+          </button>
+        )}
+      </div>
+      <div className="cards dash-cards">
+        <div className="card dash-card accent-blue">
+          <div className="card-top">
+            <span className="card-icon">👥</span>
+            <span className="card-label">{t(lang, 'customers')}</span>
+          </div>
+          <div className="card-value">{fmt(rows.length)}</div>
+        </div>
+        <div className="card dash-card accent-amber">
+          <div className="card-top">
+            <span className="card-icon">⚠️</span>
+            <span className="card-label">{t(lang, 'withDue')}</span>
+          </div>
+          <div className="card-value">{fmt(withDueCount)}</div>
+        </div>
+        <div className="card dash-card accent-red">
+          <div className="card-top">
+            <span className="card-icon">💸</span>
+            <span className="card-label">{t(lang, 'dueAmount')}</span>
+          </div>
+          <div className="card-value">{fmt(totalDue)}</div>
+          <div className="card-sub">{t(lang, 'currency')}</div>
+        </div>
+      </div>
+      {error && <div className="error-box">{error}</div>}
+      {msg && <div className="success-box">{msg}</div>}
 
-      <div className="panel" style={{ marginTop: 0 }}>
+      {formOpen && (
+      <div className="panel">
         <h3>➕ {t(lang, 'addCustomer')}</h3>
         <form onSubmit={submit}>
           <div className="form-grid">
@@ -4712,26 +4973,49 @@ function CustomersPage({ lang }: { lang: Lang }) {
               <input value={phone} onChange={(e) => setPhone(e.target.value)} maxLength={10} inputMode="numeric" />
             </div>
           </div>
-          {error && <div className="error-box">{error}</div>}
-          {msg && <div className="success-box">{msg}</div>}
           <button className="btn-save" type="submit" disabled={busy}>
             {busy ? t(lang, 'loading') : t(lang, 'save')}
+          </button>{' '}
+          <button
+            className="btn-secondary"
+            type="button"
+            onClick={() => setFormOpen(false)}
+          >
+            {t(lang, 'cancel')}
           </button>
         </form>
       </div>
+      )}
 
       <div className="panel">
-        <input
-          className="search-input"
-          placeholder={t(lang, 'searchCustomer')}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
+        <div className="med-toolbar">
+          <input
+            className="search-input"
+            placeholder={t(lang, 'searchCustomer')}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <button
+            type="button"
+            className={`chip ${dueFilter === 'all' ? 'active' : ''}`}
+            onClick={() => setDueFilter('all')}
+          >
+            {t(lang, 'allFilter')} ({rows.length})
+          </button>
+          <button
+            type="button"
+            className={`chip ${dueFilter === 'due' ? 'active' : ''}`}
+            onClick={() => setDueFilter('due')}
+          >
+            {t(lang, 'withDue')} ({withDueCount})
+          </button>
+        </div>
         {filtered.length === 0 ? (
           <p className="muted" style={{ fontSize: 15 }}>
             {t(lang, 'noCustomers')}
           </p>
         ) : (
+          <div className="table-scroll rows-6" style={{ maxHeight: 320, overflowY: 'auto', overflowX: 'auto', border: '1px solid #cbd5e1', borderRadius: 10 }}>
           <table>
             <thead>
               <tr>
@@ -4808,7 +5092,7 @@ function CustomersPage({ lang }: { lang: Lang }) {
                           {t(lang, 'cancel')}
                         </button>
                       </span>
-                    ) : (
+                    ) : canManage ? (
                       <span style={{ display: 'flex', gap: 6 }}>
                         <button className="btn-secondary" onClick={() => startEdit(r)}>
                           {t(lang, 'edit')}
@@ -4817,17 +5101,34 @@ function CustomersPage({ lang }: { lang: Lang }) {
                           {t(lang, 'delete')}
                         </button>
                       </span>
-                    )}
+                    ) : null}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
 
       <div className="panel">
-        <h3>🧾 {t(lang, 'purchaseHistory')}</h3>
+        <div className="panel-head">
+          <h3>🧾 {t(lang, 'purchaseHistory')}</h3>
+          {history && (
+            <button
+              className="link-btn"
+              onClick={() => {
+                setHistory(null);
+                setSelectedId('');
+                setPaySaleId('');
+                setPayMsg('');
+                setPayError('');
+              }}
+            >
+              ✕ {t(lang, 'closeBtn')}
+            </button>
+          )}
+        </div>
         {!history && !historyLoading && (
           <p className="muted" style={{ fontSize: 15 }}>
             {t(lang, 'selectCustomer')}
@@ -4836,51 +5137,153 @@ function CustomersPage({ lang }: { lang: Lang }) {
         {historyLoading && <p className="muted">{t(lang, 'loading')}</p>}
         {history && (
           <>
-            <div className="cards">
-              <div className="card">
-                <div className="card-label">{t(lang, 'customer')}</div>
+            <div className="cards dash-cards">
+              <div className="card dash-card accent-blue">
+                <div className="card-top">
+                  <span className="card-icon">👤</span>
+                  <span className="card-label">{t(lang, 'customer')}</span>
+                </div>
                 <div className="card-value" style={{ fontSize: 20 }}>
                   {history.customer.name}
                 </div>
                 <div className="card-sub">{history.customer.phone || '—'}</div>
               </div>
-              <div className="card">
-                <div className="card-label">{t(lang, 'billsCount')}</div>
+              <div className="card dash-card accent-purple">
+                <div className="card-top">
+                  <span className="card-icon">🧾</span>
+                  <span className="card-label">{t(lang, 'billsCount')}</span>
+                </div>
                 <div className="card-value">{fmt(history.totals.bills)}</div>
               </div>
-              <div className="card profit">
-                <div className="card-label">{t(lang, 'totalSpent')}</div>
+              <div className="card dash-card accent-green">
+                <div className="card-top">
+                  <span className="card-icon">💰</span>
+                  <span className="card-label">{t(lang, 'totalSpent')}</span>
+                </div>
                 <div className="card-value">{fmt(history.totals.total_spent)}</div>
                 <div className="card-sub">{t(lang, 'currency')}</div>
               </div>
+              <div className="card dash-card accent-amber">
+                <div className="card-top">
+                  <span className="card-icon">💸</span>
+                  <span className="card-label">{t(lang, 'dueAmount')}</span>
+                </div>
+                <div className="card-value">
+                  {fmt(
+                    history.sales.reduce((sum, s) => sum + Number(s.due_amount || 0), 0)
+                  )}
+                </div>
+                <div className="card-sub">{t(lang, 'currency')}</div>
+              </div>
             </div>
+            {payError && <div className="error-box">{payError}</div>}
+            {payMsg && <div className="success-box">{payMsg}</div>}
             {history.sales.length === 0 ? (
               <p className="muted" style={{ fontSize: 15 }}>
                 {t(lang, 'noPurchases')}
               </p>
             ) : (
-              <table>
-                <thead>
-                  <tr>
-                    <th>{t(lang, 'invoice')}</th>
-                    <th>{t(lang, 'dateLabel')}</th>
-                    <th>{t(lang, 'qty')}</th>
-                    <th>{t(lang, 'lineTotal')}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {history.sales.map((s) => (
-                    <tr key={s.id}>
-                      <td>{s.invoice_no}</td>
-                      <td>
-                        {String(s.sale_date).slice(0, 10)} {String(s.sale_date).slice(11, 16)}
-                      </td>
-                      <td>{fmt(Number(s.items))}</td>
-                      <td>{fmt(Number(s.net_total))}</td>
+              <>
+                <div className="table-scroll rows-6" style={{ maxHeight: 268, overflowY: 'auto', overflowX: 'auto', border: '1px solid #cbd5e1', borderRadius: 10 }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>{t(lang, 'invoice')}</th>
+                      <th>{t(lang, 'dateLabel')}</th>
+                      <th>{t(lang, 'qty')}</th>
+                      <th>{t(lang, 'lineTotal')}</th>
+                      <th>{t(lang, 'paidTotal')}</th>
+                      <th>{t(lang, 'due')}</th>
+                      <th></th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {history.sales.map((s) => {
+                      const due = Number(s.due_amount || 0);
+                      return (
+                        <tr key={s.id}>
+                          <td>
+                            {s.invoice_no}
+                            {s.voided ? (
+                              <span className="badge danger" style={{ marginInlineStart: 6 }}>
+                                {t(lang, 'voidedFull')}
+                              </span>
+                            ) : null}
+                          </td>
+                          <td>
+                            {String(s.sale_date).slice(0, 10)} {String(s.sale_date).slice(11, 16)}
+                          </td>
+                          <td>{fmt(Number(s.items))}</td>
+                          <td>{fmt(Number(s.net_total))}</td>
+                          <td>{fmt(Number(s.paid_total || 0))}</td>
+                          <td>
+                            {due > 0 ? (
+                              <span className="badge warning">{fmt(due)}</span>
+                            ) : (
+                              '—'
+                            )}
+                          </td>
+                          <td>
+                            {canManage && due > 0 && !s.voided && (
+                              <button
+                                className="btn-secondary"
+                                onClick={() => {
+                                  setPaySaleId(s.id);
+                                  setPayAmount(String(due));
+                                  setPayError('');
+                                  setPayMsg('');
+                                }}
+                              >
+                                {t(lang, 'recordPayment')}
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                </div>
+                {canManage && paySaleId && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      gap: 8,
+                      alignItems: 'center',
+                      flexWrap: 'wrap',
+                      marginTop: 12,
+                    }}
+                  >
+                    <span style={{ fontWeight: 600 }}>
+                      {history.sales.find((s) => s.id === paySaleId)?.invoice_no} —{' '}
+                      {t(lang, 'due')}: {fmt(Number(history.sales.find((s) => s.id === paySaleId)?.due_amount || 0))}{' '}
+                      {t(lang, 'currency')}
+                    </span>
+                    <input
+                      className="cell-input"
+                      style={{ width: 140 }}
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={payAmount}
+                      onChange={(e) => setPayAmount(e.target.value)}
+                      placeholder={t(lang, 'paidAmount')}
+                    />
+                    <button className="btn-save" onClick={submitPayment} disabled={payBusy}>
+                      {payBusy ? t(lang, 'loading') : t(lang, 'recordPayment')}
+                    </button>
+                    <button
+                      className="btn-secondary"
+                      onClick={() => {
+                        setPaySaleId('');
+                        setPayError('');
+                      }}
+                    >
+                      {t(lang, 'cancel')}
+                    </button>
+                  </div>
+                )}
+              </>
             )}
           </>
         )}
@@ -4889,7 +5292,15 @@ function CustomersPage({ lang }: { lang: Lang }) {
   );
 }
 
-function BackupPage({ lang, onLogout }: { lang: Lang; onLogout: () => void }) {
+function BackupPage({
+  lang,
+  isAdmin,
+  onLogout,
+}: {
+  lang: Lang;
+  isAdmin: boolean;
+  onLogout: () => void;
+}) {
   const [dlBusy, setDlBusy] = useState(false);
   const [dlMsg, setDlMsg] = useState('');
   const [file, setFile] = useState<File | null>(null);
@@ -4903,8 +5314,50 @@ function BackupPage({ lang, onLogout }: { lang: Lang; onLogout: () => void }) {
     setDlMsg('');
     setDlBusy(true);
     try {
-      const name = await api.download('/backup/download', 'pharmacy_db.sql');
-      setDlMsg(`${t(lang, 'backupDone')} — ${name}`);
+      const { blob, name } = await api.downloadBlob('/backup/download', 'pharmacy_db.sql');
+      // Let the user choose where to save the backup (any folder, USB drive,
+      // ...). Chrome/Edge support the native Save dialog; other browsers
+      // fall back to the normal download into the Downloads folder.
+      const picker = (
+        window as unknown as {
+          showSaveFilePicker?: (opts: Record<string, unknown>) => Promise<{
+            createWritable: () => Promise<{
+              write: (data: Blob) => Promise<void>;
+              close: () => Promise<void>;
+            }>;
+          }>;
+        }
+      ).showSaveFilePicker;
+      if (picker) {
+        try {
+          const handle = await picker({
+            suggestedName: name,
+            types: [
+              {
+                description: 'SQL backup',
+                accept: { 'application/sql': ['.sql'] },
+              },
+            ],
+          });
+          const writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          setDlMsg(t(lang, 'backupDone'));
+        } catch (pickErr) {
+          // Closing the Save dialog is not an error — just do nothing.
+          if ((pickErr as Error).name !== 'AbortError') throw pickErr;
+        }
+      } else {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        setDlMsg(`${t(lang, 'backupDone')} — ${name}`);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error');
     }
@@ -4953,6 +5406,7 @@ function BackupPage({ lang, onLogout }: { lang: Lang; onLogout: () => void }) {
         </button>
       </div>
 
+      {isAdmin && (
       <div className="panel">
         <h3>⬆️ {t(lang, 'restoreBackup')}</h3>
         <p className="muted" style={{ fontSize: 15 }}>
@@ -4999,6 +5453,7 @@ function BackupPage({ lang, onLogout }: { lang: Lang; onLogout: () => void }) {
           </div>
         )}
       </div>
+      )}
     </>
   );
 }
@@ -5052,6 +5507,12 @@ function SettingsPage({
   const [nuRole, setNuRole] = useState('cashier');
   const [usMsg, setUsMsg] = useState('');
   const [usError, setUsError] = useState('');
+  const [delUserId, setDelUserId] = useState('');
+  const [resetUser, setResetUser] = useState<ManagedUser | null>(null);
+  const [resetPw, setResetPw] = useState('');
+  const [resetPw2, setResetPw2] = useState('');
+  const [resetShowPw, setResetShowPw] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
 
   const roleLabel = (r: string) =>
     r === 'admin'
@@ -5169,6 +5630,48 @@ function SettingsPage({
     }
   };
 
+  const deleteUser = async (u: ManagedUser) => {
+    setUsMsg('');
+    setUsError('');
+    try {
+      await api.del(`/settings/users/${u.id}`);
+      setUsMsg(t(lang, 'userDeleted'));
+      setDelUserId('');
+      if (resetUser?.id === u.id) setResetUser(null);
+      await loadUsers();
+    } catch (err) {
+      setUsError(err instanceof Error ? err.message : 'Error');
+    }
+  };
+
+  const submitResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resetUser) return;
+    setUsMsg('');
+    setUsError('');
+    if (resetPw.length < 6) {
+      setUsError(t(lang, 'passwordTooShort'));
+      return;
+    }
+    if (resetPw !== resetPw2) {
+      setUsError(t(lang, 'passwordMismatch'));
+      return;
+    }
+    setResetBusy(true);
+    try {
+      await api.post(`/settings/users/${resetUser.id}/reset-password`, {
+        password: resetPw,
+      });
+      setUsMsg(t(lang, 'passwordResetDone'));
+      setResetUser(null);
+      setResetPw('');
+      setResetPw2('');
+    } catch (err) {
+      setUsError(err instanceof Error ? err.message : 'Error');
+    }
+    setResetBusy(false);
+  };
+
   return (
     <>
       <h2>{t(lang, 'settings')}</h2>
@@ -5261,6 +5764,9 @@ function SettingsPage({
       {isAdmin && (
         <div className="panel">
           <h3>👥 {t(lang, 'users')}</h3>
+          <p className="muted" style={{ fontSize: 14, marginTop: -6 }}>
+            {t(lang, 'passwordResetNote')}
+          </p>
           <table>
             <thead>
               <tr>
@@ -5284,15 +5790,94 @@ function SettingsPage({
                   </td>
                   <td>
                     {u.id !== user.id && (
-                      <button className="btn-secondary" onClick={() => toggleActive(u)}>
-                        {u.is_active ? t(lang, 'deactivate') : t(lang, 'activate')}
-                      </button>
+                      <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        <button className="btn-secondary" onClick={() => toggleActive(u)}>
+                          {u.is_active ? t(lang, 'deactivate') : t(lang, 'activate')}
+                        </button>
+                        <button
+                          className="btn-secondary"
+                          onClick={() => {
+                            setUsMsg('');
+                            setUsError('');
+                            setResetUser(u);
+                            setResetPw('');
+                            setResetPw2('');
+                          }}
+                        >
+                          🔑 {t(lang, 'resetPassword')}
+                        </button>
+                        {delUserId === u.id ? (
+                          <>
+                            <span style={{ fontSize: 13, alignSelf: 'center' }}>
+                              {t(lang, 'confirmDeleteIt')}
+                            </span>
+                            <button className="btn-remove" onClick={() => deleteUser(u)}>
+                              {t(lang, 'delete')}
+                            </button>
+                            <button className="btn-secondary" onClick={() => setDelUserId('')}>
+                              {t(lang, 'cancel')}
+                            </button>
+                          </>
+                        ) : (
+                          <button className="btn-remove" onClick={() => setDelUserId(u.id)}>
+                            {t(lang, 'delete')}
+                          </button>
+                        )}
+                      </span>
                     )}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+
+          {resetUser && (
+            <form onSubmit={submitResetPassword} style={{ marginTop: 16 }}>
+              <h3 style={{ marginTop: 0 }}>
+                🔑 {t(lang, 'resetPassword')} — {resetUser.full_name} ({resetUser.username})
+              </h3>
+              <div className="form-grid">
+                <div className="field">
+                  <label>{t(lang, 'newPassword')} *</label>
+                  <input
+                    type={resetShowPw ? 'text' : 'password'}
+                    value={resetPw}
+                    onChange={(e) => setResetPw(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="field">
+                  <label>{t(lang, 'confirmPassword')} *</label>
+                  <input
+                    type={resetShowPw ? 'text' : 'password'}
+                    value={resetPw2}
+                    onChange={(e) => setResetPw2(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+              <label className="show-pw">
+                <input
+                  type="checkbox"
+                  checked={resetShowPw}
+                  onChange={(e) => setResetShowPw(e.target.checked)}
+                />{' '}
+                {t(lang, 'showPassword')}
+              </label>
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <button className="btn-save" type="submit" disabled={resetBusy}>
+                  {resetBusy ? t(lang, 'loading') : t(lang, 'resetPassword')}
+                </button>
+                <button
+                  className="btn-secondary"
+                  type="button"
+                  onClick={() => setResetUser(null)}
+                >
+                  {t(lang, 'cancel')}
+                </button>
+              </div>
+            </form>
+          )}
 
           <h3 style={{ marginTop: 20 }}>➕ {t(lang, 'addUser')}</h3>
           <form onSubmit={addUser}>

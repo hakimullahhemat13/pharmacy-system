@@ -66,7 +66,7 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
   }
 
   const branchId = req.user.branch_id;
-  const userId = req.user.id;
+  const userId = req.user.sub;
   const supplierId = body.supplier_id ? String(body.supplier_id) : null;
   const invoiceNo = body.invoice_no ? String(body.invoice_no).trim() : null;
   const notes = body.notes ? String(body.notes).trim() : null;
@@ -322,11 +322,11 @@ router.post('/:id/return', authRequired, requireRole('admin', 'pharmacist'), asy
       await conn.query('UPDATE medicine_batches SET quantity_on_hand = quantity_on_hand - ? WHERE id = ?', [qty, item.batch_id]);
       await conn.query(
         "INSERT INTO stock_transactions (id, branch_id, medicine_id, batch_id, type, quantity_change, reference_id, created_by) VALUES (?, ?, ?, ?, 'purchase_return', ?, ?, ?)",
-        [uuidv4(), branchId, item.medicine_id, item.batch_id, -qty, req.params.id, req.user.id]
+        [uuidv4(), branchId, item.medicine_id, item.batch_id, -qty, req.params.id, req.user.sub]
       );
       await conn.query(
         'INSERT INTO purchase_returns (id, branch_id, purchase_id, purchase_item_id, batch_id, quantity, unit_price, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [uuidv4(), branchId, req.params.id, item.id, item.batch_id, qty, item.purchase_price, req.user.id]
+        [uuidv4(), branchId, req.params.id, item.id, item.batch_id, qty, item.purchase_price, req.user.sub]
       );
       returnedTotal += qty * Number(item.purchase_price);
     }
@@ -381,7 +381,7 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
   }
 
   const branchId = req.user.branch_id;
-  const userId = req.user.id;
+  const userId = req.user.sub;
 
   if (body.supplier_id && body.invoice_no && String(body.invoice_no).trim() && !body.allow_duplicate) {
     const [dup] = await pool.query(
@@ -646,7 +646,7 @@ router.delete('/:id', authRequired, requireRole('admin', 'pharmacist'), async (r
       await conn.query('UPDATE medicine_batches SET quantity_on_hand = quantity_on_hand - ? WHERE id = ?', [it.quantity, it.batch_id]);
       await conn.query(
         "INSERT INTO stock_transactions (id, branch_id, medicine_id, batch_id, type, quantity_change, reference_id, created_by) VALUES (?, ?, ?, ?, 'adjustment', ?, ?, ?)",
-        [uuidv4(), branchId, it.medicine_id, it.batch_id, -Number(it.quantity), req.params.id, req.user.id]
+        [uuidv4(), branchId, it.medicine_id, it.batch_id, -Number(it.quantity), req.params.id, req.user.sub]
       );
     }
     await conn.query('UPDATE purchases SET is_deleted = 1 WHERE id = ?', [req.params.id]);

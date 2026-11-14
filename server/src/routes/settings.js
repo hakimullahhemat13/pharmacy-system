@@ -171,4 +171,62 @@ router.patch('/users/:id/active', requireRole('admin'), async (req, res) => {
   }
 });
 
+// DELETE /api/settings/users/:id — admin only. Soft delete: the user can no
+// longer log in, but their past sales and purchases keep their name (the
+// sales list joins users without filtering is_deleted). An admin cannot
+// delete their own account, and the branch's last active admin is protected.
+router.delete('/users/:id', requireRole('admin'), async (req, res) => {
+  if (req.params.id === req.user.sub) {
+    return res.status(400).json({ status: 'error', message: 'You cannot delete your own account' });
+  }
+  try {
+    const [target] = await pool.query(
+      'SELECT id, role, is_active FROM users WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
+      [req.params.id, req.user.branch_id]
+    );
+    if (!target[0]) {
+      return res.status(404).json({ status: 'error', message: 'User not found in your branch' });
+    }
+    if (target[0].role === 'admin' && target[0].is_active) {
+      const [admins] = await pool.query(
+        "SELECT COUNT(*) AS c FROM users WHERE branch_id = ? AND role = 'admin' AND is_active = 1 AND is_deleted = 0",
+        [req.user.branch_id]
+      );
+      if (Number(admins[0].c) <= 1) {
+        return res.status(400).json({ status: 'error', message: 'Cannot delete the last active admin' });
+      }
+    }
+    await pool.query('UPDATE users SET is_deleted = 1, is_active = 0 WHERE id = ?', [req.params.id]);
+    return res.json({ status: 'ok', message: 'User deleted' });
+  } catch (err) {
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+});
+
+// POST /api/settings/users/:id/reset-password — admin only. Passwords are
+// stored as one-way bcrypt hashes, so nobody can read an existing password
+// back; the admin sets a NEW one instead. Body: { password } (min 6 chars,
+// same rule as creating a user). The user logs in with the new password;
+// their old sessions keep working until they log out.
+router.post('/users/:id/reset-password', requireRole('admin'), async (req, res) => {
+  const { password } = req.body || {};
+  if (!password || String(password).length < 6) {
+    return res.status(400).json({ status: 'error', message: 'Password is too short (minimum 6 characters)' });
+  }
+  try {
+    const [target] = await pool.query(
+      'SELECT id FROM users WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
+      [req.params.id, req.user.branch_id]
+    );
+    if (!target[0]) {
+      return res.status(404).json({ status: 'error', message: 'User not found in your branch' });
+    }
+    const hash = await bcrypt.hash(String(password), 12);
+    await pool.query('UPDATE users SET password_hash = ? WHERE id = ?', [hash, req.params.id]);
+    return res.json({ status: 'ok', message: 'Password reset' });
+  } catch (err) {
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+});
+
 module.exports = router;

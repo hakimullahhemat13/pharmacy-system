@@ -7,7 +7,7 @@ const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 
 const pool = require('../db');
-const { authRequired } = require('../middleware/auth');
+const { authRequired, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -105,7 +105,7 @@ router.get('/all-batches', authRequired, async (req, res) => {
 // already-expired batches can be written off, and never more than the
 // batch still holds. No database migration is needed: the
 // stock_transactions ENUM already contains 'expired'.
-router.post('/batches/:batchId/write-off', authRequired, async (req, res) => {
+router.post('/batches/:batchId/write-off', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   const qty = Number((req.body || {}).quantity);
   if (!Number.isInteger(qty) || qty <= 0) {
     return res.status(400).json({ status: 'error', message: 'Quantity must be a whole number above 0' });

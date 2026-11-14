@@ -251,7 +251,7 @@ router.post('/:id/payment', authRequired, requireRole('admin', 'pharmacist'), as
     const id = uuidv4();
     await conn.query(
       'INSERT INTO supplier_payments (id, branch_id, supplier_id, amount, created_by) VALUES (?, ?, ?, ?, ?)',
-      [id, branchId, req.params.id, amount, req.user.id]
+      [id, branchId, req.params.id, amount, req.user.sub]
     );
     await conn.commit();
     return res.status(201).json({

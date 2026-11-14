@@ -61,6 +61,21 @@ export const api = {
     URL.revokeObjectURL(url);
     return name;
   },
+  // Fetch a file as a blob (the caller decides where it goes — e.g. the
+  // browser's Save dialog). Returns the blob plus the server's file name.
+  async downloadBlob(path: string, fallbackName: string) {
+    const res = await fetch(BASE + path, {
+      headers: { Authorization: `Bearer ${getToken()}` },
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error((data && data.message) || `HTTP ${res.status}`);
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get('Content-Disposition') || '';
+    const match = /filename="([^"]+)"/.exec(cd);
+    return { blob, name: match ? match[1] : fallbackName };
+  },
   async put(path: string, body: unknown) {
     const res = await fetch(BASE + path, {
       method: 'PUT',

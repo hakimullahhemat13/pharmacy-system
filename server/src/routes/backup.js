@@ -11,7 +11,9 @@ const mysql = require('mysql2/promise');
 const { authRequired, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
-router.use(authRequired, requireRole('admin'));
+// Every logged-in user may DOWNLOAD a backup (read-only, harmless); only
+// an admin may RESTORE one (it rewrites the whole database).
+router.use(authRequired);
 
 function dbConfig() {
   return {
@@ -75,7 +77,7 @@ router.get('/download', (req, res) => {
   });
 });
 
-router.post('/restore', express.text({ type: '*/*', limit: '100mb' }), async (req, res) => {
+router.post('/restore', requireRole('admin'), express.text({ type: '*/*', limit: '100mb' }), async (req, res) => {
   const sql = typeof req.body === 'string' ? req.body : '';
   if (!sql.trim()) {
     return res.status(400).json({ status: 'error', message: 'No backup file content received' });

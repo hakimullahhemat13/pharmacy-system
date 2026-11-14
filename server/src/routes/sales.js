@@ -8,7 +8,7 @@ const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 
 const pool = require('../db');
-const { authRequired } = require('../middleware/auth');
+const { authRequired, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -53,7 +53,7 @@ router.post('/', authRequired, async (req, res) => {
   }
 
   const branchId = req.user.branch_id;
-  const userId = req.user.id;
+  const userId = req.user.sub;
   const customerId = body.customer_id ? String(body.customer_id) : null;
 
   const conn = await pool.getConnection();
@@ -214,6 +214,11 @@ router.get('/', authRequired, async (req, res) => {
   try {
     const where = ['s.branch_id = ?', 's.is_deleted = 0'];
     const params = [req.user.branch_id];
+    // A cashier sees only their own bills; admin and pharmacist see all.
+    if (req.user.role === 'cashier') {
+      where.push('s.created_by = ?');
+      params.push(req.user.sub);
+    }
     const q = String(req.query.q || '').trim();
     if (q) {
       where.push('(s.invoice_no LIKE ? OR c.name LIKE ?)');
@@ -233,12 +238,14 @@ router.get('/', authRequired, async (req, res) => {
       `SELECT s.id, s.invoice_no, s.sale_date, s.total_amount, s.discount, s.net_total,
               s.paid_amount, s.voided_at,
               c.name AS customer_name,
+              u.full_name AS seller_name,
               COALESCE(si.items_sold, 0) AS items_sold,
               COALESCE(rt.items_returned, 0) AS items_returned,
               COALESCE(rt.refunded_total, 0) AS refunded_total,
               COALESCE(pay.paid_sum, 0) AS payments_sum
        FROM sales s
        LEFT JOIN customers c ON c.id = s.customer_id
+       LEFT JOIN users u ON u.id = s.created_by
        LEFT JOIN (
          SELECT sale_id, SUM(quantity) AS items_sold
          FROM sale_items GROUP BY sale_id
@@ -286,15 +293,20 @@ router.get('/:id', authRequired, async (req, res) => {
   try {
     const [head] = await pool.query(
       `SELECT s.id, s.invoice_no, s.sale_date, s.total_amount, s.discount, s.net_total,
-              s.paid_amount, s.voided_at,
-              c.name AS customer_name
+              s.paid_amount, s.voided_at, s.created_by,
+              c.name AS customer_name,
+              u.full_name AS seller_name
        FROM sales s
        LEFT JOIN customers c ON c.id = s.customer_id
+       LEFT JOIN users u ON u.id = s.created_by
        WHERE s.id = ? AND s.branch_id = ? AND s.is_deleted = 0 LIMIT 1`,
       [req.params.id, req.user.branch_id]
     );
     if (!head[0]) {
       return res.status(404).json({ status: 'error', message: 'Sale not found' });
+    }
+    if (req.user.role === 'cashier' && head[0].created_by !== req.user.sub) {
+      return res.status(403).json({ status: 'error', message: 'You do not have permission for this' });
     }
     const [items] = await pool.query(
       `SELECT si.id AS item_id, si.medicine_id, m.name AS medicine_name, si.batch_id, b.batch_no,
@@ -341,7 +353,7 @@ router.get('/:id', authRequired, async (req, res) => {
 // sold from, a 'sale_return' ledger row is written, and reports net the
 // refund against revenue/cost on the day the return happens. A return can
 // never exceed what was sold minus what was already returned.
-router.post('/:id/return', authRequired, async (req, res) => {
+router.post('/:id/return', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   const body = req.body || {};
   const items = Array.isArray(body.items) ? body.items : [];
   if (items.length === 0) {
@@ -445,7 +457,7 @@ router.post('/:id/return', authRequired, async (req, res) => {
 // POST /api/sales/:id/payment — record a later payment against a credit
 // (por) bill. Body: { amount }. One transaction; a payment can never
 // exceed what is still owed on the bill.
-router.post('/:id/payment', authRequired, async (req, res) => {
+router.post('/:id/payment', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   const amount = Number((req.body || {}).amount);
   if (!Number.isFinite(amount) || amount <= 0) {
     return res.status(400).json({ status: 'error', message: 'amount must be a number above 0' });
@@ -495,7 +507,7 @@ router.post('/:id/payment', authRequired, async (req, res) => {
 // still out goes back into the batch it was sold from (the same ledger
 // rows a normal return writes), and the bill is stamped voided_at. The
 // bill itself stays in the records — reports already net the returns.
-router.post('/:id/void', authRequired, async (req, res) => {
+router.post('/:id/void', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   const branchId = req.user.branch_id;
   const userId = req.user.sub;
   const saleId = req.params.id;

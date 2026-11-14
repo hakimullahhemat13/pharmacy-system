@@ -8,7 +8,7 @@
 const express = require('express');
 
 const pool = require('../db');
-const { authRequired } = require('../middleware/auth');
+const { authRequired, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -39,7 +39,9 @@ function rangeFor(fromQ, toQ) {
 // same batch) for the unit_price / cost_price snapshot. Returns are counted
 // on the day the return happened (the ledger row's created_at), not the
 // sale day — the refund leaves the till that day.
-async function returnsForRange(branchId, start, end) {
+// sellerId scopes a summary to one seller's bills (the cashier's own
+// numbers on the dashboard and the sales strip). Null means the whole branch.
+async function returnsForRange(branchId, start, end, sellerId = null) {
   const [rows] = await pool.query(
     `SELECT COALESCE(SUM(sr.quantity_change), 0) AS qty,
             COALESCE(SUM(sr.quantity_change * si.unit_price), 0) AS value,
@@ -47,30 +49,30 @@ async function returnsForRange(branchId, start, end) {
      FROM stock_transactions sr
      JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
      JOIN sales sv ON sv.id = sr.reference_id AND sv.voided_at IS NULL
-     WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at >= ? AND sr.created_at < ?`,
-    [branchId, start, end]
+     WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at >= ? AND sr.created_at < ?${sellerId ? ' AND sv.created_by = ?' : ''}`,
+    sellerId ? [branchId, start, end, sellerId] : [branchId, start, end]
   );
   return { qty: Number(rows[0].qty), value: Number(rows[0].value), cost: Number(rows[0].cost) };
 }
 
-async function summaryForRange(branchId, start, end) {
+async function summaryForRange(branchId, start, end, sellerId = null) {
   const [salesRows] = await pool.query(
     `SELECT COUNT(*) AS sales_count,
             COALESCE(SUM(net_total), 0) AS revenue,
             COALESCE(SUM(discount), 0) AS discount_total
      FROM sales
-     WHERE branch_id = ? AND is_deleted = 0 AND voided_at IS NULL AND sale_date >= ? AND sale_date < ?`,
-    [branchId, start, end]
+     WHERE branch_id = ? AND is_deleted = 0 AND voided_at IS NULL AND sale_date >= ? AND sale_date < ?${sellerId ? ' AND created_by = ?' : ''}`,
+    sellerId ? [branchId, start, end, sellerId] : [branchId, start, end]
   );
   const [itemRows] = await pool.query(
     `SELECT COALESCE(SUM(si.quantity), 0) AS items_sold,
             COALESCE(SUM(si.quantity * si.cost_price), 0) AS cost_total
      FROM sale_items si
      JOIN sales s ON s.id = si.sale_id
-     WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at IS NULL AND s.sale_date >= ? AND s.sale_date < ?`,
-    [branchId, start, end]
+     WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at IS NULL AND s.sale_date >= ? AND s.sale_date < ?${sellerId ? ' AND s.created_by = ?' : ''}`,
+    sellerId ? [branchId, start, end, sellerId] : [branchId, start, end]
   );
-  const ret = await returnsForRange(branchId, start, end);
+  const ret = await returnsForRange(branchId, start, end, sellerId);
   const revenue = Number(salesRows[0].revenue) - ret.value;
   const cost = Number(itemRows[0].cost_total) - ret.cost;
   return {
@@ -181,15 +183,24 @@ router.get('/daily', authRequired, async (req, res) => {
   next.setUTCDate(next.getUTCDate() + 1);
   const end = `${next.getUTCFullYear()}-${pad(next.getUTCMonth() + 1)}-${pad(next.getUTCDate())}`;
   try {
-    const summary = await summaryForRange(req.user.branch_id, date, end);
+    // Cashiers may read the daily numbers (dashboard + sales strip) but only
+    // their own; every other report route is admin/pharmacist only.
+    const sellerId = req.user.role === 'cashier' ? req.user.sub : null;
+    const summary = await summaryForRange(req.user.branch_id, date, end, sellerId);
     const [sales] = await pool.query(
       `SELECT s.id, s.invoice_no, s.sale_date, s.total_amount, s.discount, s.net_total,
-              c.name AS customer_name
+              c.name AS customer_name,
+              u.full_name AS seller_name,
+              (SELECT COALESCE(SUM(sr.quantity_change * si.unit_price), 0)
+                 FROM stock_transactions sr
+                 JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
+                WHERE sr.branch_id = s.branch_id AND sr.type = 'sale_return' AND sr.reference_id = s.id) AS refunded_total
        FROM sales s
        LEFT JOIN customers c ON c.id = s.customer_id
-       WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at IS NULL AND s.sale_date >= ? AND s.sale_date < ?
+       LEFT JOIN users u ON u.id = s.created_by
+       WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at IS NULL AND s.sale_date >= ? AND s.sale_date < ?${sellerId ? ' AND s.created_by = ?' : ''}
        ORDER BY s.sale_date ASC`,
-      [req.user.branch_id, date, end]
+      sellerId ? [req.user.branch_id, date, end, sellerId] : [req.user.branch_id, date, end]
     );
     return res.json({ status: 'ok', date, summary, sales });
   } catch (err) {
@@ -252,7 +263,7 @@ async function dayBreakdown(branchId, start, end) {
 }
 
 // GET /api/reports/monthly?year=YYYY&month=M  (month 1-12)
-router.get('/monthly', authRequired, async (req, res) => {
+router.get('/monthly', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   const now = new Date();
   const year = req.query.year === undefined ? now.getFullYear() : Number(req.query.year);
   const month = req.query.month === undefined ? now.getMonth() + 1 : Number(req.query.month);
@@ -273,7 +284,7 @@ router.get('/monthly', authRequired, async (req, res) => {
 // GET /api/reports/weekly?date=YYYY-MM-DD — the 7 days starting at `date`.
 // The client defaults the date to the most recent Saturday (the Afghan
 // work week), but any start day can be picked.
-router.get('/weekly', authRequired, async (req, res) => {
+router.get('/weekly', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   const date = req.query.date === undefined ? fmtDate(new Date()) : String(req.query.date);
   if (!isValidDateString(date)) {
     return res.status(400).json({ status: 'error', message: 'date must be YYYY-MM-DD' });
@@ -292,7 +303,7 @@ router.get('/weekly', authRequired, async (req, res) => {
 
 // GET /api/reports/range?from=YYYY-MM-DD&to=YYYY-MM-DD — any period the
 // user picks (both days included), at most a year.
-router.get('/range', authRequired, async (req, res) => {
+router.get('/range', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   const r = rangeFor(req.query.from, req.query.to);
   if (!r) {
     return res.status(400).json({ status: 'error', message: 'Give a valid from/to range (from before to, at most 1 year)' });
@@ -307,7 +318,7 @@ router.get('/range', authRequired, async (req, res) => {
 });
 
 // GET /api/reports/yearly?year=YYYY
-router.get('/yearly', authRequired, async (req, res) => {
+router.get('/yearly', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   const now = new Date();
   const year = req.query.year === undefined ? now.getFullYear() : Number(req.query.year);
   if (!Number.isInteger(year) || year < 2000 || year > 2100) {
@@ -459,7 +470,7 @@ async function purchasesForRange(branchId, start, end) {
 
 // GET /api/reports/medicines?period=daily|weekly|monthly|yearly|range&date=&year=&month=&from=&to=
 // Top medicines (by profit) for the same period the Reports page is showing.
-router.get('/medicines', authRequired, async (req, res) => {
+router.get('/medicines', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   const period = ['daily', 'weekly', 'monthly', 'yearly', 'range'].includes(String(req.query.period))
     ? String(req.query.period)
     : 'daily';
@@ -477,7 +488,7 @@ router.get('/medicines', authRequired, async (req, res) => {
 
 // GET /api/reports/purchases?period=… — purchases per supplier for the
 // same period the Reports page is showing.
-router.get('/purchases', authRequired, async (req, res) => {
+router.get('/purchases', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   const period = ['daily', 'weekly', 'monthly', 'yearly', 'range'].includes(String(req.query.period))
     ? String(req.query.period)
     : 'daily';
@@ -500,7 +511,7 @@ router.get('/purchases', authRequired, async (req, res) => {
 // only this endpoint fails, and its message carries the install command.
 // The breakdown merges below intentionally mirror /monthly and /yearly.
 // GET /api/reports/stock-value — current shelf value (not period-based).
-router.get('/stock-value', authRequired, async (req, res) => {
+router.get('/stock-value', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   try {
     const data = await stockValue(req.user.branch_id);
     return res.json({ status: 'ok', totals: data.totals, medicines: data.medicines });
@@ -509,7 +520,7 @@ router.get('/stock-value', authRequired, async (req, res) => {
   }
 });
 
-router.get('/export', authRequired, async (req, res) => {
+router.get('/export', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   let ExcelJS;
   try {
     ExcelJS = require('exceljs');
