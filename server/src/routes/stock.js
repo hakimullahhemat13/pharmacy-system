@@ -16,7 +16,9 @@ router.get('/', authRequired, async (req, res) => {
     const [rows] = await pool.query(
       `SELECT m.id AS medicine_id, m.name, m.generic_name, m.company, m.barcode, m.unit, m.category, m.sale_price, m.min_stock, m.warn_months, m.created_at,
               COALESCE(SUM(b.quantity_on_hand), 0) AS total_quantity,
-              COUNT(b.id) AS batch_count
+              COUNT(b.id) AS batch_count,
+              (SELECT MIN(b2.expiry_date) FROM medicine_batches b2
+                WHERE b2.medicine_id = m.id AND b2.branch_id = m.branch_id AND b2.is_deleted = 0 AND b2.quantity_on_hand > 0) AS nearest_expiry
        FROM medicines m
        LEFT JOIN medicine_batches b
          ON b.medicine_id = m.id AND b.branch_id = m.branch_id AND b.is_deleted = 0
@@ -68,7 +70,7 @@ router.get('/expiring', authRequired, async (req, res) => {
 router.get('/all-batches', authRequired, async (req, res) => {
   try {
     const [rows] = await pool.query(
-      `SELECT b.id AS batch_id, b.batch_no, b.expiry_date, b.quantity_on_hand,
+      `SELECT b.id AS batch_id, b.batch_no, b.expiry_date, b.quantity_on_hand, b.purchase_price,
               m.id AS medicine_id, m.name AS medicine_name, m.company, m.barcode,
               m.warn_months,
               DATEDIFF(b.expiry_date, CURDATE()) AS days_remaining

@@ -27,6 +27,7 @@ interface Batch {
   batch_no: string;
   expiry_date: string;
   quantity_on_hand: number;
+  purchase_price: number | string;
   medicine_name: string;
   days_remaining: number;
   level: 'expired' | 'critical' | 'warning' | 'ok';
@@ -47,6 +48,7 @@ interface StockRow {
   total_quantity: number;
   batch_count: number;
   low_stock: boolean;
+  nearest_expiry?: string | null;
 }
 
 interface SaleItemDetail {
@@ -819,6 +821,7 @@ interface ExpiryBatch {
   batch_no: string;
   expiry_date: string;
   quantity_on_hand: number;
+  purchase_price: number | string;
   medicine_name: string;
   company: string | null;
   barcode: string | null;
@@ -912,6 +915,12 @@ function ExpiryPage({ lang }: { lang: Lang }) {
 
   const expiredCount = rows.filter((r) => r.level === 'expired').length;
   const warnCount = rows.filter((r) => r.level === 'warning' || r.level === 'critical').length;
+  const expiredRows = rows.filter((r) => r.level === 'expired');
+  const warnRows = rows.filter((r) => r.level === 'warning' || r.level === 'critical');
+  const okRows = rows.filter((r) => r.level === 'ok');
+  const sumQty = (list: ExpiryBatch[]) => list.reduce((s, r) => s + Number(r.quantity_on_hand), 0);
+  const batchValue = (r: ExpiryBatch) => Number(r.quantity_on_hand) * Number(r.purchase_price || 0);
+  const expiredValue = expiredRows.reduce((s, r) => s + batchValue(r), 0);
   const levelLabel = (level: ExpiryBatch['level']) =>
     level === 'expired'
       ? t(lang, 'levelExpired')
@@ -930,10 +939,54 @@ function ExpiryPage({ lang }: { lang: Lang }) {
 
   return (
     <>
-      <h2>{t(lang, 'expiryDates')}</h2>
-      <p className="muted" style={{ fontSize: 14, marginTop: 0 }}>
+      <div className="dash-head">
+        <h2>
+          {t(lang, 'expiryDates')} <span className="count-badge neutral">{rows.length}</span>
+        </h2>
+      </div>
+      <p className="muted" style={{ fontSize: 14, marginTop: 4 }}>
         {t(lang, 'expiryDatesDesc')}
       </p>
+      <div className="cards dash-cards">
+        <div className="card dash-card accent-red">
+          <div className="card-top">
+            <span className="card-icon">⛔</span>
+            <span className="card-label">{t(lang, 'filterExpired')}</span>
+          </div>
+          <div className="card-value">{fmt(expiredCount)}</div>
+          <div className="card-sub">
+            {fmt(sumQty(expiredRows))} {t(lang, 'units')} · {fmt(expiredValue)} {t(lang, 'currency')}
+          </div>
+        </div>
+        <div className="card dash-card accent-amber">
+          <div className="card-top">
+            <span className="card-icon">⚠️</span>
+            <span className="card-label">{t(lang, 'filterWarning')}</span>
+          </div>
+          <div className="card-value">{fmt(warnCount)}</div>
+          <div className="card-sub">
+            {fmt(sumQty(warnRows))} {t(lang, 'units')}
+          </div>
+        </div>
+        <div className="card dash-card accent-green">
+          <div className="card-top">
+            <span className="card-icon">✅</span>
+            <span className="card-label">{t(lang, 'filterOk')}</span>
+          </div>
+          <div className="card-value">{fmt(okRows.length)}</div>
+          <div className="card-sub">
+            {fmt(sumQty(okRows))} {t(lang, 'units')}
+          </div>
+        </div>
+        <div className="card dash-card accent-blue">
+          <div className="card-top">
+            <span className="card-icon">💸</span>
+            <span className="card-label">{t(lang, 'expiredValue')}</span>
+          </div>
+          <div className="card-value">{fmt(expiredValue)}</div>
+          <div className="card-sub">{t(lang, 'currency')}</div>
+        </div>
+      </div>
       {error && <div className="error-box">{error}</div>}
       <div className="tabs">
         {filters.map((f) => (
@@ -989,6 +1042,12 @@ function ExpiryPage({ lang }: { lang: Lang }) {
               {t(lang, 'writeOffCancel')}
             </button>
           </div>
+          {Number(woQty) > 0 && (
+            <p className="muted" style={{ fontSize: 14, marginTop: 8 }}>
+              {t(lang, 'total')}: {fmt(Number(woQty) * Number(woBatch.purchase_price || 0))}{' '}
+              {t(lang, 'currency')}
+            </p>
+          )}
           {woMsg && <div className="error-box" style={{ marginTop: 8 }}>{woMsg}</div>}
         </div>
       )}
@@ -1007,19 +1066,40 @@ function ExpiryPage({ lang }: { lang: Lang }) {
                   <th>{t(lang, 'expiryDate')}</th>
                   <th>{t(lang, 'daysLeft')}</th>
                   <th>{t(lang, 'qty')}</th>
+                  <th>{t(lang, 'batchValue')}</th>
                   <th>{t(lang, 'warnMonthsCol')}</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.map((b) => (
-                  <tr key={b.batch_id} className={b.level === 'expired' ? 'row-expired' : ''}>
+                  <tr
+                    key={b.batch_id}
+                    className={
+                      b.level === 'expired'
+                        ? 'row-expired'
+                        : b.level === 'warning' || b.level === 'critical'
+                          ? 'row-warning'
+                          : ''
+                    }
+                  >
                     <td>{b.medicine_name}</td>
                     <td>{b.company || '—'}</td>
                     <td>{b.batch_no}</td>
                     <td>{String(b.expiry_date).slice(0, 10)}</td>
-                    <td>{b.days_remaining}</td>
+                    <td
+                      className={
+                        b.days_remaining < 0
+                          ? 'days-neg'
+                          : b.level === 'warning' || b.level === 'critical'
+                            ? 'qty-low'
+                            : ''
+                      }
+                    >
+                      {b.days_remaining}
+                    </td>
                     <td>{b.quantity_on_hand}</td>
+                    <td>{fmt(batchValue(b))}</td>
                     <td>{b.warn_months ?? 3}</td>
                     <td>
                       <span className={`badge ${b.level}`}>{levelLabel(b.level)}</span>{' '}
@@ -1060,6 +1140,7 @@ function ExpiryPage({ lang }: { lang: Lang }) {
                   <th>{t(lang, 'expiryDate')}</th>
                   <th>{t(lang, 'qty')}</th>
                   <th>{t(lang, 'writeOffReason')}</th>
+                  <th>{t(lang, 'writtenBy')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1071,6 +1152,7 @@ function ExpiryPage({ lang }: { lang: Lang }) {
                     <td>{String(w.expiry_date).slice(0, 10)}</td>
                     <td>{Math.abs(Number(w.quantity_change))}</td>
                     <td>{w.reason || '—'}</td>
+                    <td>{w.written_by || '—'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1091,6 +1173,8 @@ function Medicines({ lang }: { lang: Lang }) {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [formOpen, setFormOpen] = useState(false);
+  const [stockFilter, setStockFilter] = useState<'all' | 'low' | 'out'>('all');
   const blankForm = {
     name: '',
     generic_name: '',
@@ -1111,6 +1195,7 @@ function Medicines({ lang }: { lang: Lang }) {
 
   const startEdit = (r: StockRow) => {
     setEditingId(r.medicine_id);
+    setFormOpen(true);
     setError('');
     setMsg('');
     setForm({
@@ -1130,6 +1215,7 @@ function Medicines({ lang }: { lang: Lang }) {
 
   const cancelEdit = () => {
     setEditingId(null);
+    setFormOpen(false);
     setError('');
     setMsg('');
     setForm(blankForm);
@@ -1165,12 +1251,58 @@ function Medicines({ lang }: { lang: Lang }) {
   const q = query.trim().toLowerCase();
   const filtered = rows.filter(
     (r) =>
-      !q ||
-      r.name.toLowerCase().includes(q) ||
-      (r.generic_name || '').toLowerCase().includes(q) ||
-      (r.barcode || '').toLowerCase().includes(q)
+      (!q ||
+        r.name.toLowerCase().includes(q) ||
+        (r.generic_name || '').toLowerCase().includes(q) ||
+        (r.barcode || '').toLowerCase().includes(q)) &&
+      (stockFilter === 'all'
+        ? true
+        : stockFilter === 'low'
+          ? r.low_stock
+          : Number(r.total_quantity) === 0)
   );
   const barcodeExact = query.trim();
+  const lowCount = rows.filter((r) => r.low_stock).length;
+  const outCount = rows.filter((r) => Number(r.total_quantity) === 0).length;
+  const unitOptions = [...new Set(rows.map((r) => r.unit).filter(Boolean))].sort();
+  const categoryOptions = [...new Set(rows.map((r) => r.category || '').filter(Boolean))].sort();
+
+  // Soft warning when the typed name already exists under another record —
+  // the barcode check still guards true duplicates at save time.
+  const checkName = () => {
+    const n = form.name.trim().toLowerCase();
+    if (!n) return;
+    const dup = rows.find((r) => r.name.toLowerCase() === n && r.medicine_id !== editingId);
+    if (dup) {
+      setMsg('');
+      setError(`${t(lang, 'nameExists')}: ${dup.name}`);
+    }
+  };
+
+  const expiryCell = (r: StockRow) => {
+    if (!r.nearest_expiry) return '—';
+    const d = String(r.nearest_expiry).slice(0, 10);
+    const days = Math.ceil(
+      (new Date(`${d}T00:00:00`).getTime() - new Date(`${todayStr()}T00:00:00`).getTime()) / 86400000
+    );
+    if (days < 0) {
+      return (
+        <>
+          <div>{d}</div>
+          <span className="badge expired">{t(lang, 'levelExpired')}</span>
+        </>
+      );
+    }
+    const warnDays = Number(r.warn_months || 3) * 30;
+    return (
+      <>
+        <div>{d}</div>
+        <div className={days <= warnDays ? 'qty-low' : 'muted'} style={{ fontSize: 12.5 }}>
+          {days} {t(lang, 'daysLeft')}
+        </div>
+      </>
+    );
+  };
 
   const set = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm((f) => ({ ...f, [key]: e.target.value }));
@@ -1270,6 +1402,7 @@ function Medicines({ lang }: { lang: Lang }) {
         await api.put(`/medicines/${editingId}`, payload);
         setMsg(t(lang, 'medicineUpdated'));
         setEditingId(null);
+        setFormOpen(false);
       } else {
         await api.post('/medicines', {
           ...payload,
@@ -1296,15 +1429,32 @@ function Medicines({ lang }: { lang: Lang }) {
 
   return (
     <>
-      <h2>{t(lang, 'medicines')}</h2>
+      <div className="dash-head">
+        <h2>
+          {t(lang, 'medicines')} <span className="count-badge neutral">{rows.length}</span>
+        </h2>
+        {!formOpen && (
+          <button
+            className="btn-primary"
+            style={{ width: 'auto', marginTop: 0 }}
+            onClick={() => {
+              cancelEdit();
+              setFormOpen(true);
+            }}
+          >
+            ➕ {t(lang, 'addMedicine')}
+          </button>
+        )}
+      </div>
 
-      <div className="panel" style={{ marginTop: 0 }}>
+      {formOpen && (
+      <div className="panel">
         <h3>{editingId ? `✏️ ${t(lang, 'editMedicine')}` : `➕ ${t(lang, 'addMedicine')}`}</h3>
         <form onSubmit={submit}>
           <div className="form-grid">
             <div className="field">
               <label>{t(lang, 'name')} *</label>
-              <input value={form.name} onChange={set('name')} />
+              <input value={form.name} onChange={set('name')} onBlur={checkName} />
             </div>
             <div className="field">
               <label>{t(lang, 'genericName')} *</label>
@@ -1333,11 +1483,21 @@ function Medicines({ lang }: { lang: Lang }) {
             </div>
             <div className="field">
               <label>{t(lang, 'unit')} *</label>
-              <input value={form.unit} onChange={set('unit')} />
+              <input value={form.unit} onChange={set('unit')} list="med-units" />
+              <datalist id="med-units">
+                {unitOptions.map((u) => (
+                  <option key={u} value={u} />
+                ))}
+              </datalist>
             </div>
             <div className="field">
               <label>{t(lang, 'category')} *</label>
-              <input value={form.category} onChange={set('category')} />
+              <input value={form.category} onChange={set('category')} list="med-categories" />
+              <datalist id="med-categories">
+                {categoryOptions.map((c) => (
+                  <option key={c} value={c} />
+                ))}
+              </datalist>
             </div>
             <div className="field">
               <label>{t(lang, 'salePrice')} *</label>
@@ -1407,14 +1567,38 @@ function Medicines({ lang }: { lang: Lang }) {
           )}
         </form>
       </div>
+      )}
 
       <div className="panel">
-        <input
-          className="search-input"
-          placeholder={t(lang, 'search')}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
+        <div className="med-toolbar">
+          <input
+            className="search-input"
+            placeholder={t(lang, 'search')}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <button
+            type="button"
+            className={`chip ${stockFilter === 'all' ? 'active' : ''}`}
+            onClick={() => setStockFilter('all')}
+          >
+            {t(lang, 'allFilter')} ({rows.length})
+          </button>
+          <button
+            type="button"
+            className={`chip ${stockFilter === 'low' ? 'active' : ''}`}
+            onClick={() => setStockFilter('low')}
+          >
+            {t(lang, 'lowStock')} ({lowCount})
+          </button>
+          <button
+            type="button"
+            className={`chip ${stockFilter === 'out' ? 'active' : ''}`}
+            onClick={() => setStockFilter('out')}
+          >
+            {t(lang, 'outOfStock')} ({outCount})
+          </button>
+        </div>
         {filtered.length === 0 ? (
           <p className="muted" style={{ fontSize: 15 }}>
             {t(lang, 'noMedicines')}
@@ -1425,7 +1609,6 @@ function Medicines({ lang }: { lang: Lang }) {
             <thead>
               <tr>
                 <th>{t(lang, 'name')}</th>
-                <th>{t(lang, 'genericName')}</th>
                 <th>{t(lang, 'company')}</th>
                 <th>{t(lang, 'barcodeLabel')}</th>
                 <th>{t(lang, 'unit')}</th>
@@ -1433,6 +1616,7 @@ function Medicines({ lang }: { lang: Lang }) {
                 <th>{t(lang, 'salePrice')}</th>
                 <th>{t(lang, 'minStockLabel')}</th>
                 <th>{t(lang, 'stockQty')}</th>
+                <th>{t(lang, 'nearestExpiry')}</th>
                 <th>{t(lang, 'dateAdded')}</th>
                 <th></th>
               </tr>
@@ -1443,18 +1627,29 @@ function Medicines({ lang }: { lang: Lang }) {
                   key={r.medicine_id}
                   className={barcodeExact && r.barcode === barcodeExact ? 'highlight' : ''}
                 >
-                  <td>{r.name}</td>
-                  <td>{r.generic_name || '—'}</td>
+                  <td style={{ whiteSpace: 'normal' }}>
+                    <div>{r.name}</div>
+                    <div className="muted" style={{ fontSize: 12.5 }}>
+                      {r.generic_name || '—'}
+                    </div>
+                    {r.low_stock && <span className="badge low">{t(lang, 'lowBadge')}</span>}
+                  </td>
                   <td>{r.company || '—'}</td>
                   <td>{r.barcode || '—'}</td>
                   <td>{r.unit}</td>
                   <td>{r.category || '—'}</td>
                   <td>{fmt(Number(r.sale_price))}</td>
                   <td>{fmt(Number(r.min_stock))}</td>
-                  <td>{fmt(r.total_quantity)}</td>
+                  <td
+                    className={
+                      Number(r.total_quantity) === 0 ? 'qty-zero' : r.low_stock ? 'qty-low' : ''
+                    }
+                  >
+                    {fmt(r.total_quantity)}
+                  </td>
+                  <td>{expiryCell(r)}</td>
                   <td>{String(r.created_at).slice(0, 10)}</td>
                   <td>
-                    {r.low_stock && <span className="badge low">{t(lang, 'lowBadge')}</span>}{' '}
                     <button type="button" className="btn-secondary" onClick={() => startEdit(r)}>
                       ✏️ {t(lang, 'edit')}
                     </button>{' '}

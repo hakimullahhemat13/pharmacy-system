@@ -455,3 +455,21 @@ tr.highlight td { background: #ecfdf5; font-weight: 600; }
 /* Dashboard scroll boxes: tighter rows than the Reports tables, so the cap
    is lower — header + 6 records, the 7th record always scrolls. */
 .table-scroll.rows-6-dash { max-height: 240px; }
+
+/* ---- Medicines page: toolbar with filter chips, stock signals ---- */
+.med-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.med-toolbar .search-input { flex: 1; min-width: 220px; margin-bottom: 0; }
+.chip {
+  border: 1px solid #cbd5e1; background: #fff; border-radius: 999px;
+  padding: 8px 14px; font-size: 13.5px; cursor: pointer; color: #475569; white-space: nowrap;
+}
+.chip:hover { border-color: #16a34a; color: #15803d; }
+.chip.active { background: #16a34a; border-color: #16a34a; color: #fff; font-weight: 600; }
+.qty-low { color: #d97706; font-weight: 700; }
+.count-badge.neutral { background: #e2e8f0; color: #475569; }
+
+/* ---- Expiry page: red accent card, warning rows, negative days ---- */
+.accent-red::before { background: #dc2626; }
+.accent-red .card-icon { background: #fef2f2; }
+tr.row-warning td { background: #fffdf5; }
+.days-neg { color: #dc2626; font-weight: 700; }
