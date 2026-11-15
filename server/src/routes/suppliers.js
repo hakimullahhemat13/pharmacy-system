@@ -10,6 +10,8 @@ const { v4: uuidv4 } = require('uuid');
 
 const pool = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
+const { isDayClosed, todayStr, dayClosedMessage } = require('../dayClose');
+const { auditLog } = require('../audit');
 
 const router = express.Router();
 
@@ -75,6 +77,10 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
       'SELECT id, branch_id, name, phone, address, created_at FROM suppliers WHERE id = ? LIMIT 1',
       [id]
     );
+    auditLog(req, 'supplier.created', 'suppliers', id, {
+      summary: `Supplier added: ${rows[0].name}`,
+      name: rows[0].name,
+    });
     return res.status(201).json({ status: 'ok', supplier: rows[0] });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
@@ -184,6 +190,10 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
       'SELECT id, branch_id, name, phone, address, created_at FROM suppliers WHERE id = ? LIMIT 1',
       [req.params.id]
     );
+    auditLog(req, 'supplier.updated', 'suppliers', req.params.id, {
+      summary: `Supplier edited: ${rows[0].name}`,
+      name: rows[0].name,
+    });
     return res.json({ status: 'ok', supplier: rows[0] });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
@@ -214,6 +224,10 @@ router.delete('/:id', authRequired, requireRole('admin', 'pharmacist'), async (r
       req.params.id,
       req.user.branch_id,
     ]);
+    auditLog(req, 'supplier.deleted', 'suppliers', req.params.id, {
+      summary: `Supplier deleted: ${rows[0].name}`,
+      name: rows[0].name,
+    });
     return res.json({ status: 'ok' });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
@@ -229,11 +243,18 @@ router.post('/:id/payment', authRequired, requireRole('admin', 'pharmacist'), as
     return res.status(400).json({ status: 'error', message: 'Payment amount must be more than zero' });
   }
   const branchId = req.user.branch_id;
+
+  // A supplier payment is cash out today — a closed today takes none.
+  const supplierPayDay = todayStr();
+  if (await isDayClosed(pool, branchId, supplierPayDay)) {
+    return res.status(400).json({ status: 'error', message: dayClosedMessage(supplierPayDay) });
+  }
+
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
     const [sup] = await conn.query(
-      'SELECT id FROM suppliers WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
+      'SELECT id, name FROM suppliers WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
       [req.params.id, branchId]
     );
     if (sup.length === 0) {
@@ -254,6 +275,10 @@ router.post('/:id/payment', authRequired, requireRole('admin', 'pharmacist'), as
       [id, branchId, req.params.id, amount, req.user.sub]
     );
     await conn.commit();
+    auditLog(req, 'supplier.payment', 'suppliers', req.params.id, {
+      summary: `Payment ${amount} AFN to ${sup[0].name}`,
+      name: sup[0].name, amount,
+    });
     return res.status(201).json({
       status: 'ok',
       payment: { id, supplier_id: req.params.id, amount },

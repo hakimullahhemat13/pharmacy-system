@@ -4,6 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 
 const pool = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
+const { auditLog } = require('../audit');
 
 const router = express.Router();
 
@@ -36,6 +37,10 @@ router.post('/', authRequired, async (req, res) => {
       'SELECT id, branch_id, name, phone, balance, created_at FROM customers WHERE id = ? LIMIT 1',
       [id]
     );
+    auditLog(req, 'customer.created', 'customers', id, {
+      summary: `Customer added: ${rows[0].name}`,
+      name: rows[0].name,
+    });
     return res.status(201).json({ status: 'ok', customer: rows[0] });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
@@ -176,6 +181,10 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
       'SELECT id, branch_id, name, phone, balance, created_at FROM customers WHERE id = ? LIMIT 1',
       [req.params.id]
     );
+    auditLog(req, 'customer.updated', 'customers', req.params.id, {
+      summary: `Customer edited: ${rows[0].name}`,
+      name: rows[0].name,
+    });
     return res.json({ status: 'ok', customer: rows[0] });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
@@ -185,6 +194,10 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
 // DELETE /api/customers/:id — soft delete (sales history stays intact)
 router.delete('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   try {
+    const [found] = await pool.query(
+      'SELECT name FROM customers WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
+      [req.params.id, req.user.branch_id]
+    );
     const [result] = await pool.query(
       'UPDATE customers SET is_deleted = 1 WHERE id = ? AND branch_id = ? AND is_deleted = 0',
       [req.params.id, req.user.branch_id]
@@ -192,6 +205,9 @@ router.delete('/:id', authRequired, requireRole('admin', 'pharmacist'), async (r
     if (result.affectedRows === 0) {
       return res.status(404).json({ status: 'error', message: 'Customer not found' });
     }
+    auditLog(req, 'customer.deleted', 'customers', req.params.id, {
+      summary: `Customer deleted: ${found[0] ? found[0].name : req.params.id}`,
+    });
     return res.json({ status: 'ok' });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });

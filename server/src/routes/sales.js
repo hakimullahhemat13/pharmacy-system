@@ -9,6 +9,8 @@ const { v4: uuidv4 } = require('uuid');
 
 const pool = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
+const { auditLog } = require('../audit');
+const { isDayClosed, todayStr, dayOf, dayClosedMessage } = require('../dayClose');
 
 const router = express.Router();
 
@@ -55,6 +57,12 @@ router.post('/', authRequired, async (req, res) => {
   const branchId = req.user.branch_id;
   const userId = req.user.sub;
   const customerId = body.customer_id ? String(body.customer_id) : null;
+
+  // A closed day takes no new sales.
+  const today = todayStr();
+  if (await isDayClosed(pool, branchId, today)) {
+    return res.status(400).json({ status: 'error', message: dayClosedMessage(today) });
+  }
 
   const conn = await pool.getConnection();
   try {
@@ -169,6 +177,10 @@ router.post('/', authRequired, async (req, res) => {
     }
 
     await conn.commit();
+    auditLog(req, 'sale.created', 'sales', saleId, {
+      summary: `Sale ${invoiceNo}: ${netTotal} AFN net, ${paidAmount} AFN paid`,
+      invoice_no: invoiceNo, net_total: netTotal, paid_amount: paidAmount,
+    });
     return res.status(201).json({
       status: 'ok',
       sale: { id: saleId, invoice_no: invoiceNo, customer_id: customerId, total_amount: totalAmount, discount, net_total: netTotal, paid_amount: paidAmount, due_amount: Math.round((netTotal - paidAmount) * 100) / 100, items: allocations },
@@ -378,12 +390,25 @@ router.post('/:id/return', authRequired, requireRole('admin', 'pharmacist'), asy
     await conn.beginTransaction();
 
     const [sale] = await conn.query(
-      'SELECT id, invoice_no FROM sales WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1 FOR UPDATE',
+      'SELECT id, invoice_no, sale_date FROM sales WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1 FOR UPDATE',
       [saleId, branchId]
     );
     if (sale.length === 0) {
       await conn.rollback();
       return res.status(404).json({ status: 'error', message: 'Sale not found' });
+    }
+
+    // A return touches two days: the refund lands on today's report, and
+    // the bill's refunded total belongs to the sale's day. Either day
+    // being closed blocks the return.
+    const saleDay = dayOf(sale[0].sale_date);
+    const returnDay = todayStr();
+    const closedDay = (await isDayClosed(conn, branchId, saleDay))
+      ? saleDay
+      : (await isDayClosed(conn, branchId, returnDay)) ? returnDay : null;
+    if (closedDay) {
+      await conn.rollback();
+      return res.status(400).json({ status: 'error', message: dayClosedMessage(closedDay) });
     }
 
     const [soldItems] = await conn.query(
@@ -440,6 +465,10 @@ router.post('/:id/return', authRequired, requireRole('admin', 'pharmacist'), asy
     }
 
     await conn.commit();
+    auditLog(req, 'sale.returned', 'sales', saleId, {
+      summary: `Return on ${sale[0].invoice_no}: ${refundTotal} AFN refunded`,
+      invoice_no: sale[0].invoice_no, refund_total: refundTotal,
+    });
     return res.json({
       status: 'ok',
       invoice_no: sale[0].invoice_no,
@@ -466,6 +495,12 @@ router.post('/:id/payment', authRequired, requireRole('admin', 'pharmacist'), as
   const userId = req.user.sub;
   const saleId = req.params.id;
 
+  // A payment is cash received today — a closed today takes none.
+  const payDay = todayStr();
+  if (await isDayClosed(pool, branchId, payDay)) {
+    return res.status(400).json({ status: 'error', message: dayClosedMessage(payDay) });
+  }
+
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
@@ -490,6 +525,10 @@ router.post('/:id/payment', authRequired, requireRole('admin', 'pharmacist'), as
       [uuidv4(), branchId, saleId, amount, userId]
     );
     await conn.commit();
+    auditLog(req, 'sale.payment', 'sales', saleId, {
+      summary: `Payment ${amount} AFN on ${sale[0].invoice_no || saleId}`,
+      amount,
+    });
     return res.json({
       status: 'ok',
       paid_total: Math.round((money.paid_total + amount) * 100) / 100,
@@ -517,7 +556,7 @@ router.post('/:id/void', authRequired, requireRole('admin', 'pharmacist'), async
     await conn.beginTransaction();
 
     const [sale] = await conn.query(
-      'SELECT id, invoice_no, voided_at FROM sales WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1 FOR UPDATE',
+      'SELECT id, invoice_no, sale_date, voided_at FROM sales WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1 FOR UPDATE',
       [saleId, branchId]
     );
     if (sale.length === 0) {
@@ -527,6 +566,18 @@ router.post('/:id/void', authRequired, requireRole('admin', 'pharmacist'), async
     if (sale[0].voided_at) {
       await conn.rollback();
       return res.status(400).json({ status: 'error', message: 'This bill is already voided' });
+    }
+
+    // Voiding removes the bill from its own day's report and restocks
+    // today — either day being closed blocks the void.
+    const voidSaleDay = dayOf(sale[0].sale_date);
+    const voidDay = todayStr();
+    const voidClosedDay = (await isDayClosed(conn, branchId, voidSaleDay))
+      ? voidSaleDay
+      : (await isDayClosed(conn, branchId, voidDay)) ? voidDay : null;
+    if (voidClosedDay) {
+      await conn.rollback();
+      return res.status(400).json({ status: 'error', message: dayClosedMessage(voidClosedDay) });
     }
 
     const [soldItems] = await conn.query(
@@ -559,6 +610,10 @@ router.post('/:id/void', authRequired, requireRole('admin', 'pharmacist'), async
 
     await conn.query('UPDATE sales SET voided_at = NOW() WHERE id = ?', [saleId]);
     await conn.commit();
+    auditLog(req, 'sale.voided', 'sales', saleId, {
+      summary: `Bill ${sale[0].invoice_no} voided`,
+      invoice_no: sale[0].invoice_no,
+    });
     return res.json({ status: 'ok', invoice_no: sale[0].invoice_no, refund_total: refundTotal });
   } catch (err) {
     try { await conn.rollback(); } catch (_) { /* already rolled back */ }

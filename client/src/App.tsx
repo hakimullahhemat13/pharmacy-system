@@ -387,7 +387,7 @@ export default function App() {
         {visiblePage === 'sales' && <SalesPage lang={lang} role={user.role} />}
         {visiblePage === 'purchases' && <PurchasesPage lang={lang} />}
         {visiblePage === 'suppliers' && <SuppliersPage lang={lang} />}
-        {visiblePage === 'reports' && <ReportsPage lang={lang} />}
+        {visiblePage === 'reports' && <ReportsPage lang={lang} role={user.role} />}
         {visiblePage === 'customers' && <CustomersPage lang={lang} role={user.role} />}
         {visiblePage === 'backup' && <BackupPage lang={lang} isAdmin={user.role === 'admin'} onLogout={logout} />}
         {visiblePage === 'settings' && <SettingsPage lang={lang} user={user} setLang={setLang} />}
@@ -892,6 +892,9 @@ function ExpiryPage({ lang }: { lang: Lang }) {
   const [woBusy, setWoBusy] = useState(false);
   const [woMsg, setWoMsg] = useState('');
   const [woDone, setWoDone] = useState('');
+  const [printing, setPrinting] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [branch, setBranch] = useState<BranchInfo | null>(null);
 
   const loadRows = () => {
     api
@@ -910,6 +913,39 @@ function ExpiryPage({ lang }: { lang: Lang }) {
     loadRows();
     loadWriteOffs();
   }, []);
+
+  useEffect(() => {
+    api
+      .get('/settings/branch')
+      .then((data) => setBranch(data.branch as BranchInfo))
+      .catch(() => undefined);
+  }, []);
+
+  // Print the expiry sheet as soon as it has rendered (same pattern as
+  // the report print): the browser dialog offers both the printer and
+  // "Save as PDF".
+  useEffect(() => {
+    if (!printing) return;
+    const timer = setTimeout(() => {
+      window.print();
+      setPrinting(false);
+    }, 80);
+    return () => clearTimeout(timer);
+  }, [printing]);
+
+  const doExport = async () => {
+    setError('');
+    setExporting(true);
+    try {
+      await api.download(
+        `/stock/expiry-export?filter=${filter}&q=${encodeURIComponent(query.trim())}`,
+        `pharmacy-expiry-list-${todayStr()}.xlsx`
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
+    setExporting(false);
+  };
 
   const submitWriteOff = async () => {
     if (!woBatch) return;
@@ -981,6 +1017,18 @@ function ExpiryPage({ lang }: { lang: Lang }) {
         <h2>
           {t(lang, 'expiryDates')} <span className="count-badge neutral">{rows.length}</span>
         </h2>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            className="btn primary"
+            onClick={doExport}
+            disabled={exporting || filtered.length === 0}
+          >
+            📊 {exporting ? t(lang, 'loading') : t(lang, 'exportExcel')}
+          </button>
+          <button className="btn" onClick={() => setPrinting(true)} disabled={filtered.length === 0}>
+            🖨️ {t(lang, 'printPdf')}
+          </button>
+        </div>
       </div>
       <p className="muted" style={{ fontSize: 14, marginTop: 4 }}>
         {t(lang, 'expiryDatesDesc')}
@@ -1198,6 +1246,68 @@ function ExpiryPage({ lang }: { lang: Lang }) {
           </div>
         )}
       </div>
+      {printing &&
+        createPortal(
+          <div id="report-print" dir={lang === 'en' ? 'ltr' : 'rtl'}>
+            <div className="print-head">
+              <div className="print-brand">{branch?.name || 'Pharmacy'}</div>
+              {branch?.address && <div>{branch.address}</div>}
+              {branch?.phone && <div>{branch.phone}</div>}
+              <div className="print-title">
+                {t(lang, 'expiryDates')} —{' '}
+                {filter === 'all'
+                  ? t(lang, 'filterAll')
+                  : filter === 'expired'
+                    ? t(lang, 'filterExpired')
+                    : filter === 'warning'
+                      ? t(lang, 'filterWarning')
+                      : t(lang, 'filterOk')}{' '}
+                — {todayStr()}
+              </div>
+            </div>
+            <table className="print-nums">
+              <thead>
+                <tr>
+                  <th>{t(lang, 'medicine')}</th>
+                  <th>{t(lang, 'batch')}</th>
+                  <th>{t(lang, 'expiryDate')}</th>
+                  <th>{t(lang, 'daysLeft')}</th>
+                  <th>{t(lang, 'qty')}</th>
+                  <th>{t(lang, 'batchValue')}</th>
+                  <th>{t(lang, 'expiryStatus')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((b) => (
+                  <tr key={b.batch_id}>
+                    <td>{b.medicine_name}</td>
+                    <td>{b.batch_no}</td>
+                    <td>{String(b.expiry_date).slice(0, 10)}</td>
+                    <td>{b.days_remaining}</td>
+                    <td>{b.quantity_on_hand}</td>
+                    <td>{fmt(batchValue(b))}</td>
+                    <td>{levelLabel(b.level)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td>{t(lang, 'total')}</td>
+                  <td></td>
+                  <td></td>
+                  <td></td>
+                  <td>{fmt(sumQty(filtered))}</td>
+                  <td>{fmt(filtered.reduce((s, r) => s + batchValue(r), 0))}</td>
+                  <td></td>
+                </tr>
+              </tfoot>
+            </table>
+            <div className="print-footer">
+              {t(lang, 'generatedOn')}: {new Date().toLocaleString()}
+            </div>
+          </div>,
+          document.body
+        )}
     </>
   );
 }
@@ -3810,7 +3920,306 @@ function weekStartStr(): string {
 
 type ReportTab = 'daily' | 'weekly' | 'monthly' | 'yearly' | 'range' | 'stock';
 
-function ReportsPage({ lang }: { lang: Lang }) {
+interface DayCloseMismatch {
+  medicine_name: string;
+  batch_no: string;
+  on_hand: number;
+  ledger_qty: number;
+}
+
+interface DayCloseInfo {
+  closed: boolean;
+  close: {
+    closed_at: string;
+    expected_cash: number;
+    counted_cash: number;
+    difference: number;
+    note: string | null;
+    closed_by_name: string | null;
+  } | null;
+  cash: {
+    till: number;
+    customerPayments: number;
+    refunds: number;
+    supplierPaid: number;
+    expected: number;
+  };
+  stock: {
+    sales: { sold: number; returned: number; ledgerNet: number; ok: boolean };
+    ledger: { ok: boolean; mismatches: DayCloseMismatch[] };
+    movements: {
+      purchased: number;
+      sold: number;
+      saleReturned: number;
+      purchaseReturned: number;
+      writtenOff: number;
+    };
+  };
+}
+
+// Day Close — the end-of-day panel on the Daily report tab: the cash
+// reconciliation (what the drawer should hold), the stock check (ledger
+// vs documents), and the lock itself. Closing is two-step; reopening is
+// admin only (the server enforces it too).
+function DayClosePanel({ lang, date, role }: { lang: Lang; date: string; role: string }) {
+  const [info, setInfo] = useState<DayCloseInfo | null>(null);
+  const [loadError, setLoadError] = useState('');
+  const [counted, setCounted] = useState('');
+  const [note, setNote] = useState('');
+  const [closeArm, setCloseArm] = useState(false);
+  const [reopenArm, setReopenArm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    setInfo(null);
+    setLoadError('');
+    setCounted('');
+    setNote('');
+    setCloseArm(false);
+    setReopenArm(false);
+    setMessage('');
+    setError('');
+    api
+      .get(`/reports/day-close?date=${date}`)
+      .then((data) => {
+        if (alive) setInfo(data as DayCloseInfo);
+      })
+      .catch((err) => {
+        if (alive) setLoadError(err instanceof Error ? err.message : 'Error');
+      });
+    return () => {
+      alive = false;
+    };
+  }, [date]);
+
+  const reload = async () => {
+    const data = await api.get(`/reports/day-close?date=${date}`);
+    setInfo(data as DayCloseInfo);
+  };
+
+  const doClose = async () => {
+    if (!closeArm) {
+      setCloseArm(true);
+      return;
+    }
+    const countedNum = Number(counted);
+    if (counted.trim() === '' || !Number.isFinite(countedNum) || countedNum < 0) {
+      setError(t(lang, 'dayCloseCountedRequired'));
+      return;
+    }
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      await api.post('/reports/day-close', {
+        date,
+        counted_cash: countedNum,
+        note: note.trim() || undefined,
+      });
+      setMessage(t(lang, 'dayCloseDone'));
+      setCloseArm(false);
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+      setCloseArm(false);
+    }
+    setBusy(false);
+  };
+
+  const doReopen = async () => {
+    if (!reopenArm) {
+      setReopenArm(true);
+      return;
+    }
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      await api.post('/reports/day-close/reopen', { date });
+      setMessage(t(lang, 'dayCloseReopened'));
+      setReopenArm(false);
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+      setReopenArm(false);
+    }
+    setBusy(false);
+  };
+
+  const countedNum = counted.trim() === '' ? null : Number(counted);
+  const diff =
+    info && countedNum !== null && Number.isFinite(countedNum)
+      ? Math.round((countedNum - info.cash.expected) * 100) / 100
+      : null;
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h3 style={{ marginTop: 0 }}>🔒 {t(lang, 'dayClose')} — {date}</h3>
+        {info &&
+          (info.closed ? (
+            <span className="badge warning">🔒 {t(lang, 'dayCloseClosed')}</span>
+          ) : (
+            <span className="badge ok">{t(lang, 'dayCloseOpen')}</span>
+          ))}
+      </div>
+      <p className="muted">{t(lang, 'dayCloseDesc')}</p>
+      {loadError && <div className="error-box">{loadError}</div>}
+      {message && <div className="success-box">{message}</div>}
+      {error && <div className="error-box">{error}</div>}
+      {!info && !loadError && <p className="muted">{t(lang, 'loading')}</p>}
+      {info && (
+        <>
+          <table>
+            <tbody>
+              <tr>
+                <td>{t(lang, 'dayCloseTill')}</td>
+                <td style={{ textAlign: 'end' }}>{fmt(info.cash.till)}</td>
+              </tr>
+              <tr>
+                <td>+ {t(lang, 'dayClosePayments')}</td>
+                <td style={{ textAlign: 'end' }}>{fmt(info.cash.customerPayments)}</td>
+              </tr>
+              <tr>
+                <td>− {t(lang, 'dayCloseRefunds')}</td>
+                <td style={{ textAlign: 'end' }}>{fmt(info.cash.refunds)}</td>
+              </tr>
+              <tr>
+                <td>− {t(lang, 'dayCloseSupplierPaid')}</td>
+                <td style={{ textAlign: 'end' }}>{fmt(info.cash.supplierPaid)}</td>
+              </tr>
+              <tr>
+                <td>
+                  <strong>{t(lang, 'dayCloseExpected')}</strong>
+                </td>
+                <td style={{ textAlign: 'end' }}>
+                  <strong>{fmt(info.cash.expected)}</strong>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4 style={{ marginBottom: 6 }}>📦 {t(lang, 'dayCloseStockTitle')}</h4>
+          <p style={{ margin: '4px 0' }}>
+            {info.stock.sales.ok ? '✅' : '⚠️'}{' '}
+            {t(lang, info.stock.sales.ok ? 'dayCloseSalesOk' : 'dayCloseSalesBad')}{' '}
+            <span className="muted">
+              ({t(lang, 'dayCloseSoldUnits')} {fmt(info.stock.sales.sold)} −{' '}
+              {t(lang, 'dayCloseReturnedUnits')} {fmt(info.stock.sales.returned)} ={' '}
+              {fmt(info.stock.sales.ledgerNet)})
+            </span>
+          </p>
+          <p style={{ margin: '4px 0' }}>
+            {info.stock.ledger.ok ? '✅' : '⚠️'}{' '}
+            {t(lang, info.stock.ledger.ok ? 'dayCloseLedgerOk' : 'dayCloseLedgerBad')}
+            {!info.stock.ledger.ok && (
+              <span className="muted">
+                {' '}
+                ({info.stock.ledger.mismatches.length} {t(lang, 'dayCloseBatchesDiffer')})
+              </span>
+            )}
+          </p>
+          {!info.stock.ledger.ok && info.stock.ledger.mismatches.length > 0 && (
+            <ul className="muted" style={{ margin: '4px 0' }}>
+              {info.stock.ledger.mismatches.map((m) => (
+                <li key={`${m.medicine_name}-${m.batch_no}`}>
+                  {m.medicine_name} ({m.batch_no}): {fmt(m.on_hand)} ≠ {fmt(m.ledger_qty)}
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="muted" style={{ margin: '4px 0' }}>
+            {t(lang, 'dayClosePurchased')}: {fmt(info.stock.movements.purchased)} ·{' '}
+            {t(lang, 'dayCloseSoldUnits')}: {fmt(info.stock.movements.sold)} ·{' '}
+            {t(lang, 'dayCloseReturnedUnits')}: {fmt(info.stock.movements.saleReturned)} ·{' '}
+            {t(lang, 'dayClosePurchaseReturned')}: {fmt(info.stock.movements.purchaseReturned)} ·{' '}
+            {t(lang, 'dayCloseWrittenOff')}: {fmt(info.stock.movements.writtenOff)}
+          </p>
+
+          {info.closed && info.close ? (
+            <>
+              <table>
+                <tbody>
+                  <tr>
+                    <td>{t(lang, 'dayCloseClosedBy')}</td>
+                    <td style={{ textAlign: 'end' }}>
+                      {info.close.closed_by_name || '—'} ·{' '}
+                      {new Date(info.close.closed_at).toLocaleString()}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>{t(lang, 'dayCloseCounted')}</td>
+                    <td style={{ textAlign: 'end' }}>{fmt(info.close.counted_cash)}</td>
+                  </tr>
+                  <tr>
+                    <td>{t(lang, 'dayCloseDifference')}</td>
+                    <td
+                      style={{
+                        textAlign: 'end',
+                        color: info.close.difference !== 0 ? '#dc2626' : undefined,
+                      }}
+                    >
+                      {fmt(info.close.difference)}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              {info.close.note && <p>📝 {info.close.note}</p>}
+              {role === 'admin' && (
+                <button
+                  className={reopenArm ? 'btn-danger armed' : 'btn-danger'}
+                  onClick={doReopen}
+                  disabled={busy}
+                >
+                  {reopenArm ? t(lang, 'dayCloseReopenConfirm') : `🔓 ${t(lang, 'dayCloseReopen')}`}
+                </button>
+              )}
+            </>
+          ) : (
+            <div
+              style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end', marginTop: 12 }}
+            >
+              <div className="field">
+                <label>{t(lang, 'dayCloseCounted')}</label>
+                <input
+                  className="cell-input"
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={counted}
+                  onChange={(e) => setCounted(e.target.value)}
+                />
+              </div>
+              <div className="field">
+                <label>{t(lang, 'dayCloseNote')}</label>
+                <input
+                  className="cell-input"
+                  value={note}
+                  placeholder={t(lang, 'dayCloseNotePh')}
+                  onChange={(e) => setNote(e.target.value)}
+                />
+              </div>
+              {diff !== null && (
+                <div style={{ paddingBottom: 8 }}>
+                  <span className="muted">{t(lang, 'dayCloseDifference')}: </span>
+                  <strong style={{ color: diff !== 0 ? '#dc2626' : '#15803d' }}>{fmt(diff)}</strong>
+                </div>
+              )}
+              <button className="btn-save" onClick={doClose} disabled={busy}>
+                {closeArm ? t(lang, 'dayCloseConfirm') : `🔒 ${t(lang, 'dayCloseButton')}`}
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function ReportsPage({ lang, role }: { lang: Lang; role: string }) {
   const now = new Date();
   const [tab, setTab] = useState<ReportTab>('daily');
   const [date, setDate] = useState(todayStr());
@@ -3822,6 +4231,8 @@ function ReportsPage({ lang }: { lang: Lang }) {
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [prevSummary, setPrevSummary] = useState<Summary | null>(null);
+  const [prevLabel, setPrevLabel] = useState('');
   const [daySales, setDaySales] = useState<SaleRow[]>([]);
   const [days, setDays] = useState<DayRow[]>([]);
   const [months, setMonths] = useState<MonthRow[]>([]);
@@ -3912,6 +4323,8 @@ function ReportsPage({ lang }: { lang: Lang }) {
           const data = await api.get(`/reports/monthly?year=${year}&month=${month}`);
           if (!alive) return;
           setSummary(data.summary as Summary);
+          setPrevSummary(data.previous as Summary);
+          setPrevLabel(String(data.previousLabel || ''));
           setDays(data.days as DayRow[]);
         } else if (tab === 'range') {
           const data = await api.get(`/reports/range?from=${rangeFrom}&to=${rangeTo}`);
@@ -3978,6 +4391,22 @@ function ReportsPage({ lang }: { lang: Lang }) {
 
   const negStyle = (v: number | string) =>
     Number(v) < 0 ? { color: '#dc2626' } : undefined;
+
+  // Month-over-month change: signed difference plus percent, green when
+  // up, red when down. No percent when last month was zero.
+  const changeCell = (cur: number, prev: number) => {
+    const diff = Math.round((cur - prev) * 100) / 100;
+    const pct = prev !== 0 ? Math.round((diff / prev) * 1000) / 10 : null;
+    const color = diff > 0 ? '#15803d' : diff < 0 ? '#dc2626' : undefined;
+    const sign = diff > 0 ? '+' : '';
+    return (
+      <span style={{ color }}>
+        {sign}
+        {fmt(diff)}
+        {pct !== null ? ` (${sign}${pct}%)` : ''}
+      </span>
+    );
+  };
 
   return (
     <>
@@ -4211,6 +4640,8 @@ function ReportsPage({ lang }: { lang: Lang }) {
         </>
       )}
 
+      {tab === 'daily' && <DayClosePanel lang={lang} date={date} role={role} />}
+
       {tab === 'daily' && summary && (
         <div className="panel">
           <div className="panel-head">
@@ -4249,6 +4680,50 @@ function ReportsPage({ lang }: { lang: Lang }) {
             </tbody>
           </table>
           </div>
+        </div>
+      )}
+
+      {tab === 'monthly' && summary && prevSummary && (
+        <div className="panel">
+          <h3 style={{ marginTop: 0 }}>
+            📊 {t(lang, 'prevMonthTitle')} — {prevLabel}
+          </h3>
+          <table>
+            <thead>
+              <tr>
+                <th></th>
+                <th>{t(lang, 'thisMonth')}</th>
+                <th>{t(lang, 'prevMonth')}</th>
+                <th>{t(lang, 'changeCol')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>{t(lang, 'revenue')}</td>
+                <td>{fmt(summary.revenue)}</td>
+                <td>{fmt(prevSummary.revenue)}</td>
+                <td>{changeCell(summary.revenue, prevSummary.revenue)}</td>
+              </tr>
+              <tr>
+                <td>{t(lang, 'profit')}</td>
+                <td style={negStyle(summary.profit)}>{fmt(summary.profit)}</td>
+                <td style={negStyle(prevSummary.profit)}>{fmt(prevSummary.profit)}</td>
+                <td>{changeCell(summary.profit, prevSummary.profit)}</td>
+              </tr>
+              <tr>
+                <td>{t(lang, 'salesCount')}</td>
+                <td>{fmt(summary.sales_count)}</td>
+                <td>{fmt(prevSummary.sales_count)}</td>
+                <td>{changeCell(summary.sales_count, prevSummary.sales_count)}</td>
+              </tr>
+              <tr>
+                <td>{t(lang, 'itemsSold')}</td>
+                <td>{fmt(summary.items_sold)}</td>
+                <td>{fmt(prevSummary.items_sold)}</td>
+                <td>{changeCell(summary.items_sold, prevSummary.items_sold)}</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       )}
 
@@ -4470,6 +4945,49 @@ function ReportsPage({ lang }: { lang: Lang }) {
                 )}
               </tbody>
             </table>
+            {tab === 'monthly' && prevSummary && (
+              <>
+                <div className="print-section">
+                  {t(lang, 'prevMonthTitle')} — {prevLabel}
+                </div>
+                <table className="print-nums">
+                  <thead>
+                    <tr>
+                      <th></th>
+                      <th>{t(lang, 'thisMonth')}</th>
+                      <th>{t(lang, 'prevMonth')}</th>
+                      <th>{t(lang, 'changeCol')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>{t(lang, 'revenue')}</td>
+                      <td>{fmt(summary.revenue)}</td>
+                      <td>{fmt(prevSummary.revenue)}</td>
+                      <td>{changeCell(summary.revenue, prevSummary.revenue)}</td>
+                    </tr>
+                    <tr>
+                      <td>{t(lang, 'profit')}</td>
+                      <td>{fmt(summary.profit)}</td>
+                      <td>{fmt(prevSummary.profit)}</td>
+                      <td>{changeCell(summary.profit, prevSummary.profit)}</td>
+                    </tr>
+                    <tr>
+                      <td>{t(lang, 'salesCount')}</td>
+                      <td>{fmt(summary.sales_count)}</td>
+                      <td>{fmt(prevSummary.sales_count)}</td>
+                      <td>{changeCell(summary.sales_count, prevSummary.sales_count)}</td>
+                    </tr>
+                    <tr>
+                      <td>{t(lang, 'itemsSold')}</td>
+                      <td>{fmt(summary.items_sold)}</td>
+                      <td>{fmt(prevSummary.items_sold)}</td>
+                      <td>{changeCell(summary.items_sold, prevSummary.items_sold)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </>
+            )}
             {tab === 'daily' && (
               <table>
                 <thead>
@@ -5292,6 +5810,68 @@ function CustomersPage({ lang, role }: { lang: Lang; role: string }) {
   );
 }
 
+// Saves a blob letting the user pick the location (any folder, USB drive,
+// ...). Chrome/Edge show the native Save dialog; other browsers fall back
+// to the normal download into the Downloads folder. Returns how the file
+// was saved, or null when the user closed the Save dialog (not an error).
+async function saveBlobWithPicker(blob: Blob, name: string): Promise<'picker' | 'fallback' | null> {
+  const picker = (
+    window as unknown as {
+      showSaveFilePicker?: (opts: Record<string, unknown>) => Promise<{
+        createWritable: () => Promise<{
+          write: (data: Blob) => Promise<void>;
+          close: () => Promise<void>;
+        }>;
+      }>;
+    }
+  ).showSaveFilePicker;
+  if (picker) {
+    try {
+      const handle = await picker({
+        suggestedName: name,
+        types: [
+          {
+            description: 'SQL backup',
+            accept: { 'application/sql': ['.sql'] },
+          },
+        ],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return 'picker';
+    } catch (pickErr) {
+      // Closing the Save dialog is not an error — just do nothing.
+      if ((pickErr as Error).name !== 'AbortError') throw pickErr;
+      return null;
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  return 'fallback';
+}
+
+interface AutoBackupConfig {
+  enabled: boolean;
+  folder: string;
+  keep: number;
+  lastRun: string | null;
+  lastFile: string | null;
+  lastError: string | null;
+}
+
+interface AutoBackupFile {
+  name: string;
+  size: number;
+  mtime: string;
+}
+
 function BackupPage({
   lang,
   isAdmin,
@@ -5315,53 +5895,80 @@ function BackupPage({
     setDlBusy(true);
     try {
       const { blob, name } = await api.downloadBlob('/backup/download', 'pharmacy_db.sql');
-      // Let the user choose where to save the backup (any folder, USB drive,
-      // ...). Chrome/Edge support the native Save dialog; other browsers
-      // fall back to the normal download into the Downloads folder.
-      const picker = (
-        window as unknown as {
-          showSaveFilePicker?: (opts: Record<string, unknown>) => Promise<{
-            createWritable: () => Promise<{
-              write: (data: Blob) => Promise<void>;
-              close: () => Promise<void>;
-            }>;
-          }>;
-        }
-      ).showSaveFilePicker;
-      if (picker) {
-        try {
-          const handle = await picker({
-            suggestedName: name,
-            types: [
-              {
-                description: 'SQL backup',
-                accept: { 'application/sql': ['.sql'] },
-              },
-            ],
-          });
-          const writable = await handle.createWritable();
-          await writable.write(blob);
-          await writable.close();
-          setDlMsg(t(lang, 'backupDone'));
-        } catch (pickErr) {
-          // Closing the Save dialog is not an error — just do nothing.
-          if ((pickErr as Error).name !== 'AbortError') throw pickErr;
-        }
-      } else {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = name;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-        setDlMsg(`${t(lang, 'backupDone')} — ${name}`);
-      }
+      const how = await saveBlobWithPicker(blob, name);
+      if (how === 'picker') setDlMsg(t(lang, 'backupDone'));
+      else if (how === 'fallback') setDlMsg(`${t(lang, 'backupDone')} — ${name}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error');
     }
     setDlBusy(false);
+  };
+
+  const [autoCfg, setAutoCfg] = useState<AutoBackupConfig | null>(null);
+  const [autoForm, setAutoForm] = useState({ enabled: true, folder: '', keep: 7 });
+  const [autoFiles, setAutoFiles] = useState<AutoBackupFile[]>([]);
+  const [autoMsg, setAutoMsg] = useState('');
+  const [autoBusy, setAutoBusy] = useState(false);
+
+  const loadAuto = async () => {
+    try {
+      const cfg = await api.get('/backup/auto/config');
+      setAutoCfg(cfg.config as AutoBackupConfig);
+      setAutoForm({
+        enabled: cfg.config.enabled,
+        folder: cfg.config.folder,
+        keep: cfg.config.keep,
+      });
+      const files = await api.get('/backup/auto/files');
+      setAutoFiles((files.files || []) as AutoBackupFile[]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
+  };
+
+  useEffect(() => {
+    if (isAdmin) loadAuto();
+  }, [isAdmin]);
+
+  const saveAuto = async () => {
+    setError('');
+    setAutoMsg('');
+    setAutoBusy(true);
+    try {
+      const res = await api.put('/backup/auto/config', autoForm);
+      setAutoCfg(res.config as AutoBackupConfig);
+      setAutoMsg(t(lang, 'autoBackupSaved'));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
+    setAutoBusy(false);
+  };
+
+  const runAutoNow = async () => {
+    setError('');
+    setAutoMsg('');
+    setAutoBusy(true);
+    try {
+      await api.post('/backup/auto/run', {});
+      setAutoMsg(t(lang, 'autoBackupDone'));
+      await loadAuto();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
+    setAutoBusy(false);
+  };
+
+  const downloadAutoFile = async (fileName: string) => {
+    setError('');
+    try {
+      const { blob, name } = await api.downloadBlob(
+        `/backup/auto/files/${encodeURIComponent(fileName)}`,
+        fileName
+      );
+      if (await saveBlobWithPicker(blob, name)) setAutoMsg(t(lang, 'backupDone'));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
   };
 
   const startRestore = () => {
@@ -5405,6 +6012,89 @@ function BackupPage({
           {dlBusy ? t(lang, 'loading') : `⬇️ ${t(lang, 'downloadBackup')}`}
         </button>
       </div>
+
+      {isAdmin && (
+      <div className="panel">
+        <h3>🕐 {t(lang, 'autoBackup')}</h3>
+        <p className="muted" style={{ fontSize: 15 }}>
+          {t(lang, 'autoBackupDesc')}
+        </p>
+        {autoCfg && (
+          <p className="muted" style={{ fontSize: 15 }}>
+            {t(lang, 'autoBackupLast')}:{' '}
+            {autoCfg.lastFile
+              ? `${autoCfg.lastFile}${autoCfg.lastRun ? ` — ${new Date(autoCfg.lastRun).toLocaleString()}` : ''}`
+              : t(lang, 'autoBackupNever')}
+          </p>
+        )}
+        {autoCfg && autoCfg.lastError && (
+          <div className="error-box">
+            {t(lang, 'autoBackupError')}: {autoCfg.lastError}
+          </div>
+        )}
+        {autoMsg && <div className="success-box">{autoMsg}</div>}
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '10px 0' }}>
+          <input
+            type="checkbox"
+            checked={autoForm.enabled}
+            onChange={(e) => setAutoForm({ ...autoForm, enabled: e.target.checked })}
+          />
+          {t(lang, 'autoBackupEnabled')}
+        </label>
+        <div className="field">
+          <label>{t(lang, 'autoBackupFolder')}</label>
+          <input
+            value={autoForm.folder}
+            onChange={(e) => setAutoForm({ ...autoForm, folder: e.target.value })}
+            dir="ltr"
+            style={{ textAlign: 'left' }}
+          />
+        </div>
+        <div className="field">
+          <label>{t(lang, 'autoBackupKeep')}</label>
+          <input
+            type="number"
+            min={1}
+            max={90}
+            value={autoForm.keep}
+            onChange={(e) => setAutoForm({ ...autoForm, keep: Number(e.target.value) })}
+          />
+        </div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <button className="btn-save" onClick={saveAuto} disabled={autoBusy}>
+            {autoBusy ? t(lang, 'loading') : t(lang, 'save')}
+          </button>
+          <button className="btn-secondary" onClick={runAutoNow} disabled={autoBusy}>
+            {t(lang, 'autoBackupRunNow')}
+          </button>
+        </div>
+        <h4 style={{ margin: '18px 0 6px' }}>{t(lang, 'autoBackupFiles')}</h4>
+        {autoFiles.length === 0 ? (
+          <p className="muted">{t(lang, 'noAutoBackups')}</p>
+        ) : (
+          autoFiles.map((f) => (
+            <div
+              key={f.name}
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: 10,
+                padding: '6px 0',
+                borderBottom: '1px solid #e5e7eb',
+              }}
+            >
+              <span dir="ltr" style={{ fontSize: 14 }}>
+                {f.name} — {fmt(Math.max(1, Math.round(f.size / 1024)))} KB
+              </span>
+              <button className="btn-secondary" onClick={() => downloadAutoFile(f.name)}>
+                ⬇️ {t(lang, 'downloadBackup')}
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+      )}
 
       {isAdmin && (
       <div className="panel">
@@ -5468,6 +6158,30 @@ interface ManagedUser {
   created_at: string;
 }
 
+interface AuditEntry {
+  id: string;
+  created_at: string;
+  action: string;
+  table_name: string;
+  record_id: string | null;
+  details: { summary?: string } | string | null;
+  full_name: string | null;
+  username: string | null;
+}
+
+function auditSummary(details: AuditEntry['details']): string {
+  if (!details) return '';
+  if (typeof details === 'string') {
+    try {
+      const parsed = JSON.parse(details) as { summary?: string };
+      return parsed.summary || '';
+    } catch {
+      return '';
+    }
+  }
+  return details.summary || '';
+}
+
 interface BranchInfo {
   id: string;
   name: string;
@@ -5513,6 +6227,41 @@ function SettingsPage({
   const [resetPw2, setResetPw2] = useState('');
   const [resetShowPw, setResetShowPw] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
+
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
+  const [auditActions, setAuditActions] = useState<string[]>([]);
+  const [auditTotal, setAuditTotal] = useState(0);
+  const [auditUser, setAuditUser] = useState('');
+  const [auditAction, setAuditAction] = useState('');
+  const [auditFrom, setAuditFrom] = useState('');
+  const [auditTo, setAuditTo] = useState('');
+  const [auditBusy, setAuditBusy] = useState(false);
+  const [auditError, setAuditError] = useState('');
+
+  const loadAudit = async (offset: number, append: boolean) => {
+    setAuditBusy(true);
+    setAuditError('');
+    try {
+      const q = new URLSearchParams({ limit: '100', offset: String(offset) });
+      if (auditUser) q.set('user_id', auditUser);
+      if (auditAction) q.set('action', auditAction);
+      if (auditFrom) q.set('from', auditFrom);
+      if (auditTo) q.set('to', auditTo);
+      const data = await api.get(`/settings/audit-log?${q.toString()}`);
+      setAuditActions((data.actions || []) as string[]);
+      setAuditTotal(data.total as number);
+      const entries = (data.entries || []) as AuditEntry[];
+      setAuditEntries((prev) => (append ? [...prev, ...entries] : entries));
+    } catch (err) {
+      setAuditError(err instanceof Error ? err.message : 'Error');
+    }
+    setAuditBusy(false);
+  };
+
+  useEffect(() => {
+    if (isAdmin) loadAudit(0, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin, auditUser, auditAction, auditFrom, auditTo]);
 
   const roleLabel = (r: string) =>
     r === 'admin'
@@ -5922,6 +6671,94 @@ function SettingsPage({
               {t(lang, 'addUser')}
             </button>
           </form>
+        </div>
+      )}
+
+      {isAdmin && (
+        <div className="panel">
+          <h3>📜 {t(lang, 'auditLog')}</h3>
+          <p className="muted" style={{ fontSize: 15 }}>
+            {t(lang, 'auditLogDesc')}
+          </p>
+          <div className="form-grid">
+            <div className="field">
+              <label>{t(lang, 'auditUser')}</label>
+              <select
+                className="field-select"
+                value={auditUser}
+                onChange={(e) => setAuditUser(e.target.value)}
+              >
+                <option value="">{t(lang, 'allFilter')}</option>
+                {users.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.full_name} ({u.username})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label>{t(lang, 'auditAction')}</label>
+              <select
+                className="field-select"
+                value={auditAction}
+                onChange={(e) => setAuditAction(e.target.value)}
+              >
+                <option value="">{t(lang, 'allFilter')}</option>
+                {auditActions.map((a) => (
+                  <option key={a} value={a}>
+                    {a}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label>{t(lang, 'fromDate')}</label>
+              <input type="date" value={auditFrom} onChange={(e) => setAuditFrom(e.target.value)} />
+            </div>
+            <div className="field">
+              <label>{t(lang, 'toDate')}</label>
+              <input type="date" value={auditTo} onChange={(e) => setAuditTo(e.target.value)} />
+            </div>
+          </div>
+          {auditError && <div className="error-box">{auditError}</div>}
+          {auditEntries.length === 0 ? (
+            <p className="muted">{auditBusy ? t(lang, 'loading') : t(lang, 'noAuditEntries')}</p>
+          ) : (
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>{t(lang, 'auditTime')}</th>
+                    <th>{t(lang, 'auditUser')}</th>
+                    <th>{t(lang, 'auditAction')}</th>
+                    <th>{t(lang, 'auditDetails')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {auditEntries.map((e) => (
+                    <tr key={e.id}>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        {new Date(e.created_at).toLocaleString()}
+                      </td>
+                      <td>{e.full_name || e.username || '—'}</td>
+                      <td dir="ltr" style={{ textAlign: 'left' }}>{e.action}</td>
+                      <td>{auditSummary(e.details)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {auditEntries.length > 0 && auditEntries.length < auditTotal && (
+            <button
+              className="btn-secondary"
+              style={{ marginTop: 10 }}
+              onClick={() => loadAudit(auditEntries.length, true)}
+              disabled={auditBusy}
+            >
+              {auditBusy ? t(lang, 'loading') : t(lang, 'auditMore')}
+            </button>
+          )}
         </div>
       )}
     </>

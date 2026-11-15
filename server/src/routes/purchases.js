@@ -7,6 +7,8 @@ const { v4: uuidv4 } = require('uuid');
 
 const pool = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
+const { auditLog } = require('../audit');
+const { isDayClosed, todayStr, dayOf, dayClosedMessage } = require('../dayClose');
 
 const router = express.Router();
 
@@ -77,6 +79,12 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
   }
   if (paidAmount > totalAmount) {
     return res.status(400).json({ status: 'error', message: 'paid_amount cannot be more than the purchase total' });
+  }
+
+  // A closed day takes no new purchases.
+  const today = todayStr();
+  if (await isDayClosed(pool, branchId, today)) {
+    return res.status(400).json({ status: 'error', message: dayClosedMessage(today) });
   }
 
   // Duplicate-invoice guard: the same invoice number twice for one supplier
@@ -167,6 +175,10 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
     }
 
     await conn.commit();
+    auditLog(req, 'purchase.created', 'purchases', purchaseId, {
+      summary: `Purchase ${invoiceNo}: ${totalAmount} AFN, ${paidAmount} AFN paid`,
+      invoice_no: invoiceNo, total_amount: totalAmount, paid_amount: paidAmount,
+    });
     return res.status(201).json({
       status: 'ok',
       purchase: { id: purchaseId, supplier_id: supplierId, invoice_no: invoiceNo, total_amount: totalAmount, paid_amount: paidAmount, items: savedItems },
@@ -278,11 +290,18 @@ router.post('/:id/return', authRequired, requireRole('admin', 'pharmacist'), asy
       return res.status(400).json({ status: 'error', message: 'Return quantities must be whole numbers' });
     }
   }
+
+  // A return to the supplier is counted on today's report.
+  const returnToday = todayStr();
+  if (await isDayClosed(pool, branchId, returnToday)) {
+    return res.status(400).json({ status: 'error', message: dayClosedMessage(returnToday) });
+  }
+
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
     const [head] = await conn.query(
-      'SELECT id FROM purchases WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
+      'SELECT id, invoice_no FROM purchases WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
       [req.params.id, branchId]
     );
     if (head.length === 0) {
@@ -331,6 +350,10 @@ router.post('/:id/return', authRequired, requireRole('admin', 'pharmacist'), asy
       returnedTotal += qty * Number(item.purchase_price);
     }
     await conn.commit();
+    auditLog(req, 'purchase.returned', 'purchases', req.params.id, {
+      summary: `Return to supplier on ${head[0].invoice_no}: ${returnedTotal} AFN`,
+      invoice_no: head[0].invoice_no, returned_total: returnedTotal,
+    });
     return res.json({ status: 'ok', returned_total: returnedTotal });
   } catch (err) {
     try { await conn.rollback(); } catch (_) { /* already rolled back */ }
@@ -409,6 +432,18 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
       return res.status(404).json({ status: 'error', message: 'Purchase not found' });
     }
     const purchase = head[0];
+
+    // Editing changes the purchase day's figures and writes ledger rows
+    // dated today — either day being closed blocks the edit.
+    const purchaseDay = dayOf(purchase.purchase_date);
+    const editDay = todayStr();
+    const editClosedDay = (await isDayClosed(conn, branchId, purchaseDay))
+      ? purchaseDay
+      : (await isDayClosed(conn, branchId, editDay)) ? editDay : null;
+    if (editClosedDay) {
+      await conn.rollback();
+      return res.status(400).json({ status: 'error', message: dayClosedMessage(editClosedDay) });
+    }
 
     const supplierId = body.supplier_id ? String(body.supplier_id) : null;
     if (supplierId) {
@@ -596,6 +631,10 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
       [supplierId, invoiceNo, newTotal, paidAmount, notes, purchase.id]
     );
     await conn.commit();
+    auditLog(req, 'purchase.updated', 'purchases', purchase.id, {
+      summary: `Purchase ${invoiceNo} edited: total ${newTotal} AFN, paid ${paidAmount} AFN`,
+      invoice_no: invoiceNo, total_amount: newTotal, paid_amount: paidAmount,
+    });
     return res.json({
       status: 'ok',
       purchase: { id: purchase.id, supplier_id: supplierId, invoice_no: invoiceNo, total_amount: newTotal, paid_amount: paidAmount },
@@ -617,13 +656,26 @@ router.delete('/:id', authRequired, requireRole('admin', 'pharmacist'), async (r
   try {
     await conn.beginTransaction();
     const [head] = await conn.query(
-      'SELECT id FROM purchases WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
+      'SELECT id, invoice_no, purchase_date FROM purchases WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
       [req.params.id, branchId]
     );
     if (head.length === 0) {
       await conn.rollback();
       return res.status(404).json({ status: 'error', message: 'Purchase not found' });
     }
+
+    // Deleting removes the purchase from its own day's figures and
+    // reverses stock today — either day being closed blocks the delete.
+    const deletePurchaseDay = dayOf(head[0].purchase_date);
+    const deleteDay = todayStr();
+    const deleteClosedDay = (await isDayClosed(conn, branchId, deletePurchaseDay))
+      ? deletePurchaseDay
+      : (await isDayClosed(conn, branchId, deleteDay)) ? deleteDay : null;
+    if (deleteClosedDay) {
+      await conn.rollback();
+      return res.status(400).json({ status: 'error', message: dayClosedMessage(deleteClosedDay) });
+    }
+
     const [items] = await conn.query(
       `SELECT pi.medicine_id, pi.batch_id, pi.quantity, b.quantity_on_hand,
               m.name AS medicine_name
@@ -651,6 +703,10 @@ router.delete('/:id', authRequired, requireRole('admin', 'pharmacist'), async (r
     }
     await conn.query('UPDATE purchases SET is_deleted = 1 WHERE id = ?', [req.params.id]);
     await conn.commit();
+    auditLog(req, 'purchase.deleted', 'purchases', req.params.id, {
+      summary: `Purchase ${head[0].invoice_no} deleted`,
+      invoice_no: head[0].invoice_no,
+    });
     return res.json({ status: 'ok' });
   } catch (err) {
     try { await conn.rollback(); } catch (_) { /* already rolled back */ }

@@ -6,6 +6,7 @@ const { v4: uuidv4 } = require('uuid');
 
 const pool = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
+const { auditLog } = require('../audit');
 
 const router = express.Router();
 
@@ -174,6 +175,10 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
 
     await conn.commit();
     const [rows] = await pool.query(`SELECT ${COLUMNS} FROM medicines WHERE id = ? LIMIT 1`, [id]);
+    auditLog(req, 'medicine.created', 'medicines', id, {
+      summary: `Medicine added: ${rows[0].name}`,
+      name: rows[0].name,
+    });
     return res.status(201).json({ status: 'ok', medicine: rows[0], initial_stock: initialStock });
   } catch (err) {
     try { await conn.rollback(); } catch (_) { /* already rolled back */ }
@@ -256,6 +261,10 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
       [name, genericName, company, barcode, unit, category, salePrice, minStock, warnMonths, req.params.id, branchId]
     );
     const [rows] = await pool.query(`SELECT ${COLUMNS} FROM medicines WHERE id = ?`, [req.params.id]);
+    auditLog(req, 'medicine.updated', 'medicines', req.params.id, {
+      summary: `Medicine edited: ${rows[0].name}`,
+      name: rows[0].name,
+    });
     return res.json({ status: 'ok', medicine: rows[0] });
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') {
@@ -271,6 +280,10 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
 // database with is_deleted = 1, so an admin could restore it if needed.)
 router.delete('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   try {
+    const [found] = await pool.query(
+      'SELECT name FROM medicines WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
+      [req.params.id, req.user.branch_id]
+    );
     const [result] = await pool.query(
       'UPDATE medicines SET is_deleted = 1 WHERE id = ? AND branch_id = ? AND is_deleted = 0',
       [req.params.id, req.user.branch_id]
@@ -278,6 +291,9 @@ router.delete('/:id', authRequired, requireRole('admin', 'pharmacist'), async (r
     if (result.affectedRows === 0) {
       return res.status(404).json({ status: 'error', message: 'Medicine not found' });
     }
+    auditLog(req, 'medicine.deleted', 'medicines', req.params.id, {
+      summary: `Medicine deleted: ${found[0] ? found[0].name : req.params.id}`,
+    });
     return res.json({ status: 'ok', message: 'Medicine deleted' });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });

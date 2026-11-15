@@ -8,6 +8,8 @@ const { v4: uuidv4 } = require('uuid');
 
 const pool = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
+const { auditLog } = require('../audit');
+const { isDayClosed, todayStr, dayOf, dayClosedMessage } = require('../dayClose');
 
 const router = express.Router();
 
@@ -64,35 +66,111 @@ router.get('/expiring', authRequired, async (req, res) => {
   }
 });
 
+// A batch's level uses its own medicine's warn_months window: expired
+// when past date, critical within 30 days, warning within the window.
+function levelFor(daysRemaining, warnMonths) {
+  const warnDays = (Number(warnMonths) || 3) * 30;
+  if (daysRemaining < 0) return 'expired';
+  if (daysRemaining <= 30) return 'critical';
+  if (daysRemaining <= warnDays) return 'warning';
+  return 'ok';
+}
+
+// The batch list behind both the Expiry page and the Excel export — one
+// query, so the sheet always matches the screen.
+async function allBatches(branchId) {
+  const [rows] = await pool.query(
+    `SELECT b.id AS batch_id, b.batch_no, b.expiry_date, b.quantity_on_hand, b.purchase_price,
+            m.id AS medicine_id, m.name AS medicine_name, m.company, m.barcode,
+            m.warn_months,
+            DATEDIFF(b.expiry_date, CURDATE()) AS days_remaining
+     FROM medicine_batches b
+     JOIN medicines m ON m.id = b.medicine_id
+     WHERE b.branch_id = ? AND b.is_deleted = 0 AND m.is_deleted = 0 AND b.quantity_on_hand > 0
+     ORDER BY b.expiry_date ASC`,
+    [branchId]
+  );
+  return rows.map((r) => ({ ...r, level: levelFor(r.days_remaining, r.warn_months) }));
+}
+
 // Every batch with stock, whatever its expiry date — the page behind the
-// "all expiry dates, always visible" view. Sorted soonest-expiring first;
-// a batch's level uses its own medicine's warn_months window.
+// "all expiry dates, always visible" view. Sorted soonest-expiring first.
 router.get('/all-batches', authRequired, async (req, res) => {
   try {
-    const [rows] = await pool.query(
-      `SELECT b.id AS batch_id, b.batch_no, b.expiry_date, b.quantity_on_hand, b.purchase_price,
-              m.id AS medicine_id, m.name AS medicine_name, m.company, m.barcode,
-              m.warn_months,
-              DATEDIFF(b.expiry_date, CURDATE()) AS days_remaining
-       FROM medicine_batches b
-       JOIN medicines m ON m.id = b.medicine_id
-       WHERE b.branch_id = ? AND b.is_deleted = 0 AND m.is_deleted = 0 AND b.quantity_on_hand > 0
-       ORDER BY b.expiry_date ASC`,
-      [req.user.branch_id]
-    );
-    const batches = rows.map((r) => {
-      const warnDays = (Number(r.warn_months) || 3) * 30;
-      const level =
-        r.days_remaining < 0
-          ? 'expired'
-          : r.days_remaining <= 30
-            ? 'critical'
-            : r.days_remaining <= warnDays
-              ? 'warning'
-              : 'ok';
-      return { ...r, level };
-    });
+    const batches = await allBatches(req.user.branch_id);
     return res.json({ status: 'ok', batches });
+  } catch (err) {
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+});
+
+// GET /api/stock/expiry-export?filter=all|expired|warning|ok&q= — the
+// expiry list as a real .xlsx download, for handing to suppliers when
+// near-expiry stock goes back. Same rows and same filter rules as the
+// Expiry page, so the sheet matches the screen. exceljs is required
+// lazily, same as the reports export.
+router.get('/expiry-export', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
+  let ExcelJS;
+  try {
+    ExcelJS = require('exceljs');
+  } catch (_) {
+    return res.status(500).json({
+      status: 'error',
+      message: 'Excel export is not installed on the server — in the server folder run: npm install',
+    });
+  }
+  const filter = ['expired', 'warning', 'ok'].includes(String(req.query.filter))
+    ? String(req.query.filter)
+    : 'all';
+  const q = String(req.query.q || '').trim().toLowerCase();
+  try {
+    let batches = await allBatches(req.user.branch_id);
+    if (filter === 'expired') batches = batches.filter((b) => b.level === 'expired');
+    else if (filter === 'warning') batches = batches.filter((b) => b.level === 'warning' || b.level === 'critical');
+    else if (filter === 'ok') batches = batches.filter((b) => b.level === 'ok');
+    if (q) {
+      batches = batches.filter(
+        (b) =>
+          String(b.medicine_name).toLowerCase().includes(q) ||
+          String(b.company || '').toLowerCase().includes(q) ||
+          String(b.batch_no).toLowerCase().includes(q)
+      );
+    }
+    const today = todayStr();
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Pharmacy System';
+    wb.created = new Date();
+    const ws = wb.addWorksheet('Expiry list');
+    const title = ws.addRow([`Expiry list — ${filter} — ${today}`]);
+    title.font = { bold: true, size: 14 };
+    ws.addRow([]);
+    ws.addRow(['Medicine', 'Company', 'Batch', 'Expiry date', 'Days left', 'Status', 'Qty', 'Value (cost, AFN)']);
+    for (const b of batches) {
+      ws.addRow([
+        b.medicine_name,
+        b.company || '',
+        b.batch_no,
+        dayOf(b.expiry_date),
+        Number(b.days_remaining),
+        b.level,
+        Number(b.quantity_on_hand),
+        Math.round(Number(b.quantity_on_hand) * Number(b.purchase_price || 0) * 100) / 100,
+      ]);
+    }
+    const totalQty = batches.reduce((s, b) => s + Number(b.quantity_on_hand), 0);
+    const totalValue = batches.reduce(
+      (s, b) => s + Number(b.quantity_on_hand) * Number(b.purchase_price || 0),
+      0
+    );
+    const totalRow = ws.addRow(['Total', '', '', '', '', '', totalQty, Math.round(totalValue * 100) / 100]);
+    totalRow.font = { bold: true };
+    ws.getColumn(8).numFmt = '#,##0.00';
+    ws.getRow(3).font = { bold: true };
+    ws.views = [{ state: 'frozen', ySplit: 3 }];
+    const buffer = await wb.xlsx.writeBuffer();
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="pharmacy-expiry-list-${today}.xlsx"`);
+    return res.send(Buffer.from(buffer));
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
   }
@@ -114,6 +192,12 @@ router.post('/batches/:batchId/write-off', authRequired, requireRole('admin', 'p
   const branchId = req.user.branch_id;
   const userId = req.user.sub;
   const batchId = req.params.batchId;
+
+  // A write-off is a stock movement dated today — a closed today takes none.
+  const writeOffDay = todayStr();
+  if (await isDayClosed(pool, branchId, writeOffDay)) {
+    return res.status(400).json({ status: 'error', message: dayClosedMessage(writeOffDay) });
+  }
 
   const conn = await pool.getConnection();
   try {
@@ -153,6 +237,10 @@ router.post('/batches/:batchId/write-off', authRequired, requireRole('admin', 'p
       [uuidv4(), branchId, batch.medicine_id, batchId, -qty, batchId, reason, userId]
     );
     await conn.commit();
+    auditLog(req, 'stock.write_off', 'medicine_batches', batchId, {
+      summary: `Wrote off ${qty} of ${batch.medicine_name} (batch ${batch.batch_no}): ${reason}`,
+      medicine_name: batch.medicine_name, batch_no: batch.batch_no, quantity: qty, reason,
+    });
     return res.json({
       status: 'ok',
       medicine_name: batch.medicine_name,

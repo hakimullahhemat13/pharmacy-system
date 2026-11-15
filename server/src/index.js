@@ -47,8 +47,9 @@ app.use('/api/sales', salesRoutes);
 // Reports: daily, monthly, yearly (sales + profit)
 app.use('/api/reports', reportsRoutes);
 
-// Backup & restore (admin only)
+// Backup & restore (download: every user; restore + automatic backup: admin)
 app.use('/api/backup', backupRoutes);
+backupRoutes.startAutoBackup();
 
 // Settings: own password/language; admin: branch info + users
 app.use('/api/settings', settingsRoutes);

@@ -6,9 +6,12 @@
 //   GET /api/reports/monthly?year=YYYY&month=M (default: current month)
 //   GET /api/reports/yearly?year=YYYY          (default: current year)
 const express = require('express');
+const { v4: uuidv4 } = require('uuid');
 
 const pool = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
+const { auditLog } = require('../audit');
+const { todayStr, isDayClosed, isMissingDayCloseTable } = require('../dayClose');
 
 const router = express.Router();
 
@@ -17,6 +20,13 @@ function fmtDate(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(
 function isValidDateString(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   return !Number.isNaN(new Date(`${value}T00:00:00Z`).getTime());
+}
+
+// The day after a YYYY-MM-DD date — the exclusive end of a one-day range.
+function nextDayString(date) {
+  const next = new Date(`${date}T00:00:00Z`);
+  next.setUTCDate(next.getUTCDate() + 1);
+  return `${next.getUTCFullYear()}-${pad(next.getUTCMonth() + 1)}-${pad(next.getUTCDate())}`;
 }
 
 // Validate a custom from/to pair. Returns { start, end, from, to } with
@@ -275,7 +285,14 @@ router.get('/monthly', authRequired, requireRole('admin', 'pharmacist'), async (
   try {
     const summary = await summaryForRange(req.user.branch_id, start, end);
     const byDay = await dayBreakdown(req.user.branch_id, start, end);
-    return res.json({ status: 'ok', year, month, summary, days: byDay });
+    // Previous-month comparison: the month before this one, same summary
+    // shape, so the page can show this month against last month.
+    const prevMonth = month === 1 ? 12 : month - 1;
+    const prevYear = month === 1 ? year - 1 : year;
+    const prevStart = `${prevYear}-${pad(prevMonth)}-01`;
+    const previous = await summaryForRange(req.user.branch_id, prevStart, start);
+    const previousLabel = `${prevYear}-${pad(prevMonth)}`;
+    return res.json({ status: 'ok', year, month, summary, previous, previousLabel, days: byDay });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
   }
@@ -666,6 +683,31 @@ router.get('/export', authRequired, requireRole('admin', 'pharmacist'), async (r
       row.getCell(2).numFmt = fmt;
     }
 
+    // Monthly exports carry the previous month's figures too, so the
+    // spreadsheet shows the same comparison as the screen.
+    if (period === 'monthly') {
+      const [sy, sm] = start.split('-').map(Number);
+      const pm = sm === 1 ? 12 : sm - 1;
+      const py = sm === 1 ? sy - 1 : sy;
+      const prevStart = `${py}-${pad(pm)}-01`;
+      const previous = await summaryForRange(branchId, prevStart, start);
+      ws.addRow([]);
+      const prevTitle = ws.addRow([`Previous month — ${py}-${pad(pm)}`, '']);
+      prevTitle.font = { bold: true, size: 12 };
+      const prevPairs = [
+        ['Bills', previous.sales_count, '#,##0'],
+        ['Items sold', previous.items_sold, '#,##0'],
+        ['Revenue (AFN)', previous.revenue, '#,##0.00'],
+        ['Cost (AFN)', previous.cost_total, '#,##0.00'],
+        ['Profit (AFN)', previous.profit, '#,##0.00'],
+      ];
+      for (const [name, value, fmt] of prevPairs) {
+        const row = ws.addRow([name, value]);
+        row.getCell(1).font = { bold: true };
+        row.getCell(2).numFmt = fmt;
+      }
+    }
+
     const styleHeader = (sheet) => {
       sheet.getRow(1).font = { bold: true };
       sheet.views = [{ state: 'frozen', ySplit: 1 }];
@@ -791,6 +833,247 @@ router.get('/export', authRequired, requireRole('admin', 'pharmacist'), async (r
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     return res.send(Buffer.from(buffer));
   } catch (err) {
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+});
+
+// ------------------------------------------------------------------
+// Day Close — the end-of-day reconciliation check and the lock that
+// freezes a day's report. Closing is admin/pharmacist; reopening is
+// admin only. The audit log records every close and reopen.
+// ------------------------------------------------------------------
+
+// Cash that should be in the drawer for one day [start, end):
+//   + paid at the till (sales.paid_amount; NULL = paid in full)
+//   + later customer payments recorded that day
+//   − refunds paid out that day (returns, valued at sale prices)
+//   − paid to suppliers that day (paid at purchase + later payments)
+// Voided bills never count — their money is excluded everywhere, same as
+// the summaries.
+async function cashForDay(branchId, start, end) {
+  const [till] = await pool.query(
+    `SELECT COALESCE(SUM(COALESCE(s.paid_amount, s.net_total)), 0) AS v
+     FROM sales s
+     WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at IS NULL AND s.sale_date >= ? AND s.sale_date < ?`,
+    [branchId, start, end]
+  );
+  const [cust] = await pool.query(
+    `SELECT COALESCE(SUM(sp.amount), 0) AS v
+     FROM sale_payments sp
+     JOIN sales s ON s.id = sp.sale_id
+     WHERE sp.branch_id = ? AND sp.is_deleted = 0 AND s.voided_at IS NULL AND sp.created_at >= ? AND sp.created_at < ?`,
+    [branchId, start, end]
+  );
+  const ret = await returnsForRange(branchId, start, end);
+  const [sup1] = await pool.query(
+    `SELECT COALESCE(SUM(paid_amount), 0) AS v
+     FROM purchases
+     WHERE branch_id = ? AND is_deleted = 0 AND purchase_date >= ? AND purchase_date < ?`,
+    [branchId, start, end]
+  );
+  const [sup2] = await pool.query(
+    `SELECT COALESCE(SUM(amount), 0) AS v
+     FROM supplier_payments
+     WHERE branch_id = ? AND is_deleted = 0 AND created_at >= ? AND created_at < ?`,
+    [branchId, start, end]
+  );
+  const round = (n) => Math.round(n * 100) / 100;
+  const tillCash = Number(till[0].v);
+  const customerPayments = Number(cust[0].v);
+  const refunds = ret.value;
+  const supplierPaid = Number(sup1[0].v) + Number(sup2[0].v);
+  return {
+    till: round(tillCash),
+    customerPayments: round(customerPayments),
+    refunds: round(refunds),
+    supplierPaid: round(supplierPaid),
+    expected: round(tillCash + customerPayments - refunds - supplierPaid),
+  };
+}
+
+// End-of-day reconciliation — the plan's formula (opening + purchases −
+// sales = closing) checked two ways:
+//  1. Sales: units sold on non-voided bills minus units returned must
+//     equal the net units the ledger moved out for sales that day. A
+//     voided bill nets to zero on both sides (its sale rows stay, its
+//     void restocks everything), so voids cannot fake a mismatch.
+//  2. Ledger: every batch's cached quantity_on_hand must equal the sum
+//     of its ledger rows — the ledger is the whole history, so any
+//     difference means a stock movement was lost or doubled. This one
+//     is branch-wide, not day-scoped, because the ledger is cumulative.
+// The day's ledger movements are reported alongside, for the record.
+async function stockCheckForDay(branchId, start, end) {
+  const [sold] = await pool.query(
+    `SELECT COALESCE(SUM(si.quantity), 0) AS q
+     FROM sale_items si
+     JOIN sales s ON s.id = si.sale_id
+     WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at IS NULL AND s.sale_date >= ? AND s.sale_date < ?`,
+    [branchId, start, end]
+  );
+  const ret = await returnsForRange(branchId, start, end);
+  const [led] = await pool.query(
+    `SELECT COALESCE(SUM(CASE WHEN type = 'sale' THEN -quantity_change ELSE 0 END), 0) AS out_qty,
+            COALESCE(SUM(CASE WHEN type = 'sale_return' THEN quantity_change ELSE 0 END), 0) AS back_qty
+     FROM stock_transactions
+     WHERE branch_id = ? AND created_at >= ? AND created_at < ?`,
+    [branchId, start, end]
+  );
+  const soldQty = Number(sold[0].q);
+  const ledgerNet = Number(led[0].out_qty) - Number(led[0].back_qty);
+  const [bad] = await pool.query(
+    `SELECT b.id, m.name AS medicine_name, b.batch_no, b.quantity_on_hand,
+            COALESCE(SUM(st.quantity_change), 0) AS ledger_qty
+     FROM medicine_batches b
+     JOIN medicines m ON m.id = b.medicine_id
+     LEFT JOIN stock_transactions st ON st.batch_id = b.id
+     WHERE b.branch_id = ? AND b.is_deleted = 0
+     GROUP BY b.id, m.name, b.batch_no, b.quantity_on_hand
+     HAVING b.quantity_on_hand <> COALESCE(SUM(st.quantity_change), 0)
+     ORDER BY m.name, b.batch_no
+     LIMIT 6`,
+    [branchId]
+  );
+  const [move] = await pool.query(
+    `SELECT type, COALESCE(SUM(quantity_change), 0) AS q
+     FROM stock_transactions
+     WHERE branch_id = ? AND created_at >= ? AND created_at < ?
+     GROUP BY type`,
+    [branchId, start, end]
+  );
+  const byType = new Map(move.map((r) => [r.type, Number(r.q)]));
+  return {
+    sales: { sold: soldQty, returned: ret.qty, ledgerNet, ok: soldQty - ret.qty === ledgerNet },
+    ledger: {
+      ok: bad.length === 0,
+      mismatches: bad.map((r) => ({
+        medicine_name: r.medicine_name,
+        batch_no: r.batch_no,
+        on_hand: Number(r.quantity_on_hand),
+        ledger_qty: Number(r.ledger_qty),
+      })),
+    },
+    movements: {
+      purchased: byType.get('purchase') || 0,
+      sold: -(byType.get('sale') || 0),
+      saleReturned: byType.get('sale_return') || 0,
+      purchaseReturned: -(byType.get('purchase_return') || 0),
+      writtenOff: -(byType.get('expired') || 0),
+    },
+  };
+}
+
+const DAY_CLOSE_MISSING_TABLE =
+  'Day Close is not installed yet — run migration-day-close.sql, then restart the server';
+
+// GET /api/reports/day-close?date=YYYY-MM-DD — the close state of one
+// day plus its reconciliation figures (cash + stock check).
+router.get('/day-close', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
+  const date = req.query.date === undefined ? todayStr() : String(req.query.date);
+  if (!isValidDateString(date)) {
+    return res.status(400).json({ status: 'error', message: 'date must be YYYY-MM-DD' });
+  }
+  try {
+    const [rows] = await pool.query(
+      `SELECT dc.closed_at, dc.expected_cash, dc.counted_cash,
+              dc.difference, dc.note, u.full_name AS closed_by_name
+       FROM day_closes dc
+       LEFT JOIN users u ON u.id = dc.closed_by
+       WHERE dc.branch_id = ? AND dc.close_date = ? LIMIT 1`,
+      [req.user.branch_id, date]
+    );
+    const end = nextDayString(date);
+    const cash = await cashForDay(req.user.branch_id, date, end);
+    const stock = await stockCheckForDay(req.user.branch_id, date, end);
+    const close = rows[0]
+      ? {
+          closed_at: rows[0].closed_at,
+          expected_cash: Number(rows[0].expected_cash),
+          counted_cash: Number(rows[0].counted_cash),
+          difference: Number(rows[0].difference),
+          note: rows[0].note,
+          closed_by_name: rows[0].closed_by_name,
+        }
+      : null;
+    return res.json({ status: 'ok', date, closed: !!rows[0], close, cash, stock });
+  } catch (err) {
+    if (isMissingDayCloseTable(err)) {
+      return res.status(400).json({ status: 'error', message: DAY_CLOSE_MISSING_TABLE });
+    }
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+});
+
+// POST /api/reports/day-close — close one day.
+// Body: { date, counted_cash, note? }. The expected cash and stock check
+// are recomputed at close time and snapshotted on the row, so the record
+// shows what the closer saw. A failed stock check does NOT block the
+// close — it is recorded and shown, and the day can be reopened.
+router.post('/day-close', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
+  const body = req.body || {};
+  const date = String(body.date || '');
+  if (!isValidDateString(date)) {
+    return res.status(400).json({ status: 'error', message: 'date must be YYYY-MM-DD' });
+  }
+  const counted = Number(body.counted_cash);
+  if (!Number.isFinite(counted) || counted < 0) {
+    return res.status(400).json({ status: 'error', message: 'counted_cash must be a number, 0 or more' });
+  }
+  const note = String(body.note || '').trim().slice(0, 255) || null;
+  try {
+    if (await isDayClosed(pool, req.user.branch_id, date)) {
+      return res.status(400).json({ status: 'error', message: `Day ${date} is already closed` });
+    }
+    const end = nextDayString(date);
+    const cash = await cashForDay(req.user.branch_id, date, end);
+    const stock = await stockCheckForDay(req.user.branch_id, date, end);
+    const difference = Math.round((counted - cash.expected) * 100) / 100;
+    const id = uuidv4();
+    await pool.query(
+      'INSERT INTO day_closes (id, branch_id, close_date, closed_by, expected_cash, counted_cash, difference, note, stock_check) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, req.user.branch_id, date, req.user.sub, cash.expected, counted, difference, note, JSON.stringify(stock)]
+    );
+    auditLog(req, 'day.closed', 'day_closes', id, {
+      summary: `Day ${date} closed: expected ${cash.expected} AFN, counted ${counted} AFN, difference ${difference} AFN`,
+      date, expected_cash: cash.expected, counted_cash: counted, difference,
+    });
+    return res.status(201).json({ status: 'ok', date, expected_cash: cash.expected, counted_cash: counted, difference });
+  } catch (err) {
+    if (isMissingDayCloseTable(err)) {
+      return res.status(400).json({ status: 'error', message: DAY_CLOSE_MISSING_TABLE });
+    }
+    if (err && err.code === 'ER_DUP_ENTRY') {
+      return res.status(400).json({ status: 'error', message: `Day ${date} is already closed` });
+    }
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+});
+
+// POST /api/reports/day-close/reopen — admin only. The close row is
+// removed; the audit log keeps the full history (day.closed +
+// day.reopened), so reopening never erases the record.
+router.post('/day-close/reopen', authRequired, requireRole('admin'), async (req, res) => {
+  const date = String((req.body || {}).date || '');
+  if (!isValidDateString(date)) {
+    return res.status(400).json({ status: 'error', message: 'date must be YYYY-MM-DD' });
+  }
+  try {
+    const [rows] = await pool.query(
+      'SELECT id FROM day_closes WHERE branch_id = ? AND close_date = ? LIMIT 1',
+      [req.user.branch_id, date]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ status: 'error', message: `Day ${date} is not closed` });
+    }
+    await pool.query('DELETE FROM day_closes WHERE id = ?', [rows[0].id]);
+    auditLog(req, 'day.reopened', 'day_closes', rows[0].id, {
+      summary: `Day ${date} reopened`,
+      date,
+    });
+    return res.json({ status: 'ok', date });
+  } catch (err) {
+    if (isMissingDayCloseTable(err)) {
+      return res.status(400).json({ status: 'error', message: DAY_CLOSE_MISSING_TABLE });
+    }
     return res.status(500).json({ status: 'error', message: err.code || err.message });
   }
 });

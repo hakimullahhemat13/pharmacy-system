@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 
 const pool = require('../db');
 const { authRequired } = require('../middleware/auth');
+const { auditLog } = require('../audit');
 
 const router = express.Router();
 
@@ -22,9 +23,20 @@ router.post('/login', async (req, res) => {
     const user = rows[0];
     // Same message for "no such user" and "wrong password" — do not reveal which one failed
     if (!user || !(await bcrypt.compare(String(password), user.password_hash))) {
+      auditLog(null, 'user.login_failed', 'users', user ? user.id : null, {
+        summary: `Failed login for username: ${String(username).trim()}`,
+        username: String(username).trim(),
+      });
       return res.status(401).json({ status: 'error', message: 'Invalid username or password' });
     }
     if (!user.is_active) {
+      auditLog(
+        { user: { sub: user.id, branch_id: user.branch_id } },
+        'user.login_failed',
+        'users',
+        user.id,
+        { summary: `Login refused, account disabled: ${user.username}`, username: user.username }
+      );
       return res.status(403).json({ status: 'error', message: 'This user is disabled' });
     }
     // No expiry: on this local, single-owner installation the session
@@ -32,6 +44,13 @@ router.post('/login', async (req, res) => {
     const token = jwt.sign(
       { sub: user.id, username: user.username, role: user.role, branch_id: user.branch_id },
       process.env.JWT_SECRET
+    );
+    auditLog(
+      { user: { sub: user.id, branch_id: user.branch_id } },
+      'user.login',
+      'users',
+      user.id,
+      { summary: `Logged in: ${user.username}`, username: user.username }
     );
     return res.json({
       status: 'ok',
