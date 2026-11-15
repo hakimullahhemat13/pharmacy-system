@@ -300,6 +300,9 @@ async function autoBackupTick() {
 // day creates that day's backup — right for a shop computer that is not
 // always on. Starting the server twice in one day does not duplicate it.
 function startAutoBackup() {
+  // The automated tests run the server against a throwaway database —
+  // no test run may write a real backup.
+  if (process.env.DISABLE_AUTO_BACKUP === '1') return;
   setTimeout(autoBackupTick, 5000);
   setInterval(autoBackupTick, 30 * 60 * 1000);
 }

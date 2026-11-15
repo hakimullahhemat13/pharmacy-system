@@ -297,6 +297,13 @@ export default function App() {
   const [user, setUser] = useState<User | null>(() => (getToken() ? loadUser() : null));
   const [lang, setLangState] = useState<Lang>(loadLang);
   const [page, setPage] = useState<Page>('dashboard');
+  const [prefillBarcode, setPrefillBarcode] = useState('');
+  // From the till: a scanned barcode the system does not know opens the
+  // Medicines page with the add form already carrying that barcode.
+  const goAddMedicine = (barcode: string) => {
+    setPrefillBarcode(barcode);
+    setPage('medicines');
+  };
 
   const setLang = (l: Lang) => {
     setLangState(l);
@@ -382,9 +389,9 @@ export default function App() {
       </aside>
       <main className="main">
         {visiblePage === 'dashboard' && <Dashboard lang={lang} userName={user.full_name} role={user.role} onNavigate={setPage} />}
-        {visiblePage === 'medicines' && <Medicines lang={lang} />}
+        {visiblePage === 'medicines' && <Medicines lang={lang} prefillBarcode={prefillBarcode} onPrefillConsumed={() => setPrefillBarcode('')} />}
         {visiblePage === 'expiry' && <ExpiryPage lang={lang} />}
-        {visiblePage === 'sales' && <SalesPage lang={lang} role={user.role} />}
+        {visiblePage === 'sales' && <SalesPage lang={lang} role={user.role} onAddMedicine={goAddMedicine} />}
         {visiblePage === 'purchases' && <PurchasesPage lang={lang} />}
         {visiblePage === 'suppliers' && <SuppliersPage lang={lang} />}
         {visiblePage === 'reports' && <ReportsPage lang={lang} role={user.role} />}
@@ -1312,7 +1319,7 @@ function ExpiryPage({ lang }: { lang: Lang }) {
   );
 }
 
-function Medicines({ lang }: { lang: Lang }) {
+function Medicines({ lang, prefillBarcode, onPrefillConsumed }: { lang: Lang; prefillBarcode: string; onPrefillConsumed: () => void }) {
   const [rows, setRows] = useState<StockRow[]>([]);
   const [query, setQuery] = useState('');
   const [error, setError] = useState('');
@@ -1340,6 +1347,22 @@ function Medicines({ lang }: { lang: Lang }) {
     init_supplier: '',
   };
   const [form, setForm] = useState(blankForm);
+
+  // Arriving from the till with an unknown scanned barcode: open the
+  // add form with that barcode already filled in, then consume the
+  // prefill so a later visit to this page starts normally.
+  const prefillRef = useRef(prefillBarcode);
+  useEffect(() => {
+    const code = prefillRef.current;
+    if (code) {
+      setEditingId(null);
+      setForm({ ...blankForm, barcode: code });
+      setFormOpen(true);
+      onPrefillConsumed();
+      window.scrollTo({ top: 0 });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const startEdit = (r: StockRow) => {
     setEditingId(r.medicine_id);
@@ -1832,7 +1855,7 @@ function Medicines({ lang }: { lang: Lang }) {
   );
 }
 
-function SalesPage({ lang, role }: { lang: Lang; role: string }) {
+function SalesPage({ lang, role, onAddMedicine }: { lang: Lang; role: string; onAddMedicine: (barcode: string) => void }) {
   // A cashier sells and views their own bills; returns, voids and credit
   // payments need a pharmacist or admin (the server enforces this too).
   const canManage = role !== 'cashier';
@@ -1942,6 +1965,10 @@ function SalesPage({ lang, role }: { lang: Lang; role: string }) {
           (r.barcode || '').toLowerCase().includes(q)
       )
     : [];
+  // A scanned code the system does not know: 8+ digits with no match.
+  // (Cashiers cannot add medicines, so they only see "no results".)
+  const scannedCode = query.trim();
+  const unknownBarcode = canManage && q !== '' && results.length === 0 && /^\d{8,}$/.test(scannedCode);
 
   const addToBill = (med: StockRow) => {
     setMsg('');
@@ -1977,6 +2004,10 @@ function SalesPage({ lang, role }: { lang: Lang; role: string }) {
     } else if (results.length === 1) {
       addToBill(results[0]);
       setQuery('');
+    } else if (canManage && /^\d{8,}$/.test(code)) {
+      // A scanned barcode the system does not know: open the add form
+      // with the barcode already filled in.
+      onAddMedicine(code);
     }
   };
 
@@ -2037,6 +2068,36 @@ function SalesPage({ lang, role }: { lang: Lang; role: string }) {
     }
     setBusy(false);
   };
+
+  // Till shortcuts: F2 focuses the search box, Ctrl+Enter completes the
+  // sale, Escape closes an open bill detail or clears the search box.
+  // The ref always holds the newest complete/detail so the one listener
+  // registered below never works with stale values.
+  const latest = useRef<{ complete: () => void; detail: SaleDetail | null }>({
+    complete: () => {},
+    detail: null,
+  });
+  latest.current = { complete, detail };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'F2') {
+        e.preventDefault();
+        focusSearch();
+      } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        void latest.current.complete();
+      } else if (e.key === 'Escape') {
+        if (latest.current.detail) {
+          setDetail(null);
+        } else if (document.activeElement === searchRef.current) {
+          setQuery('');
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const openReturn = async (saleId: string) => {
     setError('');
@@ -2164,16 +2225,27 @@ function SalesPage({ lang, role }: { lang: Lang; role: string }) {
               autoFocus
             />
           </form>
+          <p className="shortcut-hint">{t(lang, 'posShortcuts')}</p>
           {!q && (
             <div className="pos-hint">
               <div className="pos-hint-icon">🔍</div>
               <p>{t(lang, 'posHint')}</p>
             </div>
           )}
-          {q && results.length === 0 && (
+          {q && results.length === 0 && !unknownBarcode && (
             <p className="muted" style={{ fontSize: 15 }}>
               {t(lang, 'noResults')}
             </p>
+          )}
+          {unknownBarcode && (
+            <div className="unknown-barcode">
+              <p>
+                {t(lang, 'unknownBarcode')}: <strong dir="ltr">{scannedCode}</strong>
+              </p>
+              <button className="btn-primary" onClick={() => onAddMedicine(scannedCode)}>
+                ➕ {t(lang, 'addMedicineWithBarcode')}
+              </button>
+            </div>
           )}
           {results.map((r) => (
             <button key={r.medicine_id} className="result-row" onClick={() => addToBill(r)}>
