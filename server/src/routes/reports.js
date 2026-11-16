@@ -12,6 +12,7 @@ const pool = require('../db');
 const { authRequired, requireRole, requireMainAdmin } = require('../middleware/auth');
 const { auditLog } = require('../audit');
 const { todayStr, isDayClosed, isMissingDayCloseTable } = require('../dayClose');
+const { getMainBranchId } = require('../mainBranch');
 
 const router = express.Router();
 
@@ -184,6 +185,25 @@ async function stockValue(branchId) {
 }
 
 // GET /api/reports/daily?date=YYYY-MM-DD
+// Which branch a report reads: the caller's own branch, unless the
+// caller is the Main Branch admin asking for another branch with
+// ?branch_id=. The parameter is silently ignored for everyone else, so
+// a child branch can never read another branch's figures, and an
+// unknown branch id is a 400 for the Main admin rather than a silent
+// fallback to their own numbers. Day Close never uses this — closing
+// a day stays a local action of the branch itself.
+async function resolveReportBranch(req) {
+  const wanted = req.query.branch_id ? String(req.query.branch_id) : '';
+  const own = req.user.branch_id;
+  if (!wanted || wanted === own) return { branchId: own, error: null };
+  if (req.user.role !== 'admin') return { branchId: own, error: null };
+  const mainId = await getMainBranchId(pool);
+  if (mainId !== own) return { branchId: own, error: null };
+  const [rows] = await pool.query('SELECT id FROM branches WHERE id = ? AND is_deleted = 0 LIMIT 1', [wanted]);
+  if (rows.length === 0) return { branchId: null, error: 'Unknown branch' };
+  return { branchId: wanted, error: null };
+}
+
 router.get('/daily', authRequired, async (req, res) => {
   const date = req.query.date === undefined ? fmtDate(new Date()) : String(req.query.date);
   if (!isValidDateString(date)) {
@@ -193,10 +213,15 @@ router.get('/daily', authRequired, async (req, res) => {
   next.setUTCDate(next.getUTCDate() + 1);
   const end = `${next.getUTCFullYear()}-${pad(next.getUTCMonth() + 1)}-${pad(next.getUTCDate())}`;
   try {
+    const resolved = await resolveReportBranch(req);
+    if (resolved.error) {
+      return res.status(400).json({ status: 'error', message: resolved.error });
+    }
+    const branchId = resolved.branchId;
     // Cashiers may read the daily numbers (dashboard + sales strip) but only
     // their own; every other report route is admin/pharmacist only.
     const sellerId = req.user.role === 'cashier' ? req.user.sub : null;
-    const summary = await summaryForRange(req.user.branch_id, date, end, sellerId);
+    const summary = await summaryForRange(branchId, date, end, sellerId);
     const [sales] = await pool.query(
       `SELECT s.id, s.invoice_no, s.sale_date, s.total_amount, s.discount, s.net_total,
               c.name AS customer_name,
@@ -210,7 +235,7 @@ router.get('/daily', authRequired, async (req, res) => {
        LEFT JOIN users u ON u.id = s.created_by
        WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at IS NULL AND s.sale_date >= ? AND s.sale_date < ?${sellerId ? ' AND s.created_by = ?' : ''}
        ORDER BY s.sale_date ASC`,
-      sellerId ? [req.user.branch_id, date, end, sellerId] : [req.user.branch_id, date, end]
+      sellerId ? [branchId, date, end, sellerId] : [branchId, date, end]
     );
     return res.json({ status: 'ok', date, summary, sales });
   } catch (err) {
@@ -331,14 +356,19 @@ router.get('/monthly', authRequired, requireRole('admin', 'pharmacist'), async (
   const start = `${year}-${pad(month)}-01`;
   const end = month === 12 ? `${year + 1}-01-01` : `${year}-${pad(month + 1)}-01`;
   try {
-    const summary = await summaryForRange(req.user.branch_id, start, end);
-    const byDay = await dayBreakdown(req.user.branch_id, start, end);
+    const resolved = await resolveReportBranch(req);
+    if (resolved.error) {
+      return res.status(400).json({ status: 'error', message: resolved.error });
+    }
+    const branchId = resolved.branchId;
+    const summary = await summaryForRange(branchId, start, end);
+    const byDay = await dayBreakdown(branchId, start, end);
     // Previous-month comparison: the month before this one, same summary
     // shape, so the page can show this month against last month.
     const prevMonth = month === 1 ? 12 : month - 1;
     const prevYear = month === 1 ? year - 1 : year;
     const prevStart = `${prevYear}-${pad(prevMonth)}-01`;
-    const previous = await summaryForRange(req.user.branch_id, prevStart, start);
+    const previous = await summaryForRange(branchId, prevStart, start);
     const previousLabel = `${prevYear}-${pad(prevMonth)}`;
     return res.json({ status: 'ok', year, month, summary, previous, previousLabel, days: byDay });
   } catch (err) {
@@ -359,8 +389,13 @@ router.get('/weekly', authRequired, requireRole('admin', 'pharmacist'), async (r
   endDt.setUTCDate(endDt.getUTCDate() + 6);
   const end = `${endDt.getUTCFullYear()}-${pad(endDt.getUTCMonth() + 1)}-${pad(endDt.getUTCDate())}`;
   try {
-    const summary = await summaryForRange(req.user.branch_id, date, end);
-    const byDay = await dayBreakdown(req.user.branch_id, date, end);
+    const resolved = await resolveReportBranch(req);
+    if (resolved.error) {
+      return res.status(400).json({ status: 'error', message: resolved.error });
+    }
+    const branchId = resolved.branchId;
+    const summary = await summaryForRange(branchId, date, end);
+    const byDay = await dayBreakdown(branchId, date, end);
     return res.json({ status: 'ok', start: date, end, summary, days: byDay });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
@@ -375,8 +410,13 @@ router.get('/range', authRequired, requireRole('admin', 'pharmacist'), async (re
     return res.status(400).json({ status: 'error', message: 'Give a valid from/to range (from before to, at most 1 year)' });
   }
   try {
-    const summary = await summaryForRange(req.user.branch_id, r.start, r.end);
-    const byDay = await dayBreakdown(req.user.branch_id, r.start, r.end);
+    const resolved = await resolveReportBranch(req);
+    if (resolved.error) {
+      return res.status(400).json({ status: 'error', message: resolved.error });
+    }
+    const branchId = resolved.branchId;
+    const summary = await summaryForRange(branchId, r.start, r.end);
+    const byDay = await dayBreakdown(branchId, r.start, r.end);
     return res.json({ status: 'ok', start: r.from, end: r.to, summary, days: byDay });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
@@ -393,7 +433,12 @@ router.get('/yearly', authRequired, requireRole('admin', 'pharmacist'), async (r
   const start = `${year}-01-01`;
   const end = `${year + 1}-01-01`;
   try {
-    const summary = await summaryForRange(req.user.branch_id, start, end);
+    const resolved = await resolveReportBranch(req);
+    if (resolved.error) {
+      return res.status(400).json({ status: 'error', message: resolved.error });
+    }
+    const branchId = resolved.branchId;
+    const summary = await summaryForRange(branchId, start, end);
     const [months] = await pool.query(
       `SELECT MONTH(s.sale_date) AS month,
               COUNT(*) AS sales_count,
@@ -407,7 +452,7 @@ router.get('/yearly', authRequired, requireRole('admin', 'pharmacist'), async (r
        WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at IS NULL AND s.sale_date >= ? AND s.sale_date < ?
        GROUP BY MONTH(s.sale_date)
        ORDER BY month ASC`,
-      [req.user.branch_id, start, end]
+      [branchId, start, end]
     );
     const [retMonths] = await pool.query(
       `SELECT MONTH(sr.created_at) AS month,
@@ -418,7 +463,7 @@ router.get('/yearly', authRequired, requireRole('admin', 'pharmacist'), async (r
        JOIN sales sv ON sv.id = sr.reference_id AND sv.voided_at IS NULL
        WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at >= ? AND sr.created_at < ?
        GROUP BY MONTH(sr.created_at)`,
-      [req.user.branch_id, start, end]
+      [branchId, start, end]
     );
     const retByMonth = new Map(
       retMonths.map((r) => [Number(r.month), { value: Number(r.value), cost: Number(r.cost) }])
@@ -545,7 +590,12 @@ router.get('/medicines', authRequired, requireRole('admin', 'pharmacist'), async
     return res.status(400).json({ status: 'error', message: 'Give valid period parameters' });
   }
   try {
-    const medicines = await medicinesForRange(req.user.branch_id, range.start, range.end);
+    const resolved = await resolveReportBranch(req);
+    if (resolved.error) {
+      return res.status(400).json({ status: 'error', message: resolved.error });
+    }
+    const branchId = resolved.branchId;
+    const medicines = await medicinesForRange(branchId, range.start, range.end);
     return res.json({ status: 'ok', period, start: range.start, end: range.end, medicines });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
@@ -563,7 +613,12 @@ router.get('/purchases', authRequired, requireRole('admin', 'pharmacist'), async
     return res.status(400).json({ status: 'error', message: 'Give valid period parameters' });
   }
   try {
-    const suppliers = await purchasesForRange(req.user.branch_id, range.start, range.end);
+    const resolved = await resolveReportBranch(req);
+    if (resolved.error) {
+      return res.status(400).json({ status: 'error', message: resolved.error });
+    }
+    const branchId = resolved.branchId;
+    const suppliers = await purchasesForRange(branchId, range.start, range.end);
     return res.json({ status: 'ok', period, start: range.start, end: range.end, suppliers });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
@@ -579,7 +634,12 @@ router.get('/purchases', authRequired, requireRole('admin', 'pharmacist'), async
 // GET /api/reports/stock-value — current shelf value (not period-based).
 router.get('/stock-value', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   try {
-    const data = await stockValue(req.user.branch_id);
+    const resolved = await resolveReportBranch(req);
+    if (resolved.error) {
+      return res.status(400).json({ status: 'error', message: resolved.error });
+    }
+    const branchId = resolved.branchId;
+    const data = await stockValue(branchId);
     return res.json({ status: 'ok', totals: data.totals, medicines: data.medicines });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
@@ -597,7 +657,16 @@ router.get('/export', authRequired, requireRole('admin', 'pharmacist'), async (r
     });
   }
 
-  const branchId = req.user.branch_id;
+  let branchId;
+  try {
+    const resolved = await resolveReportBranch(req);
+    if (resolved.error) {
+      return res.status(400).json({ status: 'error', message: resolved.error });
+    }
+    branchId = resolved.branchId;
+  } catch (err) {
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
   const period = ['daily', 'weekly', 'monthly', 'yearly', 'range', 'stock'].includes(String(req.query.period))
     ? String(req.query.period)
     : 'daily';

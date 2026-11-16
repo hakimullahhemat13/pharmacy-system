@@ -945,3 +945,45 @@ test('reports + audit: cross-branch views belong to the Main admin alone', async
   assert.equal(logMain.status, 200);
   assert.ok(logMain.data.entries.some((e) => e.branch_name === 'Test Branch'));
 });
+
+test('reports: the Main admin reads another branch reports, a child admin cannot', async () => {
+  // Branch Two sold twice today in the day-review test (1 unit at 10
+  // AFN each); the Main admin reads exactly those figures by branch.
+  const b2daily = await api('GET', `/reports/daily?date=${dayStr(0)}&branch_id=${S.branchTwo}`, undefined, S.token);
+  assert.equal(b2daily.status, 200);
+  assert.equal(Number(b2daily.data.summary.sales_count), 2);
+  assert.equal(Number(b2daily.data.summary.revenue), 20);
+  assert.equal(Number(b2daily.data.summary.items_sold), 2);
+  assert.equal(b2daily.data.sales.length, 2);
+
+  // The same call without the parameter reads the Main branch instead.
+  const own = await api('GET', `/reports/daily?date=${dayStr(0)}`, undefined, S.token);
+  assert.equal(own.status, 200);
+  assert.ok(Number(own.data.summary.sales_count) > 2);
+
+  // Monthly and stock-value honor the parameter too.
+  const b2monthly = await api('GET', `/reports/monthly?branch_id=${S.branchTwo}`, undefined, S.token);
+  assert.equal(b2monthly.status, 200);
+  assert.equal(Number(b2monthly.data.summary.sales_count), 2);
+  const b2stock = await api('GET', `/reports/stock-value?branch_id=${S.branchTwo}`, undefined, S.token);
+  assert.equal(b2stock.status, 200);
+  assert.ok(Array.isArray(b2stock.data.medicines));
+
+  // An unknown branch id is a 400, not a silent fallback to own numbers.
+  const bogus = await api('GET', `/reports/daily?date=${dayStr(0)}&branch_id=does-not-exist`, undefined, S.token);
+  assert.equal(bogus.status, 400);
+
+  // A child-branch admin asking for the Main branch still gets their
+  // own branch's numbers — the parameter is ignored for them.
+  const login = await api('POST', '/auth/login', { username: 'b2admin', password: 'admin123' });
+  assert.equal(login.status, 200);
+  const childView = await api(
+    'GET',
+    `/reports/daily?date=${dayStr(0)}&branch_id=${BRANCH_ID}`,
+    undefined,
+    login.data.token
+  );
+  assert.equal(childView.status, 200);
+  assert.equal(Number(childView.data.summary.sales_count), 2);
+  assert.equal(Number(childView.data.summary.revenue), 20);
+});

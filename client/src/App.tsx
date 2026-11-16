@@ -493,7 +493,7 @@ export default function App() {
         {visiblePage === 'sales' && <SalesPage lang={lang} role={user.role} onAddMedicine={goAddMedicine} />}
         {visiblePage === 'purchases' && <PurchasesPage lang={lang} />}
         {visiblePage === 'suppliers' && <SuppliersPage lang={lang} />}
-        {visiblePage === 'reports' && <ReportsPage lang={lang} role={user.role} />}
+        {visiblePage === 'reports' && <ReportsPage lang={lang} role={user.role} isMainAdmin={approvalInfo?.isMainAdmin ?? false} />}
         {visiblePage === 'customers' && <CustomersPage lang={lang} role={user.role} />}
         {visiblePage === 'backup' && <BackupPage lang={lang} isAdmin={user.role === 'admin'} onLogout={logout} />}
         {visiblePage === 'settings' && <SettingsPage lang={lang} user={user} setLang={setLang} isMainAdmin={approvalInfo?.isMainAdmin ?? false} />}
@@ -4732,7 +4732,15 @@ function DayClosePanel({ lang, date, role }: { lang: Lang; date: string; role: s
   );
 }
 
-function ReportsPage({ lang, role }: { lang: Lang; role: string }) {
+function ReportsPage({
+  lang,
+  role,
+  isMainAdmin,
+}: {
+  lang: Lang;
+  role: string;
+  isMainAdmin: boolean;
+}) {
   const now = new Date();
   const [tab, setTab] = useState<ReportTab>('daily');
   const [date, setDate] = useState(todayStr());
@@ -4756,6 +4764,11 @@ function ReportsPage({ lang, role }: { lang: Lang; role: string }) {
   const [exporting, setExporting] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [branch, setBranch] = useState<BranchInfo | null>(null);
+  // The Main admin can read another branch's reports: the selected
+  // branch id, or '' for the admin's own branch. Everyone else always
+  // sees their own branch — the server ignores the parameter for them.
+  const [viewBranchId, setViewBranchId] = useState('');
+  const [branches, setBranches] = useState<BranchRow[]>([]);
 
   useEffect(() => {
     api
@@ -4763,6 +4776,19 @@ function ReportsPage({ lang, role }: { lang: Lang; role: string }) {
       .then((data) => setBranch(data.branch as BranchInfo))
       .catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (!isMainAdmin) return;
+    api
+      .get('/branches')
+      .then((data) => setBranches(data.branches as BranchRow[]))
+      .catch(() => undefined);
+  }, [isMainAdmin]);
+
+  // Append the viewed branch to a report URL (every report fetch and
+  // export goes through this, so the whole page follows the selector).
+  const q = (url: string) =>
+    viewBranchId ? `${url}${url.includes('?') ? '&' : '?'}branch_id=${viewBranchId}` : url;
 
   // Print the report sheet as soon as it has rendered (same pattern as
   // the receipt): the browser dialog offers both the printer and
@@ -4781,26 +4807,26 @@ function ReportsPage({ lang, role }: { lang: Lang; role: string }) {
     setExporting(true);
     try {
       if (tab === 'stock') {
-        await api.download('/reports/export?period=stock', 'pharmacy-stock-value.xlsx');
+        await api.download(q('/reports/export?period=stock'), 'pharmacy-stock-value.xlsx');
       } else if (tab === 'daily') {
-        await api.download(`/reports/export?period=daily&date=${date}`, `pharmacy-report-daily-${date}.xlsx`);
+        await api.download(q(`/reports/export?period=daily&date=${date}`), `pharmacy-report-daily-${date}.xlsx`);
       } else if (tab === 'weekly') {
         await api.download(
-          `/reports/export?period=weekly&date=${weekStart}`,
+          q(`/reports/export?period=weekly&date=${weekStart}`),
           `pharmacy-report-weekly-${weekStart}.xlsx`
         );
       } else if (tab === 'range') {
         await api.download(
-          `/reports/export?period=range&from=${rangeFrom}&to=${rangeTo}`,
+          q(`/reports/export?period=range&from=${rangeFrom}&to=${rangeTo}`),
           `pharmacy-report-range-${rangeFrom}-${rangeTo}.xlsx`
         );
       } else if (tab === 'monthly') {
         await api.download(
-          `/reports/export?period=monthly&year=${year}&month=${month}`,
+          q(`/reports/export?period=monthly&year=${year}&month=${month}`),
           `pharmacy-report-monthly-${year}-${month}.xlsx`
         );
       } else {
-        await api.download(`/reports/export?period=yearly&year=${year}`, `pharmacy-report-yearly-${year}.xlsx`);
+        await api.download(q(`/reports/export?period=yearly&year=${year}`), `pharmacy-report-yearly-${year}.xlsx`);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error');
@@ -4814,7 +4840,7 @@ function ReportsPage({ lang, role }: { lang: Lang; role: string }) {
       try {
         setError('');
         if (tab === 'stock') {
-          const data = await api.get('/reports/stock-value');
+          const data = await api.get(q('/reports/stock-value'));
           if (!alive) return;
           setStockData({
             totals: data.totals as StockTotals,
@@ -4823,29 +4849,29 @@ function ReportsPage({ lang, role }: { lang: Lang; role: string }) {
           return;
         }
         if (tab === 'daily') {
-          const data = await api.get(`/reports/daily?date=${date}`);
+          const data = await api.get(q(`/reports/daily?date=${date}`));
           if (!alive) return;
           setSummary(data.summary as Summary);
           setDaySales(data.sales as SaleRow[]);
         } else if (tab === 'weekly') {
-          const data = await api.get(`/reports/weekly?date=${weekStart}`);
+          const data = await api.get(q(`/reports/weekly?date=${weekStart}`));
           if (!alive) return;
           setSummary(data.summary as Summary);
           setDays(data.days as DayRow[]);
         } else if (tab === 'monthly') {
-          const data = await api.get(`/reports/monthly?year=${year}&month=${month}`);
+          const data = await api.get(q(`/reports/monthly?year=${year}&month=${month}`));
           if (!alive) return;
           setSummary(data.summary as Summary);
           setPrevSummary(data.previous as Summary);
           setPrevLabel(String(data.previousLabel || ''));
           setDays(data.days as DayRow[]);
         } else if (tab === 'range') {
-          const data = await api.get(`/reports/range?from=${rangeFrom}&to=${rangeTo}`);
+          const data = await api.get(q(`/reports/range?from=${rangeFrom}&to=${rangeTo}`));
           if (!alive) return;
           setSummary(data.summary as Summary);
           setDays(data.days as DayRow[]);
         } else {
-          const data = await api.get(`/reports/yearly?year=${year}`);
+          const data = await api.get(q(`/reports/yearly?year=${year}`));
           if (!alive) return;
           setSummary(data.summary as Summary);
           setMonths(data.months as MonthRow[]);
@@ -4860,10 +4886,10 @@ function ReportsPage({ lang, role }: { lang: Lang; role: string }) {
                 : tab === 'range'
                   ? `period=range&from=${rangeFrom}&to=${rangeTo}`
                   : `period=yearly&year=${year}`;
-        const medData = await api.get(`/reports/medicines?${medParams}`);
+        const medData = await api.get(q(`/reports/medicines?${medParams}`));
         if (!alive) return;
         setMedRows(medData.medicines as MedRow[]);
-        const purchData = await api.get(`/reports/purchases?${medParams}`);
+        const purchData = await api.get(q(`/reports/purchases?${medParams}`));
         if (!alive) return;
         setPurchRows(purchData.suppliers as PurchRow[]);
       } catch (err) {
@@ -4873,7 +4899,7 @@ function ReportsPage({ lang, role }: { lang: Lang; role: string }) {
     return () => {
       alive = false;
     };
-  }, [tab, date, weekStart, year, month, rangeFrom, rangeTo]);
+  }, [tab, date, weekStart, year, month, rangeFrom, rangeTo, viewBranchId]);
 
   const tabs: { key: ReportTab; label: string }[] = [
     { key: 'daily', label: t(lang, 'daily') },
@@ -4905,6 +4931,14 @@ function ReportsPage({ lang, role }: { lang: Lang; role: string }) {
 
   const negStyle = (v: number | string) =>
     Number(v) < 0 ? { color: '#dc2626' } : undefined;
+
+  // The branch whose reports are on screen: the selected branch when
+  // the Main admin picked another one, otherwise the own branch. The
+  // print letterhead follows the same choice; Day Close stays hidden
+  // for another branch — closing a day is that branch's own action.
+  const viewedBranch = viewBranchId ? branches.find((b) => b.id === viewBranchId) || null : null;
+  const viewingOther = !!viewedBranch && viewedBranch.id !== branch?.id;
+  const printBranch = viewingOther ? viewedBranch : branch;
 
   // Month-over-month change: signed difference plus percent, green when
   // up, red when down. No percent when last month was zero.
@@ -4952,6 +4986,22 @@ function ReportsPage({ lang, role }: { lang: Lang; role: string }) {
       </div>
 
       <div className="report-controls">
+        {isMainAdmin && branches.length > 1 && (
+          <div className="field">
+            <label>{t(lang, 'branchCol')}</label>
+            <select
+              className="field-select"
+              value={viewBranchId || (branch ? branch.id : '')}
+              onChange={(e) => setViewBranchId(e.target.value)}
+            >
+              {branches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         {tab === 'daily' && (
           <div className="field">
             <label>{t(lang, 'dateLabel')}</label>
@@ -5154,7 +5204,8 @@ function ReportsPage({ lang, role }: { lang: Lang; role: string }) {
         </>
       )}
 
-      {tab === 'daily' && <DayClosePanel lang={lang} date={date} role={role} />}
+      {tab === 'daily' && !viewingOther && <DayClosePanel lang={lang} date={date} role={role} />}
+      {tab === 'daily' && viewingOther && <p className="muted">{t(lang, 'dayCloseOwnBranchOnly')}</p>}
 
       {tab === 'daily' && summary && (
         <div className="panel">
@@ -5396,9 +5447,9 @@ function ReportsPage({ lang, role }: { lang: Lang; role: string }) {
         createPortal(
           <div id="report-print" dir={lang === 'en' ? 'ltr' : 'rtl'}>
             <div className="print-head">
-              <div className="print-brand">{branch?.name || 'Pharmacy'}</div>
-              {branch?.address && <div>{branch.address}</div>}
-              {branch?.phone && <div>{branch.phone}</div>}
+              <div className="print-brand">{printBranch?.name || 'Pharmacy'}</div>
+              {printBranch?.address && <div>{printBranch.address}</div>}
+              {printBranch?.phone && <div>{printBranch.phone}</div>}
               <div className="print-title">
                 {t(lang, 'reports')} — {periodTitle}
               </div>
@@ -5687,9 +5738,9 @@ function ReportsPage({ lang, role }: { lang: Lang; role: string }) {
         createPortal(
           <div id="report-print" dir={lang === 'en' ? 'ltr' : 'rtl'}>
             <div className="print-head">
-              <div className="print-brand">{branch?.name || 'Pharmacy'}</div>
-              {branch?.address && <div>{branch.address}</div>}
-              {branch?.phone && <div>{branch.phone}</div>}
+              <div className="print-brand">{printBranch?.name || 'Pharmacy'}</div>
+              {printBranch?.address && <div>{printBranch.address}</div>}
+              {printBranch?.phone && <div>{printBranch.phone}</div>}
               <div className="print-title">
                 {t(lang, 'reports')} — {t(lang, 'stockValue')}
               </div>
