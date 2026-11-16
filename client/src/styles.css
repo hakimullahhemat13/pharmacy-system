@@ -595,6 +595,15 @@ tr.highlight td { background: #ecfdf5; font-weight: 600; }
 .count-badge.warn { background: #fef3c7; color: #92400e; }
 .qty-zero { color: #dc2626; font-weight: 700; }
 
+/* ---- Approvals: the red menu badge and the boss's rejection notes ---- */
+.menu-badge {
+  margin-inline-start: auto; min-width: 22px; text-align: center;
+  background: #dc2626; color: #fff; border-radius: 999px; padding: 1px 7px;
+  font-size: 12px; font-weight: 700; flex-shrink: 0;
+}
+.note-text { color: #b91c1c; font-size: 12.5px; line-height: 1.5; }
+.approval-notice { border-inline-start: 4px solid #dc2626; }
+
 /* ---- Dashboard polish round 2: greeting, panel headers ---- */
 .dash-sub { color: #64748b; font-size: 14px; margin-top: 4px; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }

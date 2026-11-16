@@ -16,7 +16,7 @@ const router = express.Router();
 router.get('/', authRequired, async (req, res) => {
   try {
     const [rows] = await pool.query(
-      `SELECT m.id AS medicine_id, m.name, m.generic_name, m.company, m.barcode, m.unit, m.category, m.sale_price, m.min_stock, m.warn_months, m.created_at,
+      `SELECT m.id AS medicine_id, m.name, m.generic_name, m.company, m.barcode, m.unit, m.category, m.sale_price, m.min_stock, m.warn_months, m.approval_status, m.rejection_note, m.created_at,
               COALESCE(SUM(b.quantity_on_hand), 0) AS total_quantity,
               COUNT(b.id) AS batch_count,
               (SELECT MIN(b2.expiry_date) FROM medicine_batches b2
@@ -25,7 +25,7 @@ router.get('/', authRequired, async (req, res) => {
        LEFT JOIN medicine_batches b
          ON b.medicine_id = m.id AND b.branch_id = m.branch_id AND b.is_deleted = 0
        WHERE m.branch_id = ? AND m.is_deleted = 0
-       GROUP BY m.id, m.name, m.generic_name, m.company, m.barcode, m.unit, m.category, m.sale_price, m.min_stock, m.warn_months, m.created_at
+       GROUP BY m.id, m.name, m.generic_name, m.company, m.barcode, m.unit, m.category, m.sale_price, m.min_stock, m.warn_months, m.approval_status, m.rejection_note, m.created_at
        ORDER BY m.created_at DESC, m.name`,
       [req.user.branch_id]
     );

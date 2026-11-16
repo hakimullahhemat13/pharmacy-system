@@ -9,7 +9,7 @@ const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 
 const pool = require('../db');
-const { authRequired, requireRole } = require('../middleware/auth');
+const { authRequired, requireRole, requireMainAdmin } = require('../middleware/auth');
 const { auditLog } = require('../audit');
 const { todayStr, isDayClosed, isMissingDayCloseTable } = require('../dayClose');
 
@@ -213,6 +213,54 @@ router.get('/daily', authRequired, async (req, res) => {
       sellerId ? [req.user.branch_id, date, end, sellerId] : [req.user.branch_id, date, end]
     );
     return res.json({ status: 'ok', date, summary, sales });
+  } catch (err) {
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+});
+
+// GET /api/reports/central?date=YYYY-MM-DD — Main Branch admin only.
+// The central dashboard: one day's summary per branch, plus totals,
+// plus whether each branch closed its day. A child branch never sees
+// another branch's figures. With a single branch this returns one row;
+// the dashboard only shows the panel when more than one branch exists,
+// so single-pharmacy use looks exactly as before.
+router.get('/central', authRequired, requireMainAdmin, async (req, res) => {
+  const date = req.query.date === undefined ? fmtDate(new Date()) : String(req.query.date);
+  if (!isValidDateString(date)) {
+    return res.status(400).json({ status: 'error', message: 'date must be YYYY-MM-DD' });
+  }
+  const next = new Date(`${date}T00:00:00Z`);
+  next.setUTCDate(next.getUTCDate() + 1);
+  const end = `${next.getUTCFullYear()}-${pad(next.getUTCMonth() + 1)}-${pad(next.getUTCDate())}`;
+  try {
+    const [branches] = await pool.query(
+      'SELECT id, name FROM branches WHERE is_deleted = 0 ORDER BY created_at'
+    );
+    const rows = [];
+    const totals = {
+      sales_count: 0,
+      items_sold: 0,
+      revenue: 0,
+      discount_total: 0,
+      cost_total: 0,
+      profit: 0,
+      returns_total: 0,
+      returned_items: 0,
+    };
+    for (const b of branches) {
+      const summary = await summaryForRange(b.id, date, end);
+      const closed = await isDayClosed(pool, b.id, date);
+      rows.push({ id: b.id, name: b.name, closed, summary });
+      totals.sales_count += summary.sales_count;
+      totals.items_sold += summary.items_sold;
+      totals.revenue += summary.revenue;
+      totals.discount_total += summary.discount_total;
+      totals.cost_total += summary.cost_total;
+      totals.profit += summary.profit;
+      totals.returns_total += summary.returns_total;
+      totals.returned_items += summary.returned_items;
+    }
+    return res.json({ status: 'ok', date, branches: rows, totals });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
   }
@@ -439,7 +487,7 @@ async function purchasesForRange(branchId, start, end) {
             COALESCE(SUM(p.paid_amount), 0) AS paid_at_purchase
      FROM purchases p
      LEFT JOIN suppliers s ON s.id = p.supplier_id
-     WHERE p.branch_id = ? AND p.is_deleted = 0 AND p.purchase_date >= ? AND p.purchase_date < ?
+     WHERE p.branch_id = ? AND p.is_deleted = 0 AND p.approval_status = 'approved' AND p.purchase_date >= ? AND p.purchase_date < ?
      GROUP BY p.supplier_id, s.name`,
     [branchId, start, end]
   );
@@ -866,10 +914,12 @@ async function cashForDay(branchId, start, end) {
     [branchId, start, end]
   );
   const ret = await returnsForRange(branchId, start, end);
+  // Waiting purchases are not in the books yet — their paid amounts
+  // count only once the Main Branch accepts them.
   const [sup1] = await pool.query(
     `SELECT COALESCE(SUM(paid_amount), 0) AS v
      FROM purchases
-     WHERE branch_id = ? AND is_deleted = 0 AND purchase_date >= ? AND purchase_date < ?`,
+     WHERE branch_id = ? AND is_deleted = 0 AND approval_status = 'approved' AND purchase_date >= ? AND purchase_date < ?`,
     [branchId, start, end]
   );
   const [sup2] = await pool.query(

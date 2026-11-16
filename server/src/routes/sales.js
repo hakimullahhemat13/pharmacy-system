@@ -11,6 +11,7 @@ const pool = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
 const { auditLog } = require('../audit');
 const { isDayClosed, todayStr, dayOf, dayClosedMessage } = require('../dayClose');
+const { resetDayReview } = require('../mainBranch');
 
 const router = express.Router();
 
@@ -87,12 +88,19 @@ router.post('/', authRequired, async (req, res) => {
       const qtyWanted = Number(it.quantity);
 
       const [med] = await conn.query(
-        'SELECT id, name, sale_price FROM medicines WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
+        'SELECT id, name, sale_price, approval_status FROM medicines WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
         [medicineId, branchId]
       );
       if (med.length === 0) {
         await conn.rollback();
         return res.status(400).json({ status: 'error', message: `Medicine not found in this branch: ${medicineId}` });
+      }
+      if (med[0].approval_status !== 'approved') {
+        await conn.rollback();
+        return res.status(400).json({
+          status: 'error',
+          message: `${med[0].name} is still waiting for approval and cannot be sold yet`,
+        });
       }
       const unitPrice = it.unit_price === undefined || it.unit_price === null
         ? Number(med[0].sale_price)
@@ -177,6 +185,12 @@ router.post('/', authRequired, async (req, res) => {
     }
 
     await conn.commit();
+    // The day's numbers changed — a reviewed day returns to "pending"
+    // so the boss sees the new figures.
+    // Awaited, not fire-and-forget: the day must already be pending
+    // again when this response returns, or a reader checking right
+    // after the sale still sees the old accepted review.
+    await resetDayReview(pool, branchId, today).catch(() => {});
     auditLog(req, 'sale.created', 'sales', saleId, {
       summary: `Sale ${invoiceNo}: ${netTotal} AFN net, ${paidAmount} AFN paid`,
       invoice_no: invoiceNo, net_total: netTotal, paid_amount: paidAmount,
@@ -465,6 +479,8 @@ router.post('/:id/return', authRequired, requireRole('admin', 'pharmacist'), asy
     }
 
     await conn.commit();
+    await resetDayReview(pool, branchId, returnDay).catch(() => {});
+    await resetDayReview(pool, branchId, saleDay).catch(() => {});
     auditLog(req, 'sale.returned', 'sales', saleId, {
       summary: `Return on ${sale[0].invoice_no}: ${refundTotal} AFN refunded`,
       invoice_no: sale[0].invoice_no, refund_total: refundTotal,
@@ -610,6 +626,8 @@ router.post('/:id/void', authRequired, requireRole('admin', 'pharmacist'), async
 
     await conn.query('UPDATE sales SET voided_at = NOW() WHERE id = ?', [saleId]);
     await conn.commit();
+    await resetDayReview(pool, branchId, voidDay).catch(() => {});
+    await resetDayReview(pool, branchId, voidSaleDay).catch(() => {});
     auditLog(req, 'sale.voided', 'sales', saleId, {
       summary: `Bill ${sale[0].invoice_no} voided`,
       invoice_no: sale[0].invoice_no,

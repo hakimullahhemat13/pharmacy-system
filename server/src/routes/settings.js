@@ -3,9 +3,9 @@
 //   PUT   /api/settings/language          save own interface language
 //   GET   /api/settings/branch            own branch info
 //   PUT   /api/settings/branch            admin: update branch name/phone/address
-//   GET   /api/settings/users             admin: users of own branch
-//   POST  /api/settings/users             admin: create a user in own branch
-//   PATCH /api/settings/users/:id/active  admin: activate / deactivate a user
+//   GET   /api/settings/users             admin: Main admin sees all branches, any other admin only their own
+//   POST  /api/settings/users             admin: create a user (branch_id optional, defaults to own branch; another branch only for the Main admin)
+//   PATCH /api/settings/users/:id/active  admin: activate / deactivate a user (own branch, or any branch for the Main admin)
 // Branch and identity ALWAYS come from the login token, never the request.
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -14,12 +14,22 @@ const { v4: uuidv4 } = require('uuid');
 const pool = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
 const { auditLog } = require('../audit');
+const { getMainBranchId } = require('../mainBranch');
 
 const router = express.Router();
 router.use(authRequired);
 
 const LANGUAGES = ['ps', 'fa', 'en'];
 const ROLES = ['admin', 'pharmacist', 'cashier'];
+
+// Whether the caller is the Main Branch admin — the only user who
+// administers across branches. Every other admin sees and manages
+// their own branch only: a child branch never sees the Main Branch's
+// users or audit entries, and never touches them.
+async function isMainAdminReq(req) {
+  if (req.user.role !== 'admin') return false;
+  return req.user.branch_id === (await getMainBranchId(pool));
+}
 
 // --- Own password -----------------------------------------------------------
 router.post('/password', async (req, res) => {
@@ -106,13 +116,31 @@ router.put('/branch', requireRole('admin'), async (req, res) => {
   }
 });
 
-// --- Users of the branch (admin) ---------------------------------------------
+// --- Users (admin) ------------------------------------------------------------
+// The Main Branch admin manages users of ALL branches; any other admin
+// sees and manages only their own branch's users. With one branch this
+// is exactly the old list for everyone.
 router.get('/users', requireRole('admin'), async (req, res) => {
   try {
-    const [rows] = await pool.query(
-      'SELECT id, full_name, username, role, language, is_active, created_at FROM users WHERE branch_id = ? AND is_deleted = 0 ORDER BY created_at',
-      [req.user.branch_id]
-    );
+    const mainAdmin = await isMainAdminReq(req);
+    const [rows] = mainAdmin
+      ? await pool.query(
+          `SELECT u.id, u.branch_id, u.full_name, u.username, u.role, u.language,
+                  u.is_active, u.created_at, b.name AS branch_name
+           FROM users u
+           LEFT JOIN branches b ON b.id = u.branch_id
+           WHERE u.is_deleted = 0
+           ORDER BY b.created_at, u.created_at`
+        )
+      : await pool.query(
+          `SELECT u.id, u.branch_id, u.full_name, u.username, u.role, u.language,
+                  u.is_active, u.created_at, b.name AS branch_name
+           FROM users u
+           LEFT JOIN branches b ON b.id = u.branch_id
+           WHERE u.is_deleted = 0 AND u.branch_id = ?
+           ORDER BY u.created_at`,
+          [req.user.branch_id]
+        );
     return res.json({ status: 'ok', users: rows });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
@@ -120,7 +148,7 @@ router.get('/users', requireRole('admin'), async (req, res) => {
 });
 
 router.post('/users', requireRole('admin'), async (req, res) => {
-  const { full_name, username, password, role } = req.body || {};
+  const { full_name, username, password, role, branch_id } = req.body || {};
   if (!full_name || !String(full_name).trim()) {
     return res.status(400).json({ status: 'error', message: 'Full name is required' });
   }
@@ -139,19 +167,38 @@ router.post('/users', requireRole('admin'), async (req, res) => {
     if (existing.length > 0) {
       return res.status(409).json({ status: 'error', message: `Username "${cleanUsername}" is already taken` });
     }
+    // The new user's branch: an explicit branch_id when given (it must
+    // exist and be active), otherwise the admin's own branch. Placing a
+    // user in ANOTHER branch is the Main Branch admin's alone.
+    let targetBranch = req.user.branch_id;
+    let branchName = null;
+    if (branch_id) {
+      const [bRows] = await pool.query(
+        'SELECT id, name FROM branches WHERE id = ? AND is_deleted = 0 LIMIT 1',
+        [branch_id]
+      );
+      if (!bRows[0]) {
+        return res.status(400).json({ status: 'error', message: 'Branch not found' });
+      }
+      if (bRows[0].id !== req.user.branch_id && !(await isMainAdminReq(req))) {
+        return res.status(403).json({ status: 'error', message: 'Only the Main Branch admin can create users in another branch' });
+      }
+      targetBranch = bRows[0].id;
+      branchName = bRows[0].name;
+    }
     const hash = await bcrypt.hash(String(password), 12);
     const id = uuidv4();
     await pool.query(
       'INSERT INTO users (id, branch_id, full_name, username, password_hash, role, language, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, 1)',
-      [id, req.user.branch_id, String(full_name).trim(), cleanUsername, hash, role, 'ps']
+      [id, targetBranch, String(full_name).trim(), cleanUsername, hash, role, 'ps']
     );
     auditLog(req, 'user.created', 'users', id, {
-      summary: `User created: ${cleanUsername} (${role})`,
+      summary: `User created: ${cleanUsername} (${role})${branchName ? ` — ${branchName}` : ''}`,
       username: cleanUsername, role,
     });
     return res.status(201).json({
       status: 'ok',
-      user: { id, full_name: String(full_name).trim(), username: cleanUsername, role },
+      user: { id, branch_id: targetBranch, full_name: String(full_name).trim(), username: cleanUsername, role },
     });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
@@ -168,15 +215,21 @@ router.patch('/users/:id/active', requireRole('admin'), async (req, res) => {
   }
   try {
     const [target] = await pool.query(
-      'SELECT username FROM users WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
-      [req.params.id, req.user.branch_id]
+      'SELECT username, branch_id FROM users WHERE id = ? AND is_deleted = 0 LIMIT 1',
+      [req.params.id]
     );
+    if (!target[0]) {
+      return res.status(404).json({ status: 'error', message: 'User not found' });
+    }
+    if (target[0].branch_id !== req.user.branch_id && !(await isMainAdminReq(req))) {
+      return res.status(403).json({ status: 'error', message: 'Only the Main Branch admin can change users of another branch' });
+    }
     const [result] = await pool.query(
-      'UPDATE users SET is_active = ? WHERE id = ? AND branch_id = ? AND is_deleted = 0',
-      [is_active ? 1 : 0, req.params.id, req.user.branch_id]
+      'UPDATE users SET is_active = ? WHERE id = ? AND is_deleted = 0',
+      [is_active ? 1 : 0, req.params.id]
     );
     if (result.affectedRows === 0) {
-      return res.status(404).json({ status: 'error', message: 'User not found in your branch' });
+      return res.status(404).json({ status: 'error', message: 'User not found' });
     }
     auditLog(req, is_active ? 'user.activated' : 'user.deactivated', 'users', req.params.id, {
       summary: `User ${target[0] ? target[0].username : req.params.id} ${is_active ? 'activated' : 'deactivated'}`,
@@ -197,16 +250,19 @@ router.delete('/users/:id', requireRole('admin'), async (req, res) => {
   }
   try {
     const [target] = await pool.query(
-      'SELECT id, username, role, is_active FROM users WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
-      [req.params.id, req.user.branch_id]
+      'SELECT id, branch_id, username, role, is_active FROM users WHERE id = ? AND is_deleted = 0 LIMIT 1',
+      [req.params.id]
     );
     if (!target[0]) {
-      return res.status(404).json({ status: 'error', message: 'User not found in your branch' });
+      return res.status(404).json({ status: 'error', message: 'User not found' });
+    }
+    if (target[0].branch_id !== req.user.branch_id && !(await isMainAdminReq(req))) {
+      return res.status(403).json({ status: 'error', message: 'Only the Main Branch admin can delete users of another branch' });
     }
     if (target[0].role === 'admin' && target[0].is_active) {
       const [admins] = await pool.query(
         "SELECT COUNT(*) AS c FROM users WHERE branch_id = ? AND role = 'admin' AND is_active = 1 AND is_deleted = 0",
-        [req.user.branch_id]
+        [target[0].branch_id]
       );
       if (Number(admins[0].c) <= 1) {
         return res.status(400).json({ status: 'error', message: 'Cannot delete the last active admin' });
@@ -235,11 +291,14 @@ router.post('/users/:id/reset-password', requireRole('admin'), async (req, res) 
   }
   try {
     const [target] = await pool.query(
-      'SELECT id, username FROM users WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
-      [req.params.id, req.user.branch_id]
+      'SELECT id, username, branch_id FROM users WHERE id = ? AND is_deleted = 0 LIMIT 1',
+      [req.params.id]
     );
     if (!target[0]) {
-      return res.status(404).json({ status: 'error', message: 'User not found in your branch' });
+      return res.status(404).json({ status: 'error', message: 'User not found' });
+    }
+    if (target[0].branch_id !== req.user.branch_id && !(await isMainAdminReq(req))) {
+      return res.status(403).json({ status: 'error', message: 'Only the Main Branch admin can reset passwords of another branch' });
     }
     const hash = await bcrypt.hash(String(password), 12);
     await pool.query('UPDATE users SET password_hash = ? WHERE id = ?', [hash, req.params.id]);
@@ -254,14 +313,16 @@ router.post('/users/:id/reset-password', requireRole('admin'), async (req, res) 
 });
 
 // GET /api/settings/audit-log — admin only. Read-only view of the
-// append-only audit log, newest first, with filters. Rows with no branch
-// are system actions (the automatic backup) and are shown to every admin.
+// append-only audit log, newest first, with filters. The Main Branch
+// admin sees every branch; any other admin sees only their own branch
+// plus system rows with no branch (such as the automatic backup). Each
+// entry carries its branch name.
 router.get('/audit-log', requireRole('admin'), async (req, res) => {
   const { user_id, action, from, to } = req.query || {};
   const limit = Math.max(1, Math.min(200, parseInt(req.query.limit, 10) || 100));
   const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
-  const where = ['(a.branch_id = ? OR a.branch_id IS NULL)'];
-  const params = [req.user.branch_id];
+  const where = [];
+  const params = [];
   if (user_id) {
     where.push('a.user_id = ?');
     params.push(user_id);
@@ -279,24 +340,33 @@ router.get('/audit-log', requireRole('admin'), async (req, res) => {
     params.push(to);
   }
   try {
+    const mainAdmin = await isMainAdminReq(req);
+    if (!mainAdmin) {
+      where.push('(a.branch_id = ? OR a.branch_id IS NULL)');
+      params.push(req.user.branch_id);
+    }
+    const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
     const [rows] = await pool.query(
       `SELECT a.id, a.created_at, a.action, a.table_name, a.record_id, a.details,
-              u.full_name, u.username
+              u.full_name, u.username, br.name AS branch_name
        FROM audit_log a
        LEFT JOIN users u ON u.id = a.user_id
-       WHERE ${where.join(' AND ')}
+       LEFT JOIN branches br ON br.id = a.branch_id
+       ${whereSql}
        ORDER BY a.created_at DESC, a.id DESC
        LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
     const [[{ c: total }]] = await pool.query(
-      `SELECT COUNT(*) AS c FROM audit_log a WHERE ${where.join(' AND ')}`,
+      `SELECT COUNT(*) AS c FROM audit_log a ${whereSql}`,
       params
     );
-    const [acts] = await pool.query(
-      'SELECT DISTINCT action FROM audit_log WHERE branch_id = ? OR branch_id IS NULL ORDER BY action',
-      [req.user.branch_id]
-    );
+    const [acts] = mainAdmin
+      ? await pool.query('SELECT DISTINCT action FROM audit_log ORDER BY action')
+      : await pool.query(
+          'SELECT DISTINCT action FROM audit_log WHERE branch_id = ? OR branch_id IS NULL ORDER BY action',
+          [req.user.branch_id]
+        );
     return res.json({ status: 'ok', entries: rows, total, actions: acts.map((r) => r.action) });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });

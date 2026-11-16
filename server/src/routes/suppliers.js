@@ -25,11 +25,13 @@ function phoneError(phone) {
 // The money position with one supplier. Works on the pool or on a
 // transaction connection (anything with .query).
 async function supplierMoney(db, branchId, supplierId) {
+  // Waiting purchases are not in the books yet — they count toward the
+  // supplier's account only once the Main Branch accepts them.
   const [p] = await db.query(
     `SELECT COALESCE(SUM(total_amount), 0) AS purchases_total,
             COALESCE(SUM(paid_amount), 0) AS paid_at_purchase
      FROM purchases
-     WHERE branch_id = ? AND supplier_id = ? AND is_deleted = 0`,
+     WHERE branch_id = ? AND supplier_id = ? AND is_deleted = 0 AND approval_status = 'approved'`,
     [branchId, supplierId]
   );
   const [pay] = await db.query(
@@ -97,7 +99,7 @@ router.get('/', authRequired, async (req, res) => {
        FROM suppliers s
        LEFT JOIN (
          SELECT supplier_id, SUM(total_amount) AS purchases_total, SUM(paid_amount) AS paid_at_purchase
-         FROM purchases WHERE branch_id = ? AND is_deleted = 0 AND supplier_id IS NOT NULL
+         FROM purchases WHERE branch_id = ? AND is_deleted = 0 AND approval_status = 'approved' AND supplier_id IS NOT NULL
          GROUP BY supplier_id
        ) p ON p.supplier_id = s.id
        LEFT JOIN (
@@ -140,6 +142,7 @@ router.get('/:id', authRequired, async (req, res) => {
     const money = await supplierMoney(pool, branchId, req.params.id);
     const [purchases] = await pool.query(
       `SELECT pu.id, pu.invoice_no, pu.purchase_date, pu.total_amount, pu.paid_amount,
+              pu.approval_status, pu.rejection_note,
               COALESCE(r.returned_total, 0) AS returned_total
        FROM purchases pu
        LEFT JOIN (

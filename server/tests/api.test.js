@@ -7,7 +7,8 @@
 // The suite starts the REAL server on port 5011 against a SEPARATE
 // database (pharmacy_db_test) and drives it over HTTP, so it checks the
 // same code the shop uses: FEFO selling, returns, reports, day close,
-// roles and the audit log. It NEVER touches the real pharmacy_db.
+// roles, branches, the central dashboard, the approval workflow and
+// the audit log. It NEVER touches the real pharmacy_db.
 //
 // One-time setup (run once, as root) — see tests/setup-test-db.sql:
 // it creates pharmacy_db_test and gives the pharmacy_app user access.
@@ -49,7 +50,7 @@ let serverOutput = '';
 let db = null;
 
 // Shared state between the tests below (node:test runs them in order).
-const S = { token: null, cashierToken: null, medicineId: null, saleId: null, earlyItemId: null };
+const S = { token: null, cashierToken: null, medicineId: null, saleId: null, earlyItemId: null, branchTwo: null, b2Token: null, b2MedA: null };
 
 function dayStr(offsetDays) {
   const d = new Date();
@@ -82,6 +83,30 @@ async function batchQty(batchNo) {
     [batchNo, BRANCH_ID]
   );
   return rows.length ? Number(rows[0].quantity_on_hand) : null;
+}
+
+async function batchQtyIn(branchId, batchNo) {
+  const [rows] = await db.query(
+    'SELECT quantity_on_hand FROM medicine_batches WHERE batch_no = ? AND branch_id = ?',
+    [batchNo, branchId]
+  );
+  return rows.length ? Number(rows[0].quantity_on_hand) : null;
+}
+
+// Every main medicine field is mandatory (the server rejects a record
+// with no company, barcode, unit, category or price), so test payloads
+// carry the full set. Barcodes must be unique within a branch.
+function medPayload(name, barcode, salePrice) {
+  return {
+    name,
+    generic_name: `${name} Generic`,
+    company: 'Test Pharma',
+    barcode,
+    unit: 'tablet',
+    category: 'Test',
+    sale_price: salePrice,
+    min_stock: 1,
+  };
 }
 
 before(async () => {
@@ -472,4 +497,451 @@ test('the audit log recorded the day actions', async () => {
   for (const expected of ['user.login', 'sale.created', 'sale.returned', 'day.closed', 'day.reopened']) {
     assert.ok(actions.includes(expected), `audit log is missing ${expected}`);
   }
+});
+
+test('branches: admin creates a branch, guards hold, and users can be placed in it', async () => {
+  // Validation: name is required, and the 10-digit phone rule applies.
+  const noName = await api('POST', '/branches', { address: 'x' }, S.token);
+  assert.equal(noName.status, 400);
+  const badPhone = await api('POST', '/branches', { name: 'Branch Two', phone: '123' }, S.token);
+  assert.equal(badPhone.status, 400);
+
+  const created = await api(
+    'POST',
+    '/branches',
+    { name: 'Branch Two', address: 'Second street', phone: '0700000002' },
+    S.token
+  );
+  assert.equal(created.status, 201);
+  S.branchTwo = created.data.branch.id;
+
+  // The list shows both branches with user counts.
+  const list = await api('GET', '/branches', undefined, S.token);
+  assert.equal(list.status, 200);
+  assert.equal(list.data.branches.length, 2);
+  const main = list.data.branches.find((b) => b.id === BRANCH_ID);
+  assert.equal(Number(main.user_count), 2); // testadmin + testcashier
+
+  // A branch can be updated, with the same phone rule.
+  const badUpdate = await api('PUT', `/branches/${S.branchTwo}`, { name: 'Branch Two', phone: '1' }, S.token);
+  assert.equal(badUpdate.status, 400);
+  const updated = await api(
+    'PUT',
+    `/branches/${S.branchTwo}`,
+    { name: 'Branch Two', address: 'Moved street', phone: '0700000003' },
+    S.token
+  );
+  assert.equal(updated.status, 200);
+
+  // A user can be created directly in the new branch…
+  const userInTwo = await api(
+    'POST',
+    '/settings/users',
+    { full_name: 'Branch Two Cashier', username: 'b2cashier', password: 'cashier1', role: 'cashier', branch_id: S.branchTwo },
+    S.token
+  );
+  assert.equal(userInTwo.status, 201);
+  assert.equal(userInTwo.data.user.branch_id, S.branchTwo);
+
+  // …and shows up in the users list with the branch name.
+  const users = await api('GET', '/settings/users', undefined, S.token);
+  assert.equal(users.status, 200);
+  const placed = users.data.users.find((u) => u.username === 'b2cashier');
+  assert.equal(placed.branch_name, 'Branch Two');
+
+  // A bogus branch is rejected.
+  const bogus = await api(
+    'POST',
+    '/settings/users',
+    { full_name: 'Nope', username: 'nobranch', password: 'cashier1', role: 'cashier', branch_id: uuidv4() },
+    S.token
+  );
+  assert.equal(bogus.status, 400);
+
+  // Guards: the admin's own branch and a branch with users cannot go.
+  const ownDel = await api('DELETE', `/branches/${BRANCH_ID}`, undefined, S.token);
+  assert.equal(ownDel.status, 400);
+  const busyDel = await api('DELETE', `/branches/${S.branchTwo}`, undefined, S.token);
+  assert.equal(busyDel.status, 400);
+
+  // An empty branch can be deleted; it disappears from the list.
+  const empty = await api('POST', '/branches', { name: 'Temp Branch' }, S.token);
+  assert.equal(empty.status, 201);
+  const del = await api('DELETE', `/branches/${empty.data.branch.id}`, undefined, S.token);
+  assert.equal(del.status, 200);
+  const list2 = await api('GET', '/branches', undefined, S.token);
+  assert.equal(list2.data.branches.length, 2);
+
+  // A cashier may not touch branches at all.
+  const forbidden = await api('GET', '/branches', undefined, S.cashierToken);
+  assert.equal(forbidden.status, 403);
+});
+
+test('the central dashboard aggregates every branch and stays admin-only', async () => {
+  const central = await api('GET', '/reports/central', undefined, S.token);
+  assert.equal(central.status, 200);
+  assert.equal(central.data.branches.length, 2);
+  const main = central.data.branches.find((b) => b.id === BRANCH_ID);
+  const two = central.data.branches.find((b) => b.id === S.branchTwo);
+  assert.ok(Number(main.summary.sales_count) >= 1);
+  assert.ok(Number(main.summary.revenue) > 0);
+  assert.equal(Number(two.summary.sales_count), 0);
+  assert.equal(Number(two.summary.revenue), 0);
+  assert.equal(typeof main.closed, 'boolean');
+  assert.equal(
+    central.data.totals.sales_count,
+    Number(main.summary.sales_count) + Number(two.summary.sales_count)
+  );
+  assert.equal(
+    Number(central.data.totals.revenue),
+    Number(main.summary.revenue) + Number(two.summary.revenue)
+  );
+
+  const forbidden = await api('GET', '/reports/central', undefined, S.cashierToken);
+  assert.equal(forbidden.status, 403);
+});
+
+test('approvals: a child-branch medicine waits, and the Main admin accepts or sends it back', async () => {
+  // A pharmacist who works in Branch Two.
+  const created = await api(
+    'POST',
+    '/settings/users',
+    { full_name: 'Branch Two Pharmacist', username: 'b2pharm', password: 'pharm123', role: 'pharmacist', branch_id: S.branchTwo },
+    S.token
+  );
+  assert.equal(created.status, 201);
+  const login = await api('POST', '/auth/login', { username: 'b2pharm', password: 'pharm123' });
+  assert.equal(login.status, 200);
+  S.b2Token = login.data.token;
+
+  // A medicine entered in Branch Two waits for approval…
+  const medA = await api('POST', '/medicines', medPayload('B2 Med A', 'B2MEDA001', 10), S.b2Token);
+  assert.equal(medA.status, 201);
+  assert.equal(medA.data.medicine.approval_status, 'pending');
+  S.b2MedA = medA.data.medicine.id;
+  // …and cannot be sold while it waits.
+  const saleBlocked = await api(
+    'POST',
+    '/sales',
+    { items: [{ medicine_id: S.b2MedA, quantity: 1, unit_price: 10 }] },
+    S.b2Token
+  );
+  assert.equal(saleBlocked.status, 400);
+
+  // The boss sees it in the queue; the branch user may not open the queue.
+  const queue = await api('GET', '/approvals/pending', undefined, S.token);
+  assert.equal(queue.status, 200);
+  assert.ok(queue.data.medicines.some((m) => m.id === S.b2MedA));
+  const forbidden = await api('GET', '/approvals/pending', undefined, S.b2Token);
+  assert.equal(forbidden.status, 403);
+
+  // Rejecting without a reason is refused.
+  const noNote = await api('POST', `/approvals/medicines/${S.b2MedA}/reject`, {}, S.token);
+  assert.equal(noNote.status, 400);
+
+  // Accepting makes it an ordinary medicine.
+  const accept = await api('POST', `/approvals/medicines/${S.b2MedA}/accept`, {}, S.token);
+  assert.equal(accept.status, 200);
+  const after = await api('GET', `/medicines/${S.b2MedA}`, undefined, S.b2Token);
+  assert.equal(after.data.medicine.approval_status, 'approved');
+
+  // A second medicine is rejected with the boss's reason…
+  const medB = await api('POST', '/medicines', medPayload('B2 Med B', 'B2MEDB001', 20), S.b2Token);
+  assert.equal(medB.status, 201);
+  const reject = await api('POST', `/approvals/medicines/${medB.data.medicine.id}/reject`, { note: 'Fix the price' }, S.token);
+  assert.equal(reject.status, 200);
+  // …shows in the branch's own review list with the note…
+  const mine = await api('GET', '/approvals/my-branch', undefined, S.b2Token);
+  assert.equal(mine.status, 200);
+  const rejected = mine.data.medicines.find((m) => m.id === medB.data.medicine.id);
+  assert.ok(rejected);
+  assert.equal(rejected.rejection_note, 'Fix the price');
+  // …and editing it sends it back for approval.
+  const fixed = await api(
+    'PUT',
+    `/medicines/${medB.data.medicine.id}`,
+    { ...medPayload('B2 Med B', 'B2MEDB001', 25), warn_months: 3 },
+    S.b2Token
+  );
+  assert.equal(fixed.status, 200);
+  assert.equal(fixed.data.medicine.approval_status, 'pending');
+  assert.equal(fixed.data.medicine.rejection_note, null);
+  const accept2 = await api('POST', `/approvals/medicines/${medB.data.medicine.id}/accept`, {}, S.token);
+  assert.equal(accept2.status, 200);
+});
+
+test('approvals: a child-branch purchase holds its stock until the Main admin accepts it', async () => {
+  // A purchase in Branch Two stays pending…
+  const pur = await api(
+    'POST',
+    '/purchases',
+    {
+      invoice_no: 'B2-INV-1',
+      items: [{ medicine_id: S.b2MedA, batch_no: 'B2-B1', expiry_date: dayStr(365), quantity: 10, purchase_price: 8 }],
+    },
+    S.b2Token
+  );
+  assert.equal(pur.status, 201);
+  assert.equal(pur.data.purchase.approval_status, 'pending');
+  // …its batch exists but holds nothing, and no ledger row was written.
+  assert.equal(await batchQtyIn(S.branchTwo, 'B2-B1'), 0);
+  const [led] = await db.query(
+    'SELECT COUNT(*) AS c FROM stock_transactions WHERE branch_id = ? AND reference_id = ?',
+    [S.branchTwo, pur.data.purchase.id]
+  );
+  assert.equal(Number(led[0].c), 0);
+
+  // Accepting lands the stock and writes the ledger row.
+  const accept = await api('POST', `/approvals/purchases/${pur.data.purchase.id}/accept`, {}, S.token);
+  assert.equal(accept.status, 200);
+  assert.equal(await batchQtyIn(S.branchTwo, 'B2-B1'), 10);
+  const [led2] = await db.query(
+    'SELECT COUNT(*) AS c, COALESCE(SUM(quantity_change), 0) AS q FROM stock_transactions WHERE branch_id = ? AND reference_id = ?',
+    [S.branchTwo, pur.data.purchase.id]
+  );
+  assert.equal(Number(led2[0].c), 1);
+  assert.equal(Number(led2[0].q), 10);
+
+  // A purchase naming a waiting medicine is refused outright.
+  const waiting = await api('POST', '/medicines', medPayload('B2 Waiting', 'B2WAIT001', 5), S.b2Token);
+  assert.equal(waiting.data.medicine.approval_status, 'pending');
+  const blocked = await api(
+    'POST',
+    '/purchases',
+    {
+      invoice_no: 'B2-INV-2',
+      items: [{ medicine_id: waiting.data.medicine.id, batch_no: 'B2-B2', expiry_date: dayStr(365), quantity: 4, purchase_price: 3 }],
+    },
+    S.b2Token
+  );
+  assert.equal(blocked.status, 400);
+
+  // The opening-stock flow: the medicine and its OPEN purchase both wait…
+  const opened = await api(
+    'POST',
+    '/medicines',
+    {
+      ...medPayload('B2 Opened', 'B2OPEN001', 15),
+      initial_stock: { quantity: 6, purchase_price: 9, expiry_date: dayStr(365), batch_no: 'B2-OPEN' },
+    },
+    S.b2Token
+  );
+  assert.equal(opened.status, 201);
+  assert.equal(opened.data.medicine.approval_status, 'pending');
+  assert.equal(await batchQtyIn(S.branchTwo, 'B2-OPEN'), 0);
+  const allPurchases = await api('GET', '/purchases', undefined, S.b2Token);
+  const openRow = allPurchases.data.purchases.find((p) => p.invoice_no === opened.data.initial_stock.invoice_no);
+  assert.ok(openRow);
+  assert.equal(openRow.approval_status, 'pending');
+  // …and accepting the purchase before the medicine is refused.
+  const tooEarly = await api('POST', `/approvals/purchases/${openRow.id}/accept`, {}, S.token);
+  assert.equal(tooEarly.status, 400);
+  // Medicine first, then the purchase — the stock lands.
+  assert.equal((await api('POST', `/approvals/medicines/${opened.data.medicine.id}/accept`, {}, S.token)).status, 200);
+  assert.equal((await api('POST', `/approvals/purchases/${openRow.id}/accept`, {}, S.token)).status, 200);
+  assert.equal(await batchQtyIn(S.branchTwo, 'B2-OPEN'), 6);
+});
+
+test('approvals: each branch day is reviewed by the Main admin, and new activity re-opens it', async () => {
+  const today = dayStr(0);
+
+  // Sell one unit in Branch Two so the day has figures.
+  const sale = await api(
+    'POST',
+    '/sales',
+    { items: [{ medicine_id: S.b2MedA, quantity: 1, unit_price: 10 }] },
+    S.b2Token
+  );
+  assert.equal(sale.status, 201);
+
+  // The day appears in the boss's queue, pending.
+  const queue = await api('GET', '/approvals/pending', undefined, S.token);
+  const day = queue.data.days.find((d) => d.branch_id === S.branchTwo && d.date === today);
+  assert.ok(day);
+  assert.equal(day.review_status, 'pending');
+  assert.ok(Number(day.summary.items_sold) >= 1);
+
+  // The branch itself cannot accept its own day.
+  const selfAccept = await api('POST', '/approvals/days/accept', { branch_id: S.branchTwo, date: today }, S.b2Token);
+  assert.equal(selfAccept.status, 403);
+
+  // Accepting removes it from the queue…
+  assert.equal((await api('POST', '/approvals/days/accept', { branch_id: S.branchTwo, date: today }, S.token)).status, 200);
+  const queue2 = await api('GET', '/approvals/pending', undefined, S.token);
+  assert.equal(queue2.data.days.some((d) => d.branch_id === S.branchTwo && d.date === today), false);
+  // …but a new sale re-opens the day for review.
+  const sale2 = await api(
+    'POST',
+    '/sales',
+    { items: [{ medicine_id: S.b2MedA, quantity: 1, unit_price: 10 }] },
+    S.b2Token
+  );
+  assert.equal(sale2.status, 201);
+  const queue3 = await api('GET', '/approvals/pending', undefined, S.token);
+  assert.ok(queue3.data.days.some((d) => d.branch_id === S.branchTwo && d.date === today));
+
+  // Rejecting with a reason shows in the branch's own list…
+  assert.equal(
+    (await api('POST', '/approvals/days/reject', { branch_id: S.branchTwo, date: today, note: 'Check the cash' }, S.token)).status,
+    200
+  );
+  const mine = await api('GET', '/approvals/my-branch', undefined, S.b2Token);
+  const rejected = mine.data.days.find((d) => d.date === today);
+  assert.ok(rejected);
+  assert.equal(rejected.review_status, 'rejected');
+  assert.equal(rejected.review_note, 'Check the cash');
+  // …and the branch can send it back.
+  assert.equal((await api('POST', '/approvals/days/resubmit', { branch_id: S.branchTwo, date: today }, S.b2Token)).status, 200);
+  const queue4 = await api('GET', '/approvals/pending', undefined, S.token);
+  assert.ok(queue4.data.days.some((d) => d.branch_id === S.branchTwo && d.date === today));
+
+  // Accept again, then resubmitting an accepted day is refused…
+  assert.equal((await api('POST', '/approvals/days/accept', { branch_id: S.branchTwo, date: today }, S.token)).status, 200);
+  const lateResubmit = await api('POST', '/approvals/days/resubmit', { branch_id: S.branchTwo, date: today }, S.b2Token);
+  assert.equal(lateResubmit.status, 400);
+  // …and a Main Branch day can never be reviewed.
+  const mainDay = await api('POST', '/approvals/days/accept', { branch_id: BRANCH_ID, date: today }, S.token);
+  assert.equal(mainDay.status, 400);
+});
+
+test('approvals: Main Branch entries stay immediate — nothing waits', async () => {
+  const med = await api('POST', '/medicines', medPayload('Main Med', 'MAINMED001', 12), S.token);
+  assert.equal(med.status, 201);
+  assert.equal(med.data.medicine.approval_status, 'approved');
+
+  const pur = await api(
+    'POST',
+    '/purchases',
+    {
+      invoice_no: 'MAIN-INV-1',
+      items: [{ medicine_id: med.data.medicine.id, batch_no: 'MAIN-B1', expiry_date: dayStr(365), quantity: 7, purchase_price: 6 }],
+    },
+    S.token
+  );
+  assert.equal(pur.status, 201);
+  assert.equal(pur.data.purchase.approval_status, 'approved');
+  assert.equal(await batchQty('MAIN-B1'), 7);
+
+  // The Main admin's own review list is empty: the Main Branch is the
+  // reviewer, never the reviewed.
+  const mine = await api('GET', '/approvals/my-branch', undefined, S.token);
+  assert.equal(mine.status, 200);
+  assert.deepEqual(mine.data.medicines, []);
+  assert.deepEqual(mine.data.purchases, []);
+  assert.deepEqual(mine.data.days, []);
+
+  // The notification counts count only the queue: the waiting medicine
+  // from the purchase test is still pending, nothing else is.
+  const counts = await api('GET', '/approvals/counts', undefined, S.token);
+  assert.equal(counts.status, 200);
+  assert.equal(counts.data.is_main_admin, true);
+  assert.equal(Number(counts.data.counts.medicines), 1); // B2 Waiting
+  assert.equal(Number(counts.data.counts.purchases), 0);
+  assert.equal(Number(counts.data.counts.days), 0);
+});
+
+test('branches: only the Main Branch admin can create, edit or delete a branch', async () => {
+  // An admin who works in Branch Two.
+  const created = await api(
+    'POST',
+    '/settings/users',
+    { full_name: 'Branch Two Admin', username: 'b2admin', password: 'admin123', role: 'admin', branch_id: S.branchTwo },
+    S.token
+  );
+  assert.equal(created.status, 201);
+  const login = await api('POST', '/auth/login', { username: 'b2admin', password: 'admin123' });
+  assert.equal(login.status, 200);
+  const b2Admin = login.data.token;
+
+  // Reading the list still works — the user form's branch dropdown
+  // needs it — but no change goes through from a child branch.
+  const list = await api('GET', '/branches', undefined, b2Admin);
+  assert.equal(list.status, 200);
+  const create = await api('POST', '/branches', { name: 'Sneaky Branch' }, b2Admin);
+  assert.equal(create.status, 403);
+  const update = await api('PUT', `/branches/${S.branchTwo}`, { name: 'Renamed' }, b2Admin);
+  assert.equal(update.status, 403);
+  const remove = await api('DELETE', `/branches/${S.branchTwo}`, undefined, b2Admin);
+  assert.equal(remove.status, 403);
+
+  // The Main admin still can: create and delete a temporary branch.
+  const temp = await api('POST', '/branches', { name: 'Temp Two' }, S.token);
+  assert.equal(temp.status, 201);
+  const del = await api('DELETE', `/branches/${temp.data.branch.id}`, undefined, S.token);
+  assert.equal(del.status, 200);
+  const list2 = await api('GET', '/branches', undefined, S.token);
+  assert.equal(list2.data.branches.length, 2);
+});
+
+test('settings: a child-branch admin sees and manages only their own branch users', async () => {
+  const login = await api('POST', '/auth/login', { username: 'b2admin', password: 'admin123' });
+  assert.equal(login.status, 200);
+  const b2Admin = login.data.token;
+
+  // The child admin's user list holds only Branch Two users…
+  const mine = await api('GET', '/settings/users', undefined, b2Admin);
+  assert.equal(mine.status, 200);
+  assert.ok(mine.data.users.length >= 3); // b2cashier, b2pharm, b2admin
+  assert.ok(mine.data.users.every((u) => u.branch_id === S.branchTwo));
+  // …while the Main admin still sees every branch.
+  const all = await api('GET', '/settings/users', undefined, S.token);
+  assert.ok(all.data.users.some((u) => u.branch_id === BRANCH_ID));
+  assert.ok(all.data.users.some((u) => u.branch_id === S.branchTwo));
+  const mainCashier = all.data.users.find((u) => u.username === 'testcashier');
+  assert.ok(mainCashier);
+
+  // Creating a user in the Main Branch is refused…
+  const cross = await api(
+    'POST',
+    '/settings/users',
+    { full_name: 'Sneaky', username: 'sneaky1', password: 'sneaky1', role: 'cashier', branch_id: BRANCH_ID },
+    b2Admin
+  );
+  assert.equal(cross.status, 403);
+  // …creating one at home works, and lands in the child branch.
+  const home = await api(
+    'POST',
+    '/settings/users',
+    { full_name: 'Branch Two Cashier 2', username: 'b2cashier2', password: 'cashier1', role: 'cashier' },
+    b2Admin
+  );
+  assert.equal(home.status, 201);
+  assert.equal(home.data.user.branch_id, S.branchTwo);
+
+  // Touching a Main Branch user is refused in every direction.
+  const deact = await api('PATCH', `/settings/users/${mainCashier.id}/active`, { is_active: false }, b2Admin);
+  assert.equal(deact.status, 403);
+  const reset = await api('POST', `/settings/users/${mainCashier.id}/reset-password`, { password: 'newpass1' }, b2Admin);
+  assert.equal(reset.status, 403);
+  const del = await api('DELETE', `/settings/users/${mainCashier.id}`, undefined, b2Admin);
+  assert.equal(del.status, 403);
+
+  // Managing an own-branch user still works (deactivate, then back).
+  const b2cashier = mine.data.users.find((u) => u.username === 'b2cashier');
+  assert.ok(b2cashier);
+  assert.equal((await api('PATCH', `/settings/users/${b2cashier.id}/active`, { is_active: false }, b2Admin)).status, 200);
+  assert.equal((await api('PATCH', `/settings/users/${b2cashier.id}/active`, { is_active: true }, b2Admin)).status, 200);
+});
+
+test('reports + audit: cross-branch views belong to the Main admin alone', async () => {
+  const login = await api('POST', '/auth/login', { username: 'b2admin', password: 'admin123' });
+  assert.equal(login.status, 200);
+  const b2Admin = login.data.token;
+
+  const central = await api('GET', '/reports/central', undefined, b2Admin);
+  assert.equal(central.status, 403);
+  const centralMain = await api('GET', '/reports/central', undefined, S.token);
+  assert.equal(centralMain.status, 200);
+
+  // The child admin's audit view holds only Branch Two entries (plus
+  // system rows with no branch) — never the Main Branch's.
+  const log = await api('GET', '/settings/audit-log?limit=200', undefined, b2Admin);
+  assert.equal(log.status, 200);
+  assert.ok(log.data.entries.length >= 1);
+  assert.ok(log.data.entries.every((e) => e.branch_name === 'Branch Two' || e.branch_name === null));
+  assert.ok(!log.data.entries.some((e) => e.branch_name === 'Test Branch'));
+
+  const logMain = await api('GET', '/settings/audit-log?limit=200', undefined, S.token);
+  assert.equal(logMain.status, 200);
+  assert.ok(logMain.data.entries.some((e) => e.branch_name === 'Test Branch'));
 });

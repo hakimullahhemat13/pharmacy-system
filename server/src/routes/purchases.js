@@ -9,6 +9,7 @@ const pool = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
 const { auditLog } = require('../audit');
 const { isDayClosed, todayStr, dayOf, dayClosedMessage } = require('../dayClose');
+const { getMainBranchId } = require('../mainBranch');
 
 const router = express.Router();
 
@@ -118,10 +119,18 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
       }
     }
 
+    // A purchase entered in a child branch waits for the Main Branch
+    // admin's approval: it is recorded, but its stock does NOT land
+    // until it is accepted. The batch rows are created with zero on
+    // hand and no ledger row, so every stock, expiry and report figure
+    // stays exactly as if the purchase had not happened yet.
+    const mainBranchId = await getMainBranchId(conn);
+    const approvalStatus = branchId === mainBranchId ? 'approved' : 'pending';
+
     const purchaseId = uuidv4();
     await conn.query(
-      'INSERT INTO purchases (id, branch_id, supplier_id, invoice_no, total_amount, paid_amount, created_by, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [purchaseId, branchId, supplierId, invoiceNo, totalAmount, paidAmount, userId, notes]
+      'INSERT INTO purchases (id, branch_id, supplier_id, invoice_no, total_amount, paid_amount, created_by, notes, approval_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [purchaseId, branchId, supplierId, invoiceNo, totalAmount, paidAmount, userId, notes, approvalStatus]
     );
 
     const savedItems = [];
@@ -132,15 +141,25 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
       const price = Number(it.purchase_price || 0);
 
       const [med] = await conn.query(
-        'SELECT id, name FROM medicines WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
+        'SELECT id, name, approval_status FROM medicines WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
         [medicineId, branchId]
       );
       if (med.length === 0) {
         await conn.rollback();
         return res.status(400).json({ status: 'error', message: `Medicine not found in this branch: ${medicineId}` });
       }
+      if (med[0].approval_status !== 'approved') {
+        await conn.rollback();
+        return res.status(400).json({
+          status: 'error',
+          message: `${med[0].name} is still waiting for approval — it can only be purchased once the Main Branch accepts it`,
+        });
+      }
 
-      // Same medicine + same batch number + same expiry = same batch: top it up.
+      // Same medicine + same batch number + same expiry = same batch.
+      // Approved: top it up and write the ledger row. Waiting: only
+      // record the batch identity (zero on hand, existing stock
+      // untouched) — the stock lands when the purchase is accepted.
       let batchId;
       const [batch] = await conn.query(
         'SELECT id FROM medicine_batches WHERE branch_id = ? AND medicine_id = ? AND batch_no = ? AND expiry_date = ? AND is_deleted = 0 LIMIT 1',
@@ -148,15 +167,17 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
       );
       if (batch.length > 0) {
         batchId = batch[0].id;
-        await conn.query(
-          'UPDATE medicine_batches SET quantity_on_hand = quantity_on_hand + ?, purchase_price = ? WHERE id = ?',
-          [qty, price, batchId]
-        );
+        if (approvalStatus === 'approved') {
+          await conn.query(
+            'UPDATE medicine_batches SET quantity_on_hand = quantity_on_hand + ?, purchase_price = ? WHERE id = ?',
+            [qty, price, batchId]
+          );
+        }
       } else {
         batchId = uuidv4();
         await conn.query(
           'INSERT INTO medicine_batches (id, branch_id, medicine_id, batch_no, expiry_date, purchase_price, quantity_on_hand) VALUES (?, ?, ?, ?, ?, ?, ?)',
-          [batchId, branchId, medicineId, batchNo, it.expiry_date, price, qty]
+          [batchId, branchId, medicineId, batchNo, it.expiry_date, price, approvalStatus === 'approved' ? qty : 0]
         );
       }
 
@@ -165,23 +186,29 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
         [uuidv4(), purchaseId, medicineId, batchId, qty, price]
       );
 
-      // Ledger row — the permanent record of this stock movement.
-      await conn.query(
-        "INSERT INTO stock_transactions (id, branch_id, medicine_id, batch_id, type, quantity_change, reference_id, created_by) VALUES (?, ?, ?, ?, 'purchase', ?, ?, ?)",
-        [uuidv4(), branchId, medicineId, batchId, qty, purchaseId, userId]
-      );
+      if (approvalStatus === 'approved') {
+        // Ledger row — the permanent record of this stock movement.
+        await conn.query(
+          "INSERT INTO stock_transactions (id, branch_id, medicine_id, batch_id, type, quantity_change, reference_id, created_by) VALUES (?, ?, ?, ?, 'purchase', ?, ?, ?)",
+          [uuidv4(), branchId, medicineId, batchId, qty, purchaseId, userId]
+        );
+      }
 
       savedItems.push({ medicine_id: medicineId, medicine_name: med[0].name, batch_id: batchId, batch_no: batchNo, expiry_date: it.expiry_date, quantity: qty, purchase_price: price });
     }
 
     await conn.commit();
     auditLog(req, 'purchase.created', 'purchases', purchaseId, {
-      summary: `Purchase ${invoiceNo}: ${totalAmount} AFN, ${paidAmount} AFN paid`,
+      summary:
+        approvalStatus === 'pending'
+          ? `Purchase ${invoiceNo} recorded, waiting for approval: ${totalAmount} AFN`
+          : `Purchase ${invoiceNo}: ${totalAmount} AFN, ${paidAmount} AFN paid`,
       invoice_no: invoiceNo, total_amount: totalAmount, paid_amount: paidAmount,
+      approval_status: approvalStatus,
     });
     return res.status(201).json({
       status: 'ok',
-      purchase: { id: purchaseId, supplier_id: supplierId, invoice_no: invoiceNo, total_amount: totalAmount, paid_amount: paidAmount, items: savedItems },
+      purchase: { id: purchaseId, supplier_id: supplierId, invoice_no: invoiceNo, total_amount: totalAmount, paid_amount: paidAmount, approval_status: approvalStatus, items: savedItems },
     });
   } catch (err) {
     try { await conn.rollback(); } catch (_) { /* already rolled back */ }
@@ -214,6 +241,7 @@ router.get('/', authRequired, async (req, res) => {
     }
     const [rows] = await pool.query(
       `SELECT p.id, p.supplier_id, p.invoice_no, p.purchase_date, p.total_amount, p.paid_amount, p.notes,
+              p.approval_status, p.rejection_note,
               s.name AS supplier_name,
               COALESCE(r.returned_total, 0) AS returned_total
        FROM purchases p
@@ -237,6 +265,7 @@ router.get('/:id', authRequired, async (req, res) => {
   try {
     const [head] = await pool.query(
       `SELECT p.id, p.supplier_id, p.invoice_no, p.purchase_date, p.total_amount, p.paid_amount, p.notes,
+              p.approval_status, p.rejection_note,
               s.name AS supplier_name
        FROM purchases p
        LEFT JOIN suppliers s ON s.id = p.supplier_id
@@ -301,12 +330,18 @@ router.post('/:id/return', authRequired, requireRole('admin', 'pharmacist'), asy
   try {
     await conn.beginTransaction();
     const [head] = await conn.query(
-      'SELECT id, invoice_no FROM purchases WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
+      'SELECT id, invoice_no, approval_status FROM purchases WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
       [req.params.id, branchId]
     );
     if (head.length === 0) {
       await conn.rollback();
       return res.status(404).json({ status: 'error', message: 'Purchase not found' });
+    }
+    // Nothing was ever stocked for a waiting purchase, so there is
+    // nothing to send back — it must be accepted first.
+    if (head[0].approval_status !== 'approved') {
+      await conn.rollback();
+      return res.status(400).json({ status: 'error', message: 'This purchase is still waiting for approval — nothing can be returned yet' });
     }
     let returnedTotal = 0;
     for (const it of wanted) {
@@ -432,17 +467,23 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
       return res.status(404).json({ status: 'error', message: 'Purchase not found' });
     }
     const purchase = head[0];
+    // A waiting or rejected purchase holds no stock and no money yet,
+    // so editing it moves nothing — a closed day must not block the
+    // branch from correcting it.
+    const pendingFlow = purchase.approval_status !== 'approved';
 
-    // Editing changes the purchase day's figures and writes ledger rows
-    // dated today — either day being closed blocks the edit.
-    const purchaseDay = dayOf(purchase.purchase_date);
-    const editDay = todayStr();
-    const editClosedDay = (await isDayClosed(conn, branchId, purchaseDay))
-      ? purchaseDay
-      : (await isDayClosed(conn, branchId, editDay)) ? editDay : null;
-    if (editClosedDay) {
-      await conn.rollback();
-      return res.status(400).json({ status: 'error', message: dayClosedMessage(editClosedDay) });
+    if (!pendingFlow) {
+      // Editing changes the purchase day's figures and writes ledger rows
+      // dated today — either day being closed blocks the edit.
+      const purchaseDay = dayOf(purchase.purchase_date);
+      const editDay = todayStr();
+      const editClosedDay = (await isDayClosed(conn, branchId, purchaseDay))
+        ? purchaseDay
+        : (await isDayClosed(conn, branchId, editDay)) ? editDay : null;
+      if (editClosedDay) {
+        await conn.rollback();
+        return res.status(400).json({ status: 'error', message: dayClosedMessage(editClosedDay) });
+      }
     }
 
     const supplierId = body.supplier_id ? String(body.supplier_id) : null;
@@ -470,6 +511,126 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
       return res.status(400).json({
         status: 'error',
         message: `Paid amount (${paidAmount}) is more than the new total (${newTotal}) — lower the paid amount`,
+      });
+    }
+
+    if (pendingFlow) {
+      // Waiting/rejected purchase: rewrite the items WITHOUT moving any
+      // stock — the batches stay at zero on hand and no ledger row is
+      // written. The stock lands only when the boss accepts the
+      // purchase. Medicines need not be approved here: the opening-stock
+      // purchase names a medicine that is itself still waiting, and the
+      // approval step is the final gate for both.
+      const [oldItems] = await conn.query(
+        `SELECT pi.id, pi.medicine_id, pi.batch_id, pi.quantity, pi.purchase_price,
+                b.batch_no, DATE_FORMAT(b.expiry_date, '%Y-%m-%d') AS expiry_date,
+                m.name AS medicine_name,
+                COALESCE(r.returned_qty, 0) AS returned_qty
+         FROM purchase_items pi
+         JOIN medicine_batches b ON b.id = pi.batch_id
+         JOIN medicines m ON m.id = pi.medicine_id
+         LEFT JOIN (
+           SELECT purchase_item_id, SUM(quantity) AS returned_qty
+           FROM purchase_returns WHERE is_deleted = 0 GROUP BY purchase_item_id
+         ) r ON r.purchase_item_id = pi.id
+         WHERE pi.purchase_id = ?`,
+        [purchase.id]
+      );
+      for (const [i, it] of items.entries()) {
+        const old = it.id ? oldItems.find((o) => o.id === String(it.id)) : null;
+        const changed = !old || old.expiry_date !== it.expiry_date;
+        if (changed && it.expiry_date < todayString()) {
+          await conn.rollback();
+          return res.status(400).json({
+            status: 'error',
+            message: `Item ${i + 1}: expiry_date is in the past — already-expired medicine cannot be recorded`,
+          });
+        }
+      }
+      const resolveBatch = async (medicineId, batchNo, expiry, price) => {
+        const [batch] = await conn.query(
+          'SELECT id FROM medicine_batches WHERE branch_id = ? AND medicine_id = ? AND batch_no = ? AND expiry_date = ? AND is_deleted = 0 LIMIT 1',
+          [branchId, medicineId, batchNo, expiry]
+        );
+        if (batch.length > 0) {
+          await conn.query('UPDATE medicine_batches SET purchase_price = ? WHERE id = ?', [price, batch[0].id]);
+          return batch[0].id;
+        }
+        const batchId = uuidv4();
+        await conn.query(
+          'INSERT INTO medicine_batches (id, branch_id, medicine_id, batch_no, expiry_date, purchase_price, quantity_on_hand) VALUES (?, ?, ?, ?, ?, ?, 0)',
+          [batchId, branchId, medicineId, batchNo, expiry, price]
+        );
+        return batchId;
+      };
+      const keptIds = new Set(items.filter((it) => it.id).map((it) => String(it.id)));
+      for (const old of oldItems) {
+        if (!keptIds.has(old.id)) {
+          if (Number(old.returned_qty) > 0) {
+            throw badRequest(
+              `Cannot remove ${old.medicine_name}: ${old.returned_qty} units were already returned to the supplier`
+            );
+          }
+          await conn.query('DELETE FROM purchase_items WHERE id = ?', [old.id]);
+        }
+      }
+      for (const it of items) {
+        const qty = Number(it.quantity);
+        const price = it.purchase_price === undefined || it.purchase_price === null ? 0 : Number(it.purchase_price);
+        const medId = String(it.medicine_id);
+        const batchNo = String(it.batch_no).trim();
+        const [med] = await conn.query(
+          'SELECT id FROM medicines WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
+          [medId, branchId]
+        );
+        if (med.length === 0) {
+          throw badRequest(`Medicine not found in this branch: ${medId}`);
+        }
+        const old = it.id ? oldItems.find((o) => o.id === String(it.id)) : null;
+        if (it.id && !old) {
+          throw badRequest('An item does not belong to this purchase');
+        }
+        if (old && old.medicine_id === medId && String(old.batch_no) === batchNo && String(old.expiry_date) === String(it.expiry_date)) {
+          await conn.query('UPDATE medicine_batches SET purchase_price = ? WHERE id = ?', [price, old.batch_id]);
+          await conn.query('UPDATE purchase_items SET quantity = ?, purchase_price = ? WHERE id = ?', [qty, price, old.id]);
+        } else {
+          if (old && Number(old.returned_qty) > 0) {
+            throw badRequest(
+              `Cannot move ${old.medicine_name} to another batch: ${old.returned_qty} units were already returned to the supplier`
+            );
+          }
+          const batchId = await resolveBatch(medId, batchNo, it.expiry_date, price);
+          if (old) {
+            await conn.query(
+              'UPDATE purchase_items SET medicine_id = ?, batch_id = ?, quantity = ?, purchase_price = ? WHERE id = ?',
+              [medId, batchId, qty, price, old.id]
+            );
+          } else {
+            await conn.query(
+              'INSERT INTO purchase_items (id, purchase_id, medicine_id, batch_id, quantity, purchase_price) VALUES (?, ?, ?, ?, ?, ?)',
+              [uuidv4(), purchase.id, medId, batchId, qty, price]
+            );
+          }
+        }
+      }
+      // Editing a REJECTED purchase is how the branch corrects it and
+      // sends it back: the save returns it to "pending".
+      const resubmitted = purchase.approval_status === 'rejected';
+      await conn.query(
+        `UPDATE purchases SET supplier_id = ?, invoice_no = ?, total_amount = ?, paid_amount = ?, notes = ?${resubmitted ? ", approval_status = 'pending', rejection_note = NULL" : ''} WHERE id = ?`,
+        [supplierId, invoiceNo, newTotal, paidAmount, notes, purchase.id]
+      );
+      await conn.commit();
+      auditLog(req, 'purchase.updated', 'purchases', purchase.id, {
+        summary: resubmitted
+          ? `Purchase ${invoiceNo} corrected and sent back for approval: total ${newTotal} AFN`
+          : `Purchase ${invoiceNo} edited: total ${newTotal} AFN, paid ${paidAmount} AFN`,
+        invoice_no: invoiceNo, total_amount: newTotal, paid_amount: paidAmount,
+        approval_status: resubmitted ? 'pending' : purchase.approval_status,
+      });
+      return res.json({
+        status: 'ok',
+        purchase: { id: purchase.id, supplier_id: supplierId, invoice_no: invoiceNo, total_amount: newTotal, paid_amount: paidAmount, approval_status: resubmitted ? 'pending' : purchase.approval_status },
       });
     }
 
@@ -569,11 +730,16 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
       const medId = String(it.medicine_id);
       const batchNo = String(it.batch_no).trim();
       const [med] = await conn.query(
-        'SELECT id, name FROM medicines WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
+        'SELECT id, name, approval_status FROM medicines WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
         [medId, branchId]
       );
       if (med.length === 0) {
         throw badRequest(`Medicine not found in this branch: ${medId}`);
+      }
+      if (med[0].approval_status !== 'approved') {
+        throw badRequest(
+          `${med[0].name} is still waiting for approval — it can only be purchased once the Main Branch accepts it`
+        );
       }
       const old = it.id ? oldItems.find((o) => o.id === String(it.id)) : null;
       if (it.id && !old) {
@@ -637,7 +803,7 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
     });
     return res.json({
       status: 'ok',
-      purchase: { id: purchase.id, supplier_id: supplierId, invoice_no: invoiceNo, total_amount: newTotal, paid_amount: paidAmount },
+      purchase: { id: purchase.id, supplier_id: supplierId, invoice_no: invoiceNo, total_amount: newTotal, paid_amount: paidAmount, approval_status: purchase.approval_status },
     });
   } catch (err) {
     try { await conn.rollback(); } catch (_) { /* already rolled back */ }
@@ -656,12 +822,25 @@ router.delete('/:id', authRequired, requireRole('admin', 'pharmacist'), async (r
   try {
     await conn.beginTransaction();
     const [head] = await conn.query(
-      'SELECT id, invoice_no, purchase_date FROM purchases WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
+      'SELECT id, invoice_no, purchase_date, approval_status FROM purchases WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
       [req.params.id, branchId]
     );
     if (head.length === 0) {
       await conn.rollback();
       return res.status(404).json({ status: 'error', message: 'Purchase not found' });
+    }
+
+    // A waiting or rejected purchase holds no stock, so deleting it is
+    // just the soft delete — no reversal, and no day-close block.
+    if (head[0].approval_status !== 'approved') {
+      await conn.query('UPDATE purchases SET is_deleted = 1 WHERE id = ?', [req.params.id]);
+      await conn.commit();
+      auditLog(req, 'purchase.deleted', 'purchases', req.params.id, {
+        summary: `Waiting purchase ${head[0].invoice_no} deleted before approval`,
+        invoice_no: head[0].invoice_no,
+        approval_status: head[0].approval_status,
+      });
+      return res.json({ status: 'ok' });
     }
 
     // Deleting removes the purchase from its own day's figures and

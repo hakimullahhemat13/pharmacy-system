@@ -7,11 +7,12 @@ const { v4: uuidv4 } = require('uuid');
 const pool = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
 const { auditLog } = require('../audit');
+const { getMainBranchId } = require('../mainBranch');
 
 const router = express.Router();
 
 const COLUMNS =
-  'id, branch_id, name, generic_name, company, barcode, unit, category, sale_price, min_stock, warn_months, created_at, updated_at';
+  'id, branch_id, name, generic_name, company, barcode, unit, category, sale_price, min_stock, warn_months, approval_status, rejection_note, created_at, updated_at';
 
 // POST /api/medicines  (admin or pharmacist)
 // Body: { name, generic_name?, company?, barcode?, unit?, category?, sale_price?, min_stock? }
@@ -135,35 +136,48 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
       }
     }
 
+    // A medicine entered in a child branch waits for the Main Branch
+    // admin's approval before it can be sold. The Main Branch itself is
+    // the reviewer, so its medicines are approved at once.
+    const mainBranchId = await getMainBranchId(conn);
+    const approvalStatus = branchId === mainBranchId ? 'approved' : 'pending';
+
     const id = uuidv4();
     await conn.query(
-      'INSERT INTO medicines (id, branch_id, name, generic_name, company, barcode, unit, category, sale_price, min_stock, warn_months) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [id, branchId, name, genericName, company, barcode, unit, category, salePrice, minStock, warnMonths]
+      'INSERT INTO medicines (id, branch_id, name, generic_name, company, barcode, unit, category, sale_price, min_stock, warn_months, approval_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, branchId, name, genericName, company, barcode, unit, category, salePrice, minStock, warnMonths, approvalStatus]
     );
 
     let initialStock = null;
     if (initData) {
+      // A waiting medicine's opening stock waits with it: the batch is
+      // recorded with zero on hand and no ledger row, and the OPEN
+      // purchase stays pending. Approving the medicine and then the
+      // purchase lands the stock — exactly like a normal purchase.
+      const batchQty = approvalStatus === 'approved' ? initData.quantity : 0;
       const batchId = uuidv4();
       await conn.query(
         'INSERT INTO medicine_batches (id, branch_id, medicine_id, batch_no, expiry_date, purchase_price, quantity_on_hand) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [batchId, branchId, id, initData.batch_no, initData.expiry_date, initData.purchase_price, initData.quantity]
+        [batchId, branchId, id, initData.batch_no, initData.expiry_date, initData.purchase_price, batchQty]
       );
       const [cntRows] = await conn.query('SELECT COUNT(*) AS c FROM purchases WHERE branch_id = ?', [branchId]);
       const invoiceNo = `OPEN-${String(Number(cntRows[0].c) + 1).padStart(4, '0')}`;
       const total = initData.quantity * initData.purchase_price;
       const purchaseId = uuidv4();
       await conn.query(
-        'INSERT INTO purchases (id, branch_id, supplier_id, invoice_no, total_amount, paid_amount, created_by, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [purchaseId, branchId, initData.supplier_id, invoiceNo, total, total, req.user.sub, 'Opening stock']
+        'INSERT INTO purchases (id, branch_id, supplier_id, invoice_no, total_amount, paid_amount, created_by, notes, approval_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [purchaseId, branchId, initData.supplier_id, invoiceNo, total, total, req.user.sub, 'Opening stock', approvalStatus]
       );
       await conn.query(
         'INSERT INTO purchase_items (id, purchase_id, medicine_id, batch_id, quantity, purchase_price) VALUES (?, ?, ?, ?, ?, ?)',
         [uuidv4(), purchaseId, id, batchId, initData.quantity, initData.purchase_price]
       );
-      await conn.query(
-        "INSERT INTO stock_transactions (id, branch_id, medicine_id, batch_id, type, quantity_change, reference_id, created_by) VALUES (?, ?, ?, ?, 'purchase', ?, ?, ?)",
-        [uuidv4(), branchId, id, batchId, initData.quantity, purchaseId, req.user.sub]
-      );
+      if (approvalStatus === 'approved') {
+        await conn.query(
+          "INSERT INTO stock_transactions (id, branch_id, medicine_id, batch_id, type, quantity_change, reference_id, created_by) VALUES (?, ?, ?, ?, 'purchase', ?, ?, ?)",
+          [uuidv4(), branchId, id, batchId, initData.quantity, purchaseId, req.user.sub]
+        );
+      }
       initialStock = {
         quantity: initData.quantity,
         batch_no: initData.batch_no,
@@ -176,8 +190,12 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
     await conn.commit();
     const [rows] = await pool.query(`SELECT ${COLUMNS} FROM medicines WHERE id = ? LIMIT 1`, [id]);
     auditLog(req, 'medicine.created', 'medicines', id, {
-      summary: `Medicine added: ${rows[0].name}`,
+      summary:
+        rows[0].approval_status === 'pending'
+          ? `Medicine added, waiting for approval: ${rows[0].name}`
+          : `Medicine added: ${rows[0].name}`,
       name: rows[0].name,
+      approval_status: rows[0].approval_status,
     });
     return res.status(201).json({ status: 'ok', medicine: rows[0], initial_stock: initialStock });
   } catch (err) {
@@ -238,7 +256,7 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
 
   try {
     const [existing] = await pool.query(
-      'SELECT id FROM medicines WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
+      'SELECT id, approval_status FROM medicines WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
       [req.params.id, branchId]
     );
     if (!existing[0]) {
@@ -254,16 +272,24 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
         message: `A medicine with this barcode already exists: ${dup[0].name}`,
       });
     }
+    // Editing a REJECTED medicine is how the branch corrects it and
+    // sends it back: the save returns it to "pending" and clears the
+    // boss's note. Waiting and approved medicines keep their state.
+    const resubmitted = existing[0].approval_status === 'rejected';
     await pool.query(
       `UPDATE medicines
           SET name = ?, generic_name = ?, company = ?, barcode = ?, unit = ?, category = ?, sale_price = ?, min_stock = ?, warn_months = ?
+            ${resubmitted ? ", approval_status = 'pending', rejection_note = NULL" : ''}
         WHERE id = ? AND branch_id = ?`,
       [name, genericName, company, barcode, unit, category, salePrice, minStock, warnMonths, req.params.id, branchId]
     );
     const [rows] = await pool.query(`SELECT ${COLUMNS} FROM medicines WHERE id = ?`, [req.params.id]);
     auditLog(req, 'medicine.updated', 'medicines', req.params.id, {
-      summary: `Medicine edited: ${rows[0].name}`,
+      summary: resubmitted
+        ? `Medicine corrected and sent back for approval: ${rows[0].name}`
+        : `Medicine edited: ${rows[0].name}`,
       name: rows[0].name,
+      approval_status: rows[0].approval_status,
     });
     return res.json({ status: 'ok', medicine: rows[0] });
   } catch (err) {

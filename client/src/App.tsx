@@ -44,6 +44,8 @@ interface StockRow {
   sale_price: number | string;
   min_stock: number;
   warn_months: number;
+  approval_status?: string;
+  rejection_note?: string | null;
   created_at: string;
   total_quantity: number;
   batch_count: number;
@@ -136,6 +138,7 @@ interface SaleRow {
 interface MedOption {
   id: string;
   name: string;
+  approval_status?: string;
 }
 
 interface Supplier {
@@ -171,6 +174,76 @@ interface PurchaseRow {
   paid_amount: number | string;
   supplier_name: string | null;
   returned_total: number | string;
+  approval_status?: string;
+  rejection_note?: string | null;
+}
+
+interface ApprovalCounts {
+  medicines: number;
+  purchases: number;
+  days: number;
+  total: number;
+}
+
+interface PendingMedicine {
+  id: string;
+  branch_id: string;
+  branch_name: string;
+  name: string;
+  generic_name: string | null;
+  company: string | null;
+  barcode: string | null;
+  unit: string;
+  category: string | null;
+  sale_price: number | string;
+  min_stock: number;
+  warn_months: number;
+  created_at: string;
+}
+
+interface PendingPurchaseItem {
+  medicine_name: string;
+  batch_no: string;
+  expiry_date: string;
+  quantity: number;
+  purchase_price: number | string;
+}
+
+interface PendingPurchase {
+  id: string;
+  branch_id: string;
+  branch_name: string;
+  invoice_no: string | null;
+  purchase_date: string;
+  total_amount: number | string;
+  paid_amount: number | string;
+  notes: string | null;
+  supplier_name: string | null;
+  items: PendingPurchaseItem[];
+}
+
+interface DayReviewSummary {
+  sales_count: number;
+  items_sold: number;
+  revenue: number;
+  cost_total: number;
+  profit: number;
+  returns_total: number;
+  returned_items: number;
+  purchase_bills: number;
+  items_bought: number;
+  purchase_cost: number;
+}
+
+interface DayReviewRow {
+  branch_id: string;
+  branch_name: string;
+  date: string;
+  review_status: 'pending' | 'accepted' | 'rejected';
+  review_note: string | null;
+  reviewed_at: string | null;
+  reviewed_by_name: string | null;
+  summary: DayReviewSummary;
 }
 
 interface PurchaseDetailItem {
@@ -255,7 +328,7 @@ interface PurchRow {
   net: number;
 }
 
-type Page = 'dashboard' | 'medicines' | 'expiry' | 'sales' | 'purchases' | 'suppliers' | 'reports' | 'customers' | 'backup' | 'settings';
+type Page = 'dashboard' | 'medicines' | 'expiry' | 'sales' | 'purchases' | 'suppliers' | 'reports' | 'customers' | 'backup' | 'settings' | 'approvals';
 
 const USER_KEY = 'pharmacy_user';
 const LANG_KEY = 'pharmacy_lang';
@@ -298,6 +371,23 @@ export default function App() {
   const [lang, setLangState] = useState<Lang>(loadLang);
   const [page, setPage] = useState<Page>('dashboard');
   const [prefillBarcode, setPrefillBarcode] = useState('');
+  // The approval notification: whether this user is the Main Branch
+  // admin, and how many items wait in the queue. Only admins load it;
+  // a failed load simply hides the badge until approvals are installed.
+  const [approvalInfo, setApprovalInfo] = useState<{ isMainAdmin: boolean; counts: ApprovalCounts } | null>(null);
+  const loadApprovalInfo = async () => {
+    try {
+      const data = await api.get('/approvals/counts');
+      setApprovalInfo({ isMainAdmin: !!data.is_main_admin, counts: data.counts as ApprovalCounts });
+    } catch {
+      setApprovalInfo(null);
+    }
+  };
+  useEffect(() => {
+    if (user && user.role === 'admin') loadApprovalInfo();
+    else setApprovalInfo(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
   // From the till: a scanned barcode the system does not know opens the
   // Medicines page with the add form already carrying that barcode.
   const goAddMedicine = (barcode: string) => {
@@ -345,7 +435,7 @@ export default function App() {
       ? ['dashboard', 'sales', 'customers', 'settings', 'backup']
       : user.role === 'pharmacist'
         ? ['dashboard', 'medicines', 'expiry', 'sales', 'purchases', 'suppliers', 'reports', 'customers', 'settings', 'backup']
-        : ['dashboard', 'medicines', 'expiry', 'sales', 'purchases', 'suppliers', 'reports', 'customers', 'settings', 'backup'];
+        : ['dashboard', 'medicines', 'expiry', 'sales', 'purchases', 'suppliers', 'reports', 'customers', 'settings', 'backup', 'approvals'];
   // Menu order: daily work first, then stock, buying, people, analysis,
   // and the system sections (backup, settings) last.
   const allMenu: { key: Page; label: string; icon: string }[] = [
@@ -357,10 +447,15 @@ export default function App() {
     { key: 'suppliers', label: t(lang, 'suppliers'), icon: '🚚' },
     { key: 'customers', label: t(lang, 'customers'), icon: '👥' },
     { key: 'reports', label: t(lang, 'reports'), icon: '📊' },
+    { key: 'approvals', label: t(lang, 'approvals'), icon: '🔔' },
     { key: 'backup', label: t(lang, 'backup'), icon: '💾' },
     { key: 'settings', label: t(lang, 'settings'), icon: '⚙️' },
   ];
-  const menu = allMenu.filter((m) => allowedPages.includes(m.key));
+  // The Approvals section is the Main Branch admin's alone — the menu
+  // item appears only for that user (the server enforces the same rule).
+  const menu = allMenu.filter(
+    (m) => allowedPages.includes(m.key) && (m.key !== 'approvals' || approvalInfo?.isMainAdmin)
+  );
   const visiblePage = allowedPages.includes(page) ? page : 'dashboard';
 
   return (
@@ -375,6 +470,9 @@ export default function App() {
           >
             <span className="nav-icon">{m.icon}</span>
             {m.label}
+            {m.key === 'approvals' && approvalInfo && approvalInfo.counts.total > 0 && (
+              <span className="menu-badge">{approvalInfo.counts.total}</span>
+            )}
           </button>
         ))}
         <div className="spacer" />
@@ -388,7 +486,8 @@ export default function App() {
         </button>
       </aside>
       <main className="main">
-        {visiblePage === 'dashboard' && <Dashboard lang={lang} userName={user.full_name} role={user.role} onNavigate={setPage} />}
+        {visiblePage === 'dashboard' && <Dashboard lang={lang} userName={user.full_name} role={user.role} onNavigate={setPage} approvalInfo={approvalInfo} />}
+        {visiblePage === 'approvals' && <ApprovalsPage lang={lang} onChanged={loadApprovalInfo} />}
         {visiblePage === 'medicines' && <Medicines lang={lang} prefillBarcode={prefillBarcode} onPrefillConsumed={() => setPrefillBarcode('')} />}
         {visiblePage === 'expiry' && <ExpiryPage lang={lang} />}
         {visiblePage === 'sales' && <SalesPage lang={lang} role={user.role} onAddMedicine={goAddMedicine} />}
@@ -397,8 +496,8 @@ export default function App() {
         {visiblePage === 'reports' && <ReportsPage lang={lang} role={user.role} />}
         {visiblePage === 'customers' && <CustomersPage lang={lang} role={user.role} />}
         {visiblePage === 'backup' && <BackupPage lang={lang} isAdmin={user.role === 'admin'} onLogout={logout} />}
-        {visiblePage === 'settings' && <SettingsPage lang={lang} user={user} setLang={setLang} />}
-        {page !== 'dashboard' && page !== 'medicines' && page !== 'expiry' && page !== 'sales' && page !== 'purchases' && page !== 'suppliers' && page !== 'reports' && page !== 'customers' && page !== 'backup' && page !== 'settings' && (
+        {visiblePage === 'settings' && <SettingsPage lang={lang} user={user} setLang={setLang} isMainAdmin={approvalInfo?.isMainAdmin ?? false} />}
+        {page !== 'dashboard' && page !== 'medicines' && page !== 'expiry' && page !== 'sales' && page !== 'purchases' && page !== 'suppliers' && page !== 'reports' && page !== 'customers' && page !== 'backup' && page !== 'settings' && page !== 'approvals' && (
           <>
             <h2>{menu.find((m) => m.key === page)?.label}</h2>
             <div className="panel">
@@ -577,11 +676,13 @@ function Dashboard({
   userName,
   role,
   onNavigate,
+  approvalInfo,
 }: {
   lang: Lang;
   userName: string;
   role: string;
   onNavigate: (p: Page) => void;
+  approvalInfo: { isMainAdmin: boolean; counts: ApprovalCounts } | null;
 }) {
   // A cashier sees their own sales only — no profit, no stock value, no
   // chart, and no shortcuts into sections they cannot open.
@@ -592,6 +693,17 @@ function Dashboard({
   const [weekDays, setWeekDays] = useState<{ label: string; revenue: number; profit: number }[]>([]);
   const [stockTotals, setStockTotals] = useState<{ cost_total: number; sale_value: number } | null>(null);
   const [recentBills, setRecentBills] = useState<SaleRow[]>([]);
+  const [central, setCentral] = useState<{
+    branches: { id: string; name: string; closed: boolean; summary: Summary }[];
+    totals: Summary;
+  } | null>(null);
+  // A child branch's review state: entries the boss sent back for
+  // correction, and the branch's recent days with their review states.
+  const [myBranch, setMyBranch] = useState<{
+    medicines: { id: string; name: string; rejection_note: string | null }[];
+    purchases: { id: string; invoice_no: string | null; rejection_note: string | null }[];
+    days: DayReviewRow[];
+  } | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -614,10 +726,11 @@ function Dashboard({
       // the rest of the dashboard still shows.
       try {
         const wDays = workWeekDays();
-        const [range, sv, recent] = await Promise.all([
+        const [range, sv, recent, centralRes] = await Promise.all([
           api.get(`/reports/range?from=${wDays[0]}&to=${wDays[wDays.length - 1]}`).catch(() => null),
           api.get('/reports/stock-value').catch(() => null),
           api.get('/sales').catch(() => null),
+          role === 'admin' ? api.get('/reports/central').catch(() => null) : Promise.resolve(null),
         ]);
         if (!alive) return;
         if (range && Array.isArray(range.days)) {
@@ -647,6 +760,17 @@ function Dashboard({
         if (recent && Array.isArray(recent.sales)) {
           setRecentBills((recent.sales as SaleRow[]).slice(0, 5));
         }
+        if (centralRes && Array.isArray(centralRes.branches) && centralRes.totals) {
+          setCentral({
+            branches: centralRes.branches as {
+              id: string;
+              name: string;
+              closed: boolean;
+              summary: Summary;
+            }[],
+            totals: centralRes.totals as Summary,
+          });
+        }
       } catch {
         // Extras stay hidden; the core dashboard already rendered.
       }
@@ -655,6 +779,30 @@ function Dashboard({
       alive = false;
     };
   }, []);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .get('/approvals/my-branch')
+      .then((data) => {
+        if (alive) setMyBranch(data as typeof myBranch);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const resubmitDay = async (branchId: string, date: string) => {
+    try {
+      await api.post('/approvals/days/resubmit', { branch_id: branchId, date });
+      const data = await api.get('/approvals/my-branch');
+      setMyBranch(data as typeof myBranch);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
+  };
 
   const lowStockRows = stock
     .filter((s) => s.low_stock)
@@ -706,6 +854,112 @@ function Dashboard({
           </>
         )}
       </div>
+
+      {approvalInfo?.isMainAdmin && approvalInfo.counts.total > 0 && (
+        <div className="panel approval-notice">
+          <h3>
+            🔔 {t(lang, 'approvals')} <span className="count-badge warn">{approvalInfo.counts.total}</span>
+          </h3>
+          <p className="muted" style={{ fontSize: 15 }}>
+            {t(lang, 'pendingMedicines')}: {fmt(approvalInfo.counts.medicines)} ·{' '}
+            {t(lang, 'pendingPurchases')}: {fmt(approvalInfo.counts.purchases)} ·{' '}
+            {t(lang, 'pendingDays')}: {fmt(approvalInfo.counts.days)}
+          </p>
+          <button className="btn-primary" style={{ width: 'auto', marginTop: 0 }} onClick={() => onNavigate('approvals')}>
+            {t(lang, 'viewApprovals')}
+          </button>
+        </div>
+      )}
+
+      {myBranch && (myBranch.medicines.length > 0 || myBranch.purchases.length > 0 || myBranch.days.length > 0) && (
+        <div className="panel">
+          <h3>🔔 {t(lang, 'myBranchReview')}</h3>
+          {(myBranch.medicines.length > 0 || myBranch.purchases.length > 0) && (
+            <>
+              <p style={{ fontWeight: 700, color: '#b91c1c' }}>{t(lang, 'rejectedNeedsFix')}</p>
+              <ul style={{ marginTop: 0 }}>
+                {myBranch.medicines.map((m) => (
+                  <li key={`m-${m.id}`}>
+                    💊 {m.name}
+                    {m.rejection_note && (
+                      <span className="note-text"> — {t(lang, 'reviewNote')}: {m.rejection_note}</span>
+                    )}
+                    {!isCashier && (
+                      <>
+                        {' '}
+                        <button className="link-btn" onClick={() => onNavigate('medicines')}>
+                          {t(lang, 'edit')}
+                        </button>
+                      </>
+                    )}
+                  </li>
+                ))}
+                {myBranch.purchases.map((p) => (
+                  <li key={`p-${p.id}`}>
+                    📦 {p.invoice_no || '—'}
+                    {p.rejection_note && (
+                      <span className="note-text"> — {t(lang, 'reviewNote')}: {p.rejection_note}</span>
+                    )}
+                    {!isCashier && (
+                      <>
+                        {' '}
+                        <button className="link-btn" onClick={() => onNavigate('purchases')}>
+                          {t(lang, 'edit')}
+                        </button>
+                      </>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          {myBranch.days.length > 0 && (
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>{t(lang, 'date')}</th>
+                    <th>{t(lang, 'itemsSold')}</th>
+                    <th>{t(lang, 'itemsBought')}</th>
+                    <th>{t(lang, 'revenue')}</th>
+                    <th>{t(lang, 'profit')}</th>
+                    <th>{t(lang, 'reviewNote')}</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {myBranch.days.map((d) => (
+                    <tr key={d.date}>
+                      <td>{d.date}</td>
+                      <td>{fmt(d.summary.items_sold)}</td>
+                      <td>{fmt(d.summary.items_bought)}</td>
+                      <td>{fmt(d.summary.revenue)}</td>
+                      <td style={d.summary.profit < 0 ? { color: '#dc2626' } : undefined}>{fmt(d.summary.profit)}</td>
+                      <td>
+                        {d.review_status === 'accepted' ? (
+                          <span className="badge ok">{t(lang, 'dayAccepted')}</span>
+                        ) : d.review_status === 'rejected' ? (
+                          <span className="badge expired">{t(lang, 'rejectedLabel')}</span>
+                        ) : (
+                          <span className="badge warning">{t(lang, 'dayPending')}</span>
+                        )}
+                        {d.review_note && <div className="note-text">{d.review_note}</div>}
+                      </td>
+                      <td>
+                        {d.review_status === 'rejected' && (
+                          <button className="btn small" onClick={() => resubmitDay(d.branch_id, d.date)}>
+                            {t(lang, 'resubmit')}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {summary && (
         <div className="cards dash-cards">
@@ -770,6 +1024,53 @@ function Dashboard({
         <div className="panel">
           <h3>📊 {t(lang, 'thisWeek')}</h3>
           <BarChart points={weekDays} revLabel={t(lang, 'revenue')} profitLabel={t(lang, 'profit')} />
+        </div>
+      )}
+
+      {role === 'admin' && approvalInfo?.isMainAdmin && central && central.branches.length > 1 && (
+        <div className="panel">
+          <h3>🏥 {t(lang, 'centralDashboard')}</h3>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>{t(lang, 'branchCol')}</th>
+                  <th>{t(lang, 'todayBills')}</th>
+                  <th>{t(lang, 'revenue')}</th>
+                  <th>{t(lang, 'profit')}</th>
+                  <th>{t(lang, 'dayClose')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {central.branches.map((b) => (
+                  <tr key={b.id}>
+                    <td>{b.name}</td>
+                    <td>{fmt(b.summary.sales_count)}</td>
+                    <td>{fmt(b.summary.revenue)}</td>
+                    <td style={b.summary.profit < 0 ? { color: '#dc2626' } : undefined}>
+                      {fmt(b.summary.profit)}
+                    </td>
+                    <td>
+                      {b.closed ? (
+                        <span className="badge expired">{t(lang, 'dayCloseClosed')}</span>
+                      ) : (
+                        <span className="badge warning">{t(lang, 'dayCloseOpen')}</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                <tr style={{ fontWeight: 700 }}>
+                  <td>{t(lang, 'total')}</td>
+                  <td>{fmt(central.totals.sales_count)}</td>
+                  <td>{fmt(central.totals.revenue)}</td>
+                  <td style={central.totals.profit < 0 ? { color: '#dc2626' } : undefined}>
+                    {fmt(central.totals.profit)}
+                  </td>
+                  <td></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -1643,12 +1944,13 @@ function Medicines({ lang, prefillBarcode, onPrefillConsumed }: { lang: Lang; pr
       };
       if (editingId) {
         // Correcting an existing medicine — details only, stock untouched.
-        await api.put(`/medicines/${editingId}`, payload);
-        setMsg(t(lang, 'medicineUpdated'));
+        const res = await api.put(`/medicines/${editingId}`, payload);
+        // Editing a rejected medicine sends it back for approval.
+        setMsg(t(lang, res.medicine?.approval_status === 'pending' ? 'resubmittedMsg' : 'medicineUpdated'));
         setEditingId(null);
         setFormOpen(false);
       } else {
-        await api.post('/medicines', {
+        const res = await api.post('/medicines', {
           ...payload,
           initial_stock:
             initQty > 0
@@ -1661,7 +1963,8 @@ function Medicines({ lang, prefillBarcode, onPrefillConsumed }: { lang: Lang; pr
                 }
               : undefined,
         });
-        setMsg(t(lang, 'added'));
+        // In a child branch a new medicine waits for the Main Branch.
+        setMsg(t(lang, res.medicine?.approval_status === 'pending' ? 'sentForApproval' : 'added'));
       }
       setForm(blankForm);
       await load();
@@ -1877,6 +2180,15 @@ function Medicines({ lang, prefillBarcode, onPrefillConsumed }: { lang: Lang; pr
                       {r.generic_name || '—'}
                     </div>
                     {r.low_stock && <span className="badge low">{t(lang, 'lowBadge')}</span>}
+                    {r.approval_status === 'pending' && (
+                      <span className="badge warning">{t(lang, 'pendingApproval')}</span>
+                    )}
+                    {r.approval_status === 'rejected' && (
+                      <>
+                        <span className="badge expired">{t(lang, 'rejectedLabel')}</span>
+                        {r.rejection_note && <div className="note-text">{r.rejection_note}</div>}
+                      </>
+                    )}
                   </td>
                   <td>{r.company || '—'}</td>
                   <td>{r.barcode || '—'}</td>
@@ -2033,9 +2345,14 @@ function SalesPage({ lang, role, onAddMedicine }: { lang: Lang; role: string; on
   const results = q
     ? stock.filter(
         (r) =>
-          r.name.toLowerCase().includes(q) ||
-          (r.generic_name || '').toLowerCase().includes(q) ||
-          (r.barcode || '').toLowerCase().includes(q)
+          // Waiting or rejected medicines are not sellable yet. The
+          // checks are written so an old server without the field
+          // still shows the medicine.
+          r.approval_status !== 'pending' &&
+          r.approval_status !== 'rejected' &&
+          (r.name.toLowerCase().includes(q) ||
+            (r.generic_name || '').toLowerCase().includes(q) ||
+            (r.barcode || '').toLowerCase().includes(q))
       )
     : [];
   // A scanned code the system does not know: 8+ digits with no match.
@@ -3262,6 +3579,12 @@ function SuppliersPage({ lang }: { lang: Lang }) {
                       {Number(p.returned_total || 0) > 0 && (
                         <span className="badge warning">↩️ {t(lang, 'returnedPartial')}</span>
                       )}
+                      {p.approval_status === 'pending' && (
+                        <span className="badge warning">{t(lang, 'pendingApproval')}</span>
+                      )}
+                      {p.approval_status === 'rejected' && (
+                        <span className="badge expired">{t(lang, 'rejectedLabel')}</span>
+                      )}
                     </td>
                     <td>{String(p.purchase_date).slice(0, 10)}</td>
                     <td>{fmt(netP)}</td>
@@ -3317,6 +3640,8 @@ function PurchasesPage({ lang }: { lang: Lang }) {
   const [retBusy, setRetBusy] = useState(false);
   const [dupWarn, setDupWarn] = useState(false);
   const [supFormOpen, setSupFormOpen] = useState(false);
+  // The boss's reason, shown while a rejected purchase is being fixed.
+  const [editNote, setEditNote] = useState('');
 
   const loadSuppliers = async () => {
     const data = await api.get('/suppliers');
@@ -3348,6 +3673,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
     setSupplierId('');
     setEditingId('');
     setDupWarn(false);
+    setEditNote('');
   };
 
   const startEdit = async (p: PurchaseRow) => {
@@ -3384,6 +3710,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
         }))
       );
       setEditingId(p.id);
+      setEditNote(p.rejection_note || '');
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err) {
       setListError(err instanceof Error ? err.message : 'Error');
@@ -3541,15 +3868,25 @@ function PurchasesPage({ lang }: { lang: Lang }) {
       };
       if (editingId) {
         const data = await api.put(`/purchases/${editingId}`, payload);
-        setMsg(
-          `✅ ${t(lang, 'purchaseUpdated')}: ${data.purchase.invoice_no || ''} — ${fmt(Number(data.purchase.total_amount))} ${t(lang, 'currency')}`
-        );
+        // A corrected rejected purchase goes back to the boss.
+        if (data.purchase.approval_status === 'pending') {
+          setMsg(t(lang, 'resubmittedMsg'));
+        } else {
+          setMsg(
+            `✅ ${t(lang, 'purchaseUpdated')}: ${data.purchase.invoice_no || ''} — ${fmt(Number(data.purchase.total_amount))} ${t(lang, 'currency')}`
+          );
+        }
         resetForm();
       } else {
         const data = await api.post('/purchases', payload);
-        setMsg(
-          `✅ ${t(lang, 'purchaseDone')}: ${data.purchase.invoice_no || ''} — ${fmt(Number(data.purchase.total_amount))} ${t(lang, 'currency')}`
-        );
+        // In a child branch a purchase waits for the Main Branch.
+        if (data.purchase.approval_status === 'pending') {
+          setMsg(t(lang, 'sentForApproval'));
+        } else {
+          setMsg(
+            `✅ ${t(lang, 'purchaseDone')}: ${data.purchase.invoice_no || ''} — ${fmt(Number(data.purchase.total_amount))} ${t(lang, 'currency')}`
+          );
+        }
         setRows([{ medicine_id: '', batch_no: '', expiry_date: '', quantity: '1', purchase_price: '' }]);
         setInvoiceNo('');
         setPaid('');
@@ -3613,6 +3950,11 @@ function PurchasesPage({ lang }: { lang: Lang }) {
 
       <div className="panel">
         <h3>📦 {editingId ? t(lang, 'editPurchase') : t(lang, 'newPurchase')}</h3>
+        {editNote && (
+          <p className="note-text" style={{ fontSize: 14 }}>
+            {t(lang, 'reviewNote')}: {editNote}
+          </p>
+        )}
         <form onSubmit={submit}>
           <div className="form-grid">
             <div className="field">
@@ -3677,11 +4019,17 @@ function PurchasesPage({ lang }: { lang: Lang }) {
                       onChange={(e) => setRow(idx, 'medicine_id', e.target.value)}
                     >
                       <option value="">{t(lang, 'selectMedicine')}</option>
-                      {meds.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.name}
-                        </option>
-                      ))}
+                      {meds
+                        .filter(
+                          (m) =>
+                            (m.approval_status !== 'pending' && m.approval_status !== 'rejected') ||
+                            rows.some((r) => r.medicine_id === m.id)
+                        )
+                        .map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name}
+                          </option>
+                        ))}
                     </select>
                   </td>
                   <td>
@@ -3859,6 +4207,15 @@ function PurchasesPage({ lang }: { lang: Lang }) {
                           ) : (
                             <span className="badge warning">↩️ {t(lang, 'returnedPartial')}</span>
                           ))}
+                        {p.approval_status === 'pending' && (
+                          <span className="badge warning">{t(lang, 'pendingApproval')}</span>
+                        )}
+                        {p.approval_status === 'rejected' && (
+                          <span className="badge expired">{t(lang, 'rejectedLabel')}</span>
+                        )}
+                        {p.approval_status === 'rejected' && p.rejection_note && (
+                          <div className="note-text">{p.rejection_note}</div>
+                        )}
                       </td>
                       <td>{p.supplier_name || '—'}</td>
                       <td>{String(p.purchase_date).slice(0, 10)}</td>
@@ -3902,8 +4259,19 @@ function PurchasesPage({ lang }: { lang: Lang }) {
         <div className="panel">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <h3 style={{ margin: 0 }}>
-              {t(lang, 'purchaseDetails')}: {detail.invoice_no || '—'} · {detail.supplier_name || '—'}
+              {t(lang, 'purchaseDetails')}: {detail.invoice_no || '—'} · {detail.supplier_name || '—'}{' '}
+              {detail.approval_status === 'pending' && (
+                <span className="badge warning">{t(lang, 'pendingApproval')}</span>
+              )}
+              {detail.approval_status === 'rejected' && (
+                <span className="badge expired">{t(lang, 'rejectedLabel')}</span>
+              )}
             </h3>
+            {detail.approval_status === 'rejected' && detail.rejection_note && (
+              <p className="note-text" style={{ marginTop: 6 }}>
+                {t(lang, 'reviewNote')}: {detail.rejection_note}
+              </p>
+            )}
             <button className="btn small" onClick={() => setDetail(null)}>
               ✕
             </button>
@@ -6296,6 +6664,8 @@ function BackupPage({
 
 interface ManagedUser {
   id: string;
+  branch_id: string;
+  branch_name: string | null;
   full_name: string;
   username: string;
   role: string;
@@ -6313,6 +6683,7 @@ interface AuditEntry {
   details: { summary?: string } | string | null;
   full_name: string | null;
   username: string | null;
+  branch_name: string | null;
 }
 
 function auditSummary(details: AuditEntry['details']): string {
@@ -6335,14 +6706,289 @@ interface BranchInfo {
   phone: string | null;
 }
 
+interface BranchRow extends BranchInfo {
+  user_count: number;
+}
+
+// The Main Branch admin's review queue: waiting medicines, waiting
+// purchases, and days waiting for review — oldest first. Accepting is
+// two clicks (the decision cannot be undone); rejecting asks for the
+// reason, which the branch sees when it corrects the entry.
+function ApprovalsPage({ lang, onChanged }: { lang: Lang; onChanged: () => void }) {
+  const [medicines, setMedicines] = useState<PendingMedicine[]>([]);
+  const [purchases, setPurchases] = useState<PendingPurchase[]>([]);
+  const [days, setDays] = useState<DayReviewRow[]>([]);
+  const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [confirmKey, setConfirmKey] = useState('');
+  const [rejectKey, setRejectKey] = useState('');
+  const [rejectNote, setRejectNote] = useState('');
+
+  const load = async () => {
+    const data = await api.get('/approvals/pending');
+    setMedicines(data.medicines as PendingMedicine[]);
+    setPurchases(data.purchases as PendingPurchase[]);
+    setDays(data.days as DayReviewRow[]);
+    setLoaded(true);
+  };
+
+  useEffect(() => {
+    load().catch((err) => {
+      setError(err instanceof Error ? err.message : 'Error');
+      setLoaded(true);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const act = async (kind: 'medicines' | 'purchases' | 'days', action: 'accept' | 'reject', key: string, body?: unknown) => {
+    setError('');
+    setMsg('');
+    setBusy(true);
+    try {
+      // Days are reviewed by branch + date in the body, not by id in the path.
+      const url = kind === 'days' ? `/approvals/days/${action}` : `/approvals/${kind}/${key}/${action}`;
+      await api.post(url, body || {});
+      setMsg(t(lang, action === 'accept' ? 'approvedMsg' : 'rejectedMsg'));
+      setConfirmKey('');
+      setRejectKey('');
+      setRejectNote('');
+      await load();
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    }
+    setBusy(false);
+  };
+
+  const startReject = (key: string) => {
+    setConfirmKey('');
+    setRejectKey(key);
+    setRejectNote('');
+    setError('');
+    setMsg('');
+  };
+
+  const doReject = (kind: 'medicines' | 'purchases' | 'days', key: string, body: unknown) => {
+    if (!rejectNote.trim()) {
+      setError(t(lang, 'rejectionNoteRequired'));
+      return;
+    }
+    act(kind, 'reject', key, { ...(body as Record<string, unknown>), note: rejectNote.trim() });
+  };
+
+  const rejectBox = (kind: 'medicines' | 'purchases' | 'days', key: string, body: unknown) =>
+    rejectKey === key ? (
+      <div style={{ marginTop: 8 }}>
+        <label className="muted" style={{ fontSize: 13 }}>
+          {t(lang, 'rejectionNoteLabel')}
+        </label>
+        <input
+          value={rejectNote}
+          onChange={(e) => setRejectNote(e.target.value)}
+          placeholder={t(lang, 'rejectionNotePlaceholder')}
+          maxLength={255}
+          style={{ marginTop: 4 }}
+        />
+        <div style={{ marginTop: 6 }}>
+          <button className="btn small btn-danger" disabled={busy} onClick={() => doReject(kind, key, body)}>
+            {t(lang, 'reject')}
+          </button>{' '}
+          <button className="btn small" disabled={busy} onClick={() => setRejectKey('')}>
+            {t(lang, 'cancelBtn')}
+          </button>
+        </div>
+      </div>
+    ) : null;
+
+  const actionButtons = (kind: 'medicines' | 'purchases' | 'days', key: string, body: unknown) => (
+    <>
+      {confirmKey === key ? (
+        <button className="btn small btn-danger armed" disabled={busy} onClick={() => act(kind, 'accept', key, body)}>
+          {t(lang, 'approveConfirm')}
+        </button>
+      ) : (
+        <button
+          className="btn small"
+          disabled={busy}
+          onClick={() => {
+            setRejectKey('');
+            setConfirmKey(key);
+          }}
+        >
+          ✅ {t(lang, 'approve')}
+        </button>
+      )}{' '}
+      <button className="btn small btn-danger" disabled={busy} onClick={() => startReject(key)}>
+        {t(lang, 'reject')}
+      </button>
+      {rejectBox(kind, key, body)}
+    </>
+  );
+
+  const empty = loaded && medicines.length === 0 && purchases.length === 0 && days.length === 0;
+
+  return (
+    <>
+      <div className="dash-head">
+        <h2>🔔 {t(lang, 'approvals')}</h2>
+      </div>
+      <p className="muted" style={{ fontSize: 15 }}>{t(lang, 'approvalsDesc')}</p>
+      {error && <div className="error-box">{error}</div>}
+      {msg && <div className="success-box">{msg}</div>}
+      {!loaded && <p className="muted">{t(lang, 'loading')}</p>}
+      {empty && !error && (
+        <div className="panel">
+          <p style={{ fontSize: 15 }}>{t(lang, 'approvalQueueEmpty')}</p>
+        </div>
+      )}
+
+      {medicines.length > 0 && (
+        <div className="panel">
+          <h3>
+            💊 {t(lang, 'pendingMedicines')} <span className="count-badge warn">{medicines.length}</span>
+          </h3>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>{t(lang, 'branchCol')}</th>
+                  <th>{t(lang, 'name')}</th>
+                  <th>{t(lang, 'company')}</th>
+                  <th>{t(lang, 'barcodeLabel')}</th>
+                  <th>{t(lang, 'salePrice')}</th>
+                  <th>{t(lang, 'minStockLabel')}</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {medicines.map((m) => (
+                  <tr key={m.id}>
+                    <td>{m.branch_name}</td>
+                    <td style={{ whiteSpace: 'normal' }}>
+                      <div>{m.name}</div>
+                      <div className="muted" style={{ fontSize: 12.5 }}>{m.generic_name || '—'}</div>
+                    </td>
+                    <td>{m.company || '—'}</td>
+                    <td>{m.barcode || '—'}</td>
+                    <td>{fmt(Number(m.sale_price))}</td>
+                    <td>{fmt(Number(m.min_stock))}</td>
+                    <td style={{ whiteSpace: 'normal', minWidth: 220 }}>
+                      {actionButtons('medicines', m.id, {})}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {purchases.length > 0 && (
+        <div className="panel">
+          <h3>
+            📦 {t(lang, 'pendingPurchases')} <span className="count-badge warn">{purchases.length}</span>
+          </h3>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>{t(lang, 'branchCol')}</th>
+                  <th>{t(lang, 'invoiceNo')}</th>
+                  <th>{t(lang, 'supplier')}</th>
+                  <th>{t(lang, 'dateLabel')}</th>
+                  <th>{t(lang, 'lineTotal')}</th>
+                  <th>{t(lang, 'paidAmount')}</th>
+                  <th>{t(lang, 'medicine')}</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {purchases.map((p) => (
+                  <tr key={p.id}>
+                    <td>{p.branch_name}</td>
+                    <td>{p.invoice_no || '—'}</td>
+                    <td>{p.supplier_name || '—'}</td>
+                    <td>{String(p.purchase_date).slice(0, 10)}</td>
+                    <td>{fmt(Number(p.total_amount))}</td>
+                    <td>{fmt(Number(p.paid_amount))}</td>
+                    <td style={{ whiteSpace: 'normal' }}>
+                      {p.items.map((it, i) => (
+                        <div key={i} style={{ fontSize: 13.5 }}>
+                          {it.medicine_name} × {it.quantity} ({it.batch_no}, {String(it.expiry_date).slice(0, 10)})
+                        </div>
+                      ))}
+                    </td>
+                    <td style={{ whiteSpace: 'normal', minWidth: 220 }}>
+                      {actionButtons('purchases', p.id, {})}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {days.length > 0 && (
+        <div className="panel">
+          <h3>
+            📅 {t(lang, 'pendingDays')} <span className="count-badge warn">{days.length}</span>
+          </h3>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>{t(lang, 'branchCol')}</th>
+                  <th>{t(lang, 'date')}</th>
+                  <th>{t(lang, 'todayBills')}</th>
+                  <th>{t(lang, 'itemsSold')}</th>
+                  <th>{t(lang, 'itemsBought')}</th>
+                  <th>{t(lang, 'revenue')}</th>
+                  <th>{t(lang, 'profit')}</th>
+                  <th>{t(lang, 'purchaseCost')}</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {days.map((d) => {
+                  const key = `${d.branch_id}:${d.date}`;
+                  return (
+                    <tr key={key}>
+                      <td>{d.branch_name}</td>
+                      <td>{d.date}</td>
+                      <td>{fmt(d.summary.sales_count)}</td>
+                      <td>{fmt(d.summary.items_sold)}</td>
+                      <td>{fmt(d.summary.items_bought)}</td>
+                      <td>{fmt(d.summary.revenue)}</td>
+                      <td style={d.summary.profit < 0 ? { color: '#dc2626' } : undefined}>{fmt(d.summary.profit)}</td>
+                      <td>{fmt(d.summary.purchase_cost)}</td>
+                      <td style={{ whiteSpace: 'normal', minWidth: 220 }}>
+                        {actionButtons('days', key, { branch_id: d.branch_id, date: d.date })}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function SettingsPage({
   lang,
   user,
   setLang,
+  isMainAdmin,
 }: {
   lang: Lang;
   user: User;
   setLang: (l: Lang) => void;
+  isMainAdmin: boolean;
 }) {
   const isAdmin = user.role === 'admin';
   const [langMsg, setLangMsg] = useState('');
@@ -6360,11 +7006,22 @@ function SettingsPage({
   const [brMsg, setBrMsg] = useState('');
   const [brError, setBrError] = useState('');
 
+  const [branches, setBranches] = useState<BranchRow[]>([]);
+  const [brFormOpen, setBrFormOpen] = useState(false);
+  const [editingBranch, setEditingBranch] = useState<BranchRow | null>(null);
+  const [brName, setBrName] = useState('');
+  const [brPhone, setBrPhone] = useState('');
+  const [brAddress, setBrAddress] = useState('');
+  const [brListMsg, setBrListMsg] = useState('');
+  const [brListError, setBrListError] = useState('');
+  const [delBranchId, setDelBranchId] = useState('');
+
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [nuName, setNuName] = useState('');
   const [nuUsername, setNuUsername] = useState('');
   const [nuPassword, setNuPassword] = useState('');
   const [nuRole, setNuRole] = useState('cashier');
+  const [nuBranch, setNuBranch] = useState('');
   const [usMsg, setUsMsg] = useState('');
   const [usError, setUsError] = useState('');
   const [delUserId, setDelUserId] = useState('');
@@ -6421,6 +7078,11 @@ function SettingsPage({
     setUsers(data.users as ManagedUser[]);
   };
 
+  const loadBranches = async () => {
+    const data = await api.get('/branches');
+    setBranches(data.branches as BranchRow[]);
+  };
+
   useEffect(() => {
     if (!isAdmin) return;
     api
@@ -6428,6 +7090,7 @@ function SettingsPage({
       .then((data) => setBranch(data.branch as BranchInfo))
       .catch((err) => setBrError(err instanceof Error ? err.message : 'Error'));
     loadUsers().catch((err) => setUsError(err instanceof Error ? err.message : 'Error'));
+    loadBranches().catch((err) => setBrListError(err instanceof Error ? err.message : 'Error'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin]);
 
@@ -6502,15 +7165,69 @@ function SettingsPage({
         username: nuUsername.trim(),
         password: nuPassword,
         role: nuRole,
+        branch_id: nuBranch || undefined,
       });
       setUsMsg(t(lang, 'userAdded'));
       setNuName('');
       setNuUsername('');
       setNuPassword('');
       setNuRole('cashier');
+      setNuBranch('');
       await loadUsers();
     } catch (err) {
       setUsError(err instanceof Error ? err.message : 'Error');
+    }
+  };
+
+  const openBranchForm = (b: BranchRow | null) => {
+    setBrListMsg('');
+    setBrListError('');
+    setEditingBranch(b);
+    setBrName(b ? b.name : '');
+    setBrPhone(b ? b.phone || '' : '');
+    setBrAddress(b ? b.address || '' : '');
+    setBrFormOpen(true);
+  };
+
+  const saveBranchForm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBrListMsg('');
+    setBrListError('');
+    if (brPhone && !validPhone(brPhone)) {
+      setBrListError(t(lang, 'phoneInvalid'));
+      return;
+    }
+    try {
+      const body = {
+        name: brName.trim(),
+        address: brAddress.trim() || undefined,
+        phone: brPhone.trim() || undefined,
+      };
+      if (editingBranch) {
+        await api.put(`/branches/${editingBranch.id}`, body);
+        setBrListMsg(t(lang, 'branchUpdated'));
+      } else {
+        await api.post('/branches', body);
+        setBrListMsg(t(lang, 'branchCreated'));
+      }
+      setBrFormOpen(false);
+      setEditingBranch(null);
+      await loadBranches();
+    } catch (err) {
+      setBrListError(err instanceof Error ? err.message : 'Error');
+    }
+  };
+
+  const deleteBranch = async (b: BranchRow) => {
+    setBrListMsg('');
+    setBrListError('');
+    try {
+      await api.del(`/branches/${b.id}`);
+      setBrListMsg(t(lang, 'branchDeleted'));
+      setDelBranchId('');
+      await loadBranches();
+    } catch (err) {
+      setBrListError(err instanceof Error ? err.message : 'Error');
     }
   };
 
@@ -6656,6 +7373,114 @@ function SettingsPage({
         </div>
       )}
 
+      {isAdmin && isMainAdmin && (
+        <div className="panel">
+          <h3>🏥 {t(lang, 'branches')}</h3>
+          <p className="muted" style={{ fontSize: 14, marginTop: -6 }}>
+            {t(lang, 'branchesDesc')}
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>{t(lang, 'branchName')}</th>
+                <th>{t(lang, 'phone')}</th>
+                <th>{t(lang, 'address')}</th>
+                <th>{t(lang, 'users')}</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {branches.map((b) => (
+                <tr key={b.id}>
+                  <td>
+                    {b.name}{' '}
+                    {branch && b.id === branch.id && (
+                      <span className="badge warning">{t(lang, 'thisBranch')}</span>
+                    )}
+                  </td>
+                  <td>{b.phone || '—'}</td>
+                  <td>{b.address || '—'}</td>
+                  <td>{b.user_count}</td>
+                  <td>
+                    <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      <button className="btn-secondary" onClick={() => openBranchForm(b)}>
+                        {t(lang, 'edit')}
+                      </button>
+                      {delBranchId === b.id ? (
+                        <>
+                          <span style={{ fontSize: 13, alignSelf: 'center' }}>
+                            {t(lang, 'confirmDeleteIt')}
+                          </span>
+                          <button className="btn-remove" onClick={() => deleteBranch(b)}>
+                            {t(lang, 'delete')}
+                          </button>
+                          <button className="btn-secondary" onClick={() => setDelBranchId('')}>
+                            {t(lang, 'cancel')}
+                          </button>
+                        </>
+                      ) : (
+                        <button className="btn-remove" onClick={() => setDelBranchId(b.id)}>
+                          {t(lang, 'delete')}
+                        </button>
+                      )}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {brListError && <div className="error-box">{brListError}</div>}
+          {brListMsg && <div className="success-box">{brListMsg}</div>}
+          {brFormOpen ? (
+            <form onSubmit={saveBranchForm} style={{ marginTop: 16 }}>
+              <h3 style={{ marginTop: 0 }}>
+                {editingBranch
+                  ? `${t(lang, 'edit')} — ${editingBranch.name}`
+                  : `➕ ${t(lang, 'addBranch')}`}
+              </h3>
+              <div className="form-grid">
+                <div className="field">
+                  <label>{t(lang, 'branchName')} *</label>
+                  <input value={brName} onChange={(e) => setBrName(e.target.value)} required />
+                </div>
+                <div className="field">
+                  <label>{t(lang, 'phone')}</label>
+                  <input
+                    value={brPhone}
+                    onChange={(e) => setBrPhone(e.target.value)}
+                    maxLength={10}
+                    inputMode="numeric"
+                  />
+                </div>
+                <div className="field">
+                  <label>{t(lang, 'address')}</label>
+                  <input value={brAddress} onChange={(e) => setBrAddress(e.target.value)} />
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <button className="btn-save" type="submit">
+                  {t(lang, 'save')}
+                </button>
+                <button
+                  className="btn-secondary"
+                  type="button"
+                  onClick={() => {
+                    setBrFormOpen(false);
+                    setEditingBranch(null);
+                  }}
+                >
+                  {t(lang, 'cancel')}
+                </button>
+              </div>
+            </form>
+          ) : (
+            <button className="btn-save" style={{ marginTop: 12 }} onClick={() => openBranchForm(null)}>
+              ➕ {t(lang, 'addBranch')}
+            </button>
+          )}
+        </div>
+      )}
+
       {isAdmin && (
         <div className="panel">
           <h3>👥 {t(lang, 'users')}</h3>
@@ -6668,6 +7493,7 @@ function SettingsPage({
                 <th>{t(lang, 'fullName')}</th>
                 <th>{t(lang, 'username')}</th>
                 <th>{t(lang, 'role')}</th>
+                {branches.length > 1 && <th>{t(lang, 'branchCol')}</th>}
                 <th></th>
                 <th></th>
               </tr>
@@ -6678,6 +7504,7 @@ function SettingsPage({
                   <td>{u.full_name}</td>
                   <td>{u.username}</td>
                   <td>{roleLabel(u.role)}</td>
+                  {branches.length > 1 && <td>{u.branch_name || '—'}</td>}
                   <td>
                     <span className={`badge ${u.is_active ? 'warning' : 'expired'}`}>
                       {u.is_active ? t(lang, 'active') : t(lang, 'inactive')}
@@ -6810,6 +7637,22 @@ function SettingsPage({
                   <option value="admin">{t(lang, 'roleAdmin')}</option>
                 </select>
               </div>
+              {isMainAdmin && branches.length > 1 && (
+                <div className="field">
+                  <label>{t(lang, 'branchCol')}</label>
+                  <select
+                    className="field-select"
+                    value={nuBranch || (branch ? branch.id : '')}
+                    onChange={(e) => setNuBranch(e.target.value)}
+                  >
+                    {branches.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
             {usError && <div className="error-box">{usError}</div>}
             {usMsg && <div className="success-box">{usMsg}</div>}
@@ -6876,6 +7719,7 @@ function SettingsPage({
                   <tr>
                     <th>{t(lang, 'auditTime')}</th>
                     <th>{t(lang, 'auditUser')}</th>
+                    {branches.length > 1 && <th>{t(lang, 'branchCol')}</th>}
                     <th>{t(lang, 'auditAction')}</th>
                     <th>{t(lang, 'auditDetails')}</th>
                   </tr>
@@ -6887,6 +7731,7 @@ function SettingsPage({
                         {new Date(e.created_at).toLocaleString()}
                       </td>
                       <td>{e.full_name || e.username || '—'}</td>
+                      {branches.length > 1 && <td>{e.branch_name || '—'}</td>}
                       <td dir="ltr" style={{ textAlign: 'left' }}>{e.action}</td>
                       <td>{auditSummary(e.details)}</td>
                     </tr>

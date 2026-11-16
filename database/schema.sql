@@ -64,6 +64,8 @@ CREATE TABLE medicines (
   sale_price  DECIMAL(12,2) NOT NULL DEFAULT 0,
   min_stock   INT           NOT NULL DEFAULT 10,
   warn_months INT           NOT NULL DEFAULT 3,
+  approval_status ENUM('approved','pending','rejected') NOT NULL DEFAULT 'approved',
+  rejection_note VARCHAR(255) NULL,
   created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   sync_status VARCHAR(20)   NOT NULL DEFAULT 'pending',
@@ -149,6 +151,8 @@ CREATE TABLE purchases (
   paid_amount  DECIMAL(12,2) NOT NULL DEFAULT 0,
   created_by   CHAR(36)      NULL,
   notes        VARCHAR(255)  NULL,
+  approval_status ENUM('approved','pending','rejected') NOT NULL DEFAULT 'approved',
+  rejection_note VARCHAR(255) NULL,
   created_at   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   sync_status  VARCHAR(20)   NOT NULL DEFAULT 'pending',
@@ -364,6 +368,28 @@ CREATE TABLE day_closes (
   KEY idx_day_closes_date (close_date),
   CONSTRAINT fk_day_closes_branch FOREIGN KEY (branch_id) REFERENCES branches (id),
   CONSTRAINT fk_day_closes_user FOREIGN KEY (closed_by) REFERENCES users (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------
+-- Branch day reviews — the boss's review of a child branch's day.
+-- NO row means the day is still waiting for review; accepting or
+-- rejecting writes a row, and new activity on the day (or a resubmit
+-- from the branch) deletes it again so the day returns to "pending".
+-- The audit log keeps the full history.
+-- ------------------------------------------------------------
+CREATE TABLE branch_day_reviews (
+  id          CHAR(36)     NOT NULL,
+  branch_id   CHAR(36)     NOT NULL,
+  review_date DATE         NOT NULL,
+  status      ENUM('accepted','rejected') NOT NULL,
+  note        VARCHAR(255) NULL,
+  reviewed_by CHAR(36)     NULL,
+  reviewed_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_day_reviews_branch_date (branch_id, review_date),
+  KEY idx_day_reviews_date (review_date),
+  CONSTRAINT fk_day_reviews_branch FOREIGN KEY (branch_id) REFERENCES branches (id),
+  CONSTRAINT fk_day_reviews_user FOREIGN KEY (reviewed_by) REFERENCES users (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 SET FOREIGN_KEY_CHECKS = 1;

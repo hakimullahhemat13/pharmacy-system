@@ -14,6 +14,8 @@ const salesRoutes = require('./routes/sales');
 const reportsRoutes = require('./routes/reports');
 const backupRoutes = require('./routes/backup');
 const settingsRoutes = require('./routes/settings');
+const branchesRoutes = require('./routes/branches');
+const approvalsRoutes = require('./routes/approvals');
 
 const app = express();
 app.use(cors());
@@ -53,6 +55,12 @@ backupRoutes.startAutoBackup();
 
 // Settings: own password/language; admin: branch info + users
 app.use('/api/settings', settingsRoutes);
+
+// Branches: admin-only branch management (multi-branch use)
+app.use('/api/branches', branchesRoutes);
+
+// Approvals: the Main Branch admin's review queue for child branches
+app.use('/api/approvals', approvalsRoutes);
 
 const PORT = Number(process.env.PORT) || 5000;
 app.listen(PORT, () => {
