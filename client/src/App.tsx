@@ -285,7 +285,7 @@ function LangSwitch({ lang, setLang }: { lang: Lang; setLang: (l: Lang) => void 
   return (
     <div className="lang-switch">
       {(Object.keys(LANG_NAMES) as Lang[]).map((l) => (
-        <button key={l} className={l === lang ? 'active' : ''} onClick={() => setLang(l)}>
+        <button key={l} type="button" className={l === lang ? 'active' : ''} onClick={() => setLang(l)}>
           {LANG_NAMES[l]}
         </button>
       ))}
@@ -427,6 +427,14 @@ function Login({
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [capsOn, setCapsOn] = useState(false);
+  const [shakeKey, setShakeKey] = useState(0);
+
+  // Caps Lock changes the password silently — warn the moment it is on.
+  const checkCaps = (e: React.KeyboardEvent) => {
+    const on = e.getModifierState?.('CapsLock');
+    if (typeof on === 'boolean') setCapsOn(on);
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -444,52 +452,100 @@ function Login({
             ? t(lang, 'serverDown')
             : msg || t(lang, 'loginFailed')
       );
+      setShakeKey((k) => k + 1);
       setBusy(false);
     }
   };
 
   return (
     <div className="login-wrap">
-      <form className="login-card" onSubmit={submit}>
-        <LangSwitch lang={lang} setLang={setLang} />
-        <div className="logo">💊</div>
-        <h1>{t(lang, 'appName')}</h1>
-        <label htmlFor="username">{t(lang, 'username')}</label>
-        <input
-          id="username"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          autoComplete="username"
-          required
-        />
-        <label htmlFor="password">{t(lang, 'password')}</label>
-        <input
-          id="password"
-          type={showPw ? 'text' : 'password'}
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          autoComplete="current-password"
-          required
-        />
-        <label className="show-pw">
-          <input type="checkbox" checked={showPw} onChange={(e) => setShowPw(e.target.checked)} />{' '}
-          {t(lang, 'showPassword')}
-        </label>
-        {error && <div className="error-box">{error}</div>}
-        <button className="btn-primary" type="submit" disabled={busy}>
-          {busy ? t(lang, 'loading') : t(lang, 'login')}
-        </button>
-      </form>
+      <div className="login-split">
+        <div className="login-brand">
+          <div className="brand-orb orb-1" />
+          <div className="brand-orb orb-2" />
+          <div className="login-brand-logo">💊</div>
+          <h1>{t(lang, 'appName')}</h1>
+          <p className="login-tagline">{t(lang, 'loginTagline')}</p>
+          <ul className="login-feats">
+            <li>
+              <span>💊</span> {t(lang, 'loginFeat1')}
+            </li>
+            <li>
+              <span>🧾</span> {t(lang, 'loginFeat2')}
+            </li>
+            <li>
+              <span>📊</span> {t(lang, 'loginFeat3')}
+            </li>
+          </ul>
+        </div>
+        <form className="login-card" onSubmit={submit}>
+          <LangSwitch lang={lang} setLang={setLang} />
+          <h2>{t(lang, 'loginWelcome')}</h2>
+          <label htmlFor="username">{t(lang, 'username')}</label>
+          <div className="field-icon">
+            <span className="field-icon-mark">👤</span>
+            <input
+              id="username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              autoComplete="username"
+              autoFocus
+              required
+            />
+          </div>
+          <label htmlFor="password">{t(lang, 'password')}</label>
+          <div className="field-icon has-eye">
+            <span className="field-icon-mark">🔒</span>
+            <input
+              id="password"
+              type={showPw ? 'text' : 'password'}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={checkCaps}
+              onKeyUp={checkCaps}
+              onBlur={() => setCapsOn(false)}
+              autoComplete="current-password"
+              required
+            />
+            <button
+              type="button"
+              className="pw-eye"
+              onClick={() => setShowPw(!showPw)}
+              title={t(lang, 'showPassword')}
+              aria-label={t(lang, 'showPassword')}
+            >
+              {showPw ? '🙈' : '👁️'}
+            </button>
+          </div>
+          {capsOn && <div className="caps-warn">⚠️ {t(lang, 'capsLock')}</div>}
+          {error && (
+            <div key={shakeKey} className="error-box shake">
+              ⚠️ {error}
+            </div>
+          )}
+          <button className="btn-primary" type="submit" disabled={busy}>
+            {busy ? (
+              <>
+                <span className="spinner" /> {t(lang, 'loading')}
+              </>
+            ) : (
+              t(lang, 'login')
+            )}
+          </button>
+        </form>
+      </div>
+      <p className="login-foot">{t(lang, 'loginFooter')}</p>
     </div>
   );
 }
 
-// Short weekday names for the dashboard 7-day chart (index 0 = Sunday,
-// matching Date.getDay()).
-const WEEKDAY_SHORT: Record<Lang, string[]> = {
-  ps: ['یک', 'دو', 'سه', 'څلور', 'پنج', 'جمع', 'شنبه'],
-  fa: ['یک', 'دو', 'سه', 'چهار', 'پنج', 'جمع', 'شنبه'],
-  en: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+// Full weekday names for the dashboard week chart (index 0 = Sunday,
+// matching Date.getDay()). Friday (جمعه) stays in the list so any date
+// can be named, but the work week itself never shows it.
+const WEEKDAY_NAMES: Record<Lang, string[]> = {
+  ps: ['یکشنبه', 'دوشنبه', 'سه شنبه', 'چهارشنبه', 'پنج شنبه', 'جمعه', 'شنبه'],
+  fa: ['یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنجشنبه', 'جمعه', 'شنبه'],
+  en: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
 };
 
 function daysAgoStr(n: number): string {
@@ -497,6 +553,23 @@ function daysAgoStr(n: number): string {
   d.setDate(d.getDate() - n);
   const pad = (x: number) => String(x).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// The current Afghan work week as YYYY-MM-DD days: Saturday through
+// today, never past Thursday (Friday is the weekly holiday). On Friday
+// this returns the six days that just ended.
+function workWeekDays(): string[] {
+  const start = new Date(`${weekStartStr()}T00:00:00`);
+  const today = new Date(`${todayStr()}T00:00:00`);
+  const last = new Date(start);
+  last.setDate(last.getDate() + 5);
+  const end = today < last ? today : last;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const days: string[] = [];
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    days.push(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`);
+  }
+  return days;
 }
 
 function Dashboard({
@@ -540,8 +613,9 @@ function Dashboard({
       // The chart and the stock-value card are extras: if either call fails,
       // the rest of the dashboard still shows.
       try {
+        const wDays = workWeekDays();
         const [range, sv, recent] = await Promise.all([
-          api.get(`/reports/range?from=${daysAgoStr(6)}&to=${todayStr()}`).catch(() => null),
+          api.get(`/reports/range?from=${wDays[0]}&to=${wDays[wDays.length - 1]}`).catch(() => null),
           api.get('/reports/stock-value').catch(() => null),
           api.get('/sales').catch(() => null),
         ]);
@@ -554,11 +628,10 @@ function Dashboard({
             ])
           );
           const pts: { label: string; revenue: number; profit: number }[] = [];
-          for (let i = 6; i >= 0; i--) {
-            const ds = daysAgoStr(i);
+          for (const ds of wDays) {
             const row = byDay.get(ds) || { revenue: 0, profit: 0 };
             pts.push({
-              label: WEEKDAY_SHORT[lang][new Date(`${ds}T00:00:00`).getDay()],
+              label: WEEKDAY_NAMES[lang][new Date(`${ds}T00:00:00`).getDay()],
               revenue: row.revenue,
               profit: row.profit,
             });
@@ -695,7 +768,7 @@ function Dashboard({
 
       {!isCashier && weekDays.length > 0 && (
         <div className="panel">
-          <h3>📊 {t(lang, 'last7Days')}</h3>
+          <h3>📊 {t(lang, 'thisWeek')}</h3>
           <BarChart points={weekDays} revLabel={t(lang, 'revenue')} profitLabel={t(lang, 'profit')} />
         </div>
       )}
@@ -4443,10 +4516,11 @@ function ReportsPage({ lang, role }: { lang: Lang; role: string }) {
     { key: 'stock', label: t(lang, 'stockValue') },
   ];
 
+  // The Afghan work week is 6 days: Saturday–Thursday, Friday off.
   const weekEnd = (() => {
     const d = new Date(`${weekStart}T00:00:00`);
     if (Number.isNaN(d.getTime())) return weekStart;
-    d.setDate(d.getDate() + 6);
+    d.setDate(d.getDate() + 5);
     const p = (n: number) => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   })();

@@ -298,16 +298,17 @@ router.get('/monthly', authRequired, requireRole('admin', 'pharmacist'), async (
   }
 });
 
-// GET /api/reports/weekly?date=YYYY-MM-DD — the 7 days starting at `date`.
-// The client defaults the date to the most recent Saturday (the Afghan
-// work week), but any start day can be picked.
+// GET /api/reports/weekly?date=YYYY-MM-DD — the 6 working days starting
+// at `date` (Saturday–Thursday; Friday is the weekly holiday in
+// Afghanistan, so it belongs to no week). The client defaults the date
+// to the most recent Saturday, but any start day can be picked.
 router.get('/weekly', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   const date = req.query.date === undefined ? fmtDate(new Date()) : String(req.query.date);
   if (!isValidDateString(date)) {
     return res.status(400).json({ status: 'error', message: 'date must be YYYY-MM-DD' });
   }
   const endDt = new Date(`${date}T00:00:00Z`);
-  endDt.setUTCDate(endDt.getUTCDate() + 7);
+  endDt.setUTCDate(endDt.getUTCDate() + 6);
   const end = `${endDt.getUTCFullYear()}-${pad(endDt.getUTCMonth() + 1)}-${pad(endDt.getUTCDate())}`;
   try {
     const summary = await summaryForRange(req.user.branch_id, date, end);
@@ -410,7 +411,7 @@ function periodRange(period, query) {
     const date = query.date === undefined ? fmtDate(new Date()) : String(query.date);
     if (!isValidDateString(date)) return null;
     const endDt = new Date(`${date}T00:00:00Z`);
-    endDt.setUTCDate(endDt.getUTCDate() + (period === 'weekly' ? 7 : 1));
+    endDt.setUTCDate(endDt.getUTCDate() + (period === 'weekly' ? 6 : 1));
     return { start: date, end: `${endDt.getUTCFullYear()}-${pad(endDt.getUTCMonth() + 1)}-${pad(endDt.getUTCDate())}` };
   }
   if (period === 'monthly') {
@@ -614,10 +615,10 @@ router.get('/export', authRequired, requireRole('admin', 'pharmacist'), async (r
       return res.status(400).json({ status: 'error', message: 'date must be YYYY-MM-DD' });
     }
     const endDt = new Date(`${date}T00:00:00Z`);
-    endDt.setUTCDate(endDt.getUTCDate() + 7);
+    endDt.setUTCDate(endDt.getUTCDate() + 6);
     end = `${endDt.getUTCFullYear()}-${pad(endDt.getUTCMonth() + 1)}-${pad(endDt.getUTCDate())}`;
     const lastDt = new Date(`${date}T00:00:00Z`);
-    lastDt.setUTCDate(lastDt.getUTCDate() + 6);
+    lastDt.setUTCDate(lastDt.getUTCDate() + 5);
     const last = `${lastDt.getUTCFullYear()}-${pad(lastDt.getUTCMonth() + 1)}-${pad(lastDt.getUTCDate())}`;
     start = date;
     label = `Weekly — ${date} to ${last}`;

@@ -16,21 +16,70 @@ input { font-family: inherit; }
 .login-wrap {
   min-height: 100vh;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   padding: 16px;
+  background: linear-gradient(160deg, #e8f5ee 0%, #f2f5f3 55%, #e6edf7 100%);
 }
-.login-card {
-  background: #fff;
-  border-radius: 14px;
-  box-shadow: 0 8px 30px rgba(20, 60, 40, 0.12);
-  padding: 32px 28px;
+.login-split {
+  display: flex;
   width: 100%;
-  max-width: 380px;
+  max-width: 860px;
+  border-radius: 16px;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 12px 40px rgba(20, 60, 40, 0.16);
+  animation: login-in 0.45s ease both;
+}
+@keyframes login-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+.login-brand {
+  position: relative;
+  overflow: hidden;
+  flex: 1;
+  background: linear-gradient(160deg, #1e2d50, #2563eb, #1e40af);
+  background-size: 180% 180%;
+  animation: brand-shift 12s ease-in-out infinite alternate;
+  color: #fff;
+  padding: 40px 32px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  text-align: start;
+}
+@keyframes brand-shift {
+  from { background-position: 0% 0%; }
+  to { background-position: 100% 100%; }
+}
+.login-brand > *:not(.brand-orb) { position: relative; z-index: 1; }
+.brand-orb {
+  position: absolute;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  animation: orb-float 9s ease-in-out infinite alternate;
+}
+.orb-1 { width: 190px; height: 190px; top: -70px; inset-inline-end: -50px; }
+.orb-2 { width: 130px; height: 130px; bottom: -45px; inset-inline-start: -35px; animation-delay: 2.5s; }
+@keyframes orb-float {
+  from { transform: translateY(0); }
+  to { transform: translateY(-16px); }
+}
+.login-brand-logo { font-size: 52px; }
+.login-brand h1 { font-size: 24px; margin: 14px 0 10px; color: #fff; }
+.login-tagline { font-size: 15px; line-height: 1.6; color: #dbe4f5; margin: 0 0 24px; }
+.login-feats { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.login-feats li { font-size: 15px; display: flex; align-items: center; gap: 10px; }
+.login-feats li span { font-size: 19px; }
+.login-card {
+  flex: 1;
+  background: #fff;
+  padding: 36px 32px;
   text-align: center;
 }
-.login-card .logo { font-size: 44px; }
-.login-card h1 { font-size: 20px; margin: 10px 0 22px; color: #14532d; }
+.login-card h2 { font-size: 20px; margin: 2px 0 18px; color: #14532d; }
 .login-card label {
   display: block;
   text-align: start;
@@ -46,6 +95,72 @@ input { font-family: inherit; }
   font-size: 15px;
 }
 .login-card input:focus { outline: 2px solid #22c55e; border-color: transparent; }
+.field-icon { position: relative; }
+.field-icon-mark {
+  position: absolute;
+  inset-inline-start: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 16px;
+  pointer-events: none;
+}
+.field-icon input { padding-inline-start: 38px; }
+.field-icon:focus-within input { box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18); }
+.caps-warn {
+  margin-top: 8px;
+  font-size: 13px;
+  color: #b45309;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+  padding: 7px 10px;
+  text-align: start;
+}
+.shake { animation: shake-x 0.45s ease both; }
+@keyframes shake-x {
+  10%, 90% { transform: translateX(-1px); }
+  20%, 80% { transform: translateX(2px); }
+  30%, 50%, 70% { transform: translateX(-3px); }
+  40%, 60% { transform: translateX(3px); }
+}
+.login-card .btn-primary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.login-card .btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(22, 163, 74, 0.35);
+}
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.field-icon.has-eye input { padding-inline-end: 42px; }
+.pw-eye {
+  position: absolute;
+  inset-inline-end: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  font-size: 17px;
+  padding: 4px 6px;
+}
+.login-foot { margin: 18px 0 0; font-size: 13px; color: #64748b; text-align: center; }
+@media (max-width: 720px) {
+  .login-split { flex-direction: column; }
+  .login-brand { padding: 28px 24px; }
+  .login-brand-logo { font-size: 40px; }
+  .login-brand h1 { font-size: 20px; }
+}
 .btn-primary {
   width: 100%;
   margin-top: 18px;
