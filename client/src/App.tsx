@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { api, getToken, setToken } from './api';
+import { api, getToken, setToken, getStoredServerHost, setServerHost, isNativeApp } from './api';
 import { type Lang, LANG_NAMES, dirFor, t } from './i18n';
 
 interface User {
@@ -371,6 +371,8 @@ export default function App() {
   const [lang, setLangState] = useState<Lang>(loadLang);
   const [page, setPage] = useState<Page>('dashboard');
   const [prefillBarcode, setPrefillBarcode] = useState('');
+  // On phones the menu hides behind a ☰ button; on desktop it is always open.
+  const [menuOpen, setMenuOpen] = useState(false);
   // The approval notification: whether this user is the Main Branch
   // admin, and how many items wait in the queue. Only admins load it;
   // a failed load simply hides the badge until approvals are installed.
@@ -461,29 +463,43 @@ export default function App() {
   return (
     <div className="app">
       <aside className="sidebar">
-        <div className="brand">💊 {t(lang, 'appName')}</div>
-        {menu.map((m) => (
-          <button
-            key={m.key}
-            className={`nav${visiblePage === m.key ? ' active' : ''}`}
-            onClick={() => setPage(m.key)}
-          >
-            <span className="nav-icon">{m.icon}</span>
-            {m.label}
-            {m.key === 'approvals' && approvalInfo && approvalInfo.counts.total > 0 && (
-              <span className="menu-badge">{approvalInfo.counts.total}</span>
-            )}
+        <div className="brand-row">
+          <div className="brand">💊 {t(lang, 'appName')}</div>
+          <button className="menu-toggle" type="button" onClick={() => setMenuOpen(!menuOpen)} aria-label="Menu">
+            <span className="menu-bars" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </span>
           </button>
-        ))}
-        <div className="spacer" />
-        <div className="user-box">
-          👤 {user.full_name}
-          <br />
-          <span className="muted">{user.username} · {user.role}</span>
         </div>
-        <button className="logout" onClick={logout}>
-          🚪 {t(lang, 'logout')}
-        </button>
+        <div className={`menu-body${menuOpen ? ' open' : ''}`}>
+          {menu.map((m) => (
+            <button
+              key={m.key}
+              className={`nav${visiblePage === m.key ? ' active' : ''}`}
+              onClick={() => {
+                setPage(m.key);
+                setMenuOpen(false);
+              }}
+            >
+              <span className="nav-icon">{m.icon}</span>
+              {m.label}
+              {m.key === 'approvals' && approvalInfo && approvalInfo.counts.total > 0 && (
+                <span className="menu-badge">{approvalInfo.counts.total}</span>
+              )}
+            </button>
+          ))}
+          <div className="spacer" />
+          <div className="user-box">
+            👤 {user.full_name}
+            <br />
+            <span className="muted">{user.username} · {user.role}</span>
+          </div>
+          <button className="logout" onClick={logout}>
+            🚪 {t(lang, 'logout')}
+          </button>
+        </div>
       </aside>
       <main className="main">
         {visiblePage === 'dashboard' && <Dashboard lang={lang} userName={user.full_name} role={user.role} onNavigate={setPage} approvalInfo={approvalInfo} />}
@@ -528,6 +544,10 @@ function Login({
   const [busy, setBusy] = useState(false);
   const [capsOn, setCapsOn] = useState(false);
   const [shakeKey, setShakeKey] = useState(0);
+  // In the Android app the computer's address must be entered once (the
+  // WebView's own host is the phone itself). On the desktop this field is
+  // never shown and nothing is stored.
+  const [serverHost, setServerHostState] = useState(getStoredServerHost());
 
   // Caps Lock changes the password silently — warn the moment it is on.
   const checkCaps = (e: React.KeyboardEvent) => {
@@ -540,6 +560,7 @@ function Login({
     setError('');
     setBusy(true);
     try {
+      if (isNativeApp()) setServerHost(serverHost);
       const data = await api.post('/auth/login', { username, password }, false);
       onLogin(data.user as User, data.token as string);
     } catch (err) {
@@ -580,6 +601,25 @@ function Login({
         <form className="login-card" onSubmit={submit}>
           <LangSwitch lang={lang} setLang={setLang} />
           <h2>{t(lang, 'loginWelcome')}</h2>
+          {isNativeApp() && (
+            <>
+              <label htmlFor="serverHost">{t(lang, 'serverAddress')}</label>
+              <div className="field-icon">
+                <span className="field-icon-mark">🖥️</span>
+                <input
+                  id="serverHost"
+                  value={serverHost}
+                  onChange={(e) => setServerHostState(e.target.value)}
+                  placeholder="192.168.1.5"
+                  autoComplete="off"
+                  required
+                />
+              </div>
+              <p className="muted" style={{ fontSize: 13, marginTop: -8 }}>
+                {t(lang, 'serverAddressHint')}
+              </p>
+            </>
+          )}
           <label htmlFor="username">{t(lang, 'username')}</label>
           <div className="field-icon">
             <span className="field-icon-mark">👤</span>
@@ -7044,6 +7084,8 @@ function SettingsPage({
   const isAdmin = user.role === 'admin';
   const [langMsg, setLangMsg] = useState('');
   const [langError, setLangError] = useState('');
+  const [srvHost, setSrvHost] = useState(getStoredServerHost());
+  const [srvMsg, setSrvMsg] = useState('');
 
   const [curPw, setCurPw] = useState('');
   const [showPw, setShowPw] = useState(false);
@@ -7351,6 +7393,36 @@ function SettingsPage({
         {langError && <div className="error-box">{langError}</div>}
         {langMsg && <div className="success-box">{langMsg}</div>}
       </div>
+
+      {isNativeApp() && (
+        <div className="panel">
+          <h3>🖥️ {t(lang, 'serverAddress')}</h3>
+          <p className="muted" style={{ fontSize: 14, marginTop: -6 }}>
+            {t(lang, 'serverAddressHint')}
+          </p>
+          <div className="form-grid">
+            <div className="field">
+              <input
+                value={srvHost}
+                onChange={(e) => setSrvHost(e.target.value)}
+                placeholder="192.168.1.5"
+                autoComplete="off"
+              />
+            </div>
+          </div>
+          <button
+            className="btn-secondary"
+            type="button"
+            onClick={() => {
+              setServerHost(srvHost);
+              setSrvMsg(t(lang, 'saved'));
+            }}
+          >
+            {t(lang, 'save')}
+          </button>
+          {srvMsg && <div className="success-box">{srvMsg}</div>}
+        </div>
+      )}
 
       <div className="panel">
         <h3>🔑 {t(lang, 'changePassword')}</h3>

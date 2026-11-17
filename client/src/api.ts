@@ -1,5 +1,36 @@
-// Small fetch wrapper for the pharmacy backend (http://localhost:5000/api).
-const BASE = 'http://localhost:5000/api';
+import { Capacitor } from '@capacitor/core';
+
+// Small fetch wrapper for the pharmacy backend. The backend address follows
+// the page's own host: on the computer itself that is localhost, and on a
+// phone over Wi-Fi it is the computer's network address — so the same build
+// works on both without any setting.
+//
+// Inside the Android app the page runs in a WebView whose own host is the
+// phone itself, so the computer's address must be entered once (on the login
+// screen) and is then remembered here. A stored address always wins.
+const SERVER_KEY = 'pharmacy_server_host';
+
+export function isNativeApp(): boolean {
+  return Capacitor.isNativePlatform();
+}
+
+export function getStoredServerHost(): string {
+  return localStorage.getItem(SERVER_KEY) || '';
+}
+
+export function getServerHost(): string {
+  return getStoredServerHost() || window.location.hostname;
+}
+
+export function setServerHost(host: string): void {
+  const h = host.trim();
+  if (h) localStorage.setItem(SERVER_KEY, h);
+  else localStorage.removeItem(SERVER_KEY);
+}
+
+function base(): string {
+  return `http://${getServerHost()}:5000/api`;
+}
 
 const TOKEN_KEY = 'pharmacy_token';
 
@@ -22,7 +53,7 @@ async function handle(res: Response) {
 
 export const api = {
   async get(path: string) {
-    const res = await fetch(BASE + path, {
+    const res = await fetch(base() + path, {
       headers: { Authorization: `Bearer ${getToken()}` },
     });
     return handle(res);
@@ -30,7 +61,7 @@ export const api = {
   async post(path: string, body: unknown, withToken = true) {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (withToken) headers.Authorization = `Bearer ${getToken()}`;
-    const res = await fetch(BASE + path, {
+    const res = await fetch(base() + path, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
@@ -40,7 +71,7 @@ export const api = {
   // Download a file from the API (needs the token, so a plain link won't do).
   // Returns the file name the browser saved it under.
   async download(path: string, fallbackName: string) {
-    const res = await fetch(BASE + path, {
+    const res = await fetch(base() + path, {
       headers: { Authorization: `Bearer ${getToken()}` },
     });
     if (!res.ok) {
@@ -64,7 +95,7 @@ export const api = {
   // Fetch a file as a blob (the caller decides where it goes — e.g. the
   // browser's Save dialog). Returns the blob plus the server's file name.
   async downloadBlob(path: string, fallbackName: string) {
-    const res = await fetch(BASE + path, {
+    const res = await fetch(base() + path, {
       headers: { Authorization: `Bearer ${getToken()}` },
     });
     if (!res.ok) {
@@ -77,7 +108,7 @@ export const api = {
     return { blob, name: match ? match[1] : fallbackName };
   },
   async put(path: string, body: unknown) {
-    const res = await fetch(BASE + path, {
+    const res = await fetch(base() + path, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -88,7 +119,7 @@ export const api = {
     return handle(res);
   },
   async patch(path: string, body: unknown) {
-    const res = await fetch(BASE + path, {
+    const res = await fetch(base() + path, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
@@ -99,7 +130,7 @@ export const api = {
     return handle(res);
   },
   async del(path: string) {
-    const res = await fetch(BASE + path, {
+    const res = await fetch(base() + path, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${getToken()}` },
     });
@@ -107,7 +138,7 @@ export const api = {
   },
   // POST a raw text body (used to upload a .sql backup for restore).
   async postText(path: string, text: string) {
-    const res = await fetch(BASE + path, {
+    const res = await fetch(base() + path, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${getToken()}`,

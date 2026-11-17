@@ -251,6 +251,17 @@ input { font-family: inherit; }
 }
 .sidebar button.logout:hover { background: rgba(255, 255, 255, 0.12); }
 
+/* The brand row and the collapsible menu body: on desktop they dissolve
+   into the sidebar itself (display: contents), so the desktop layout is
+   exactly as before. On phones they become the top bar + dropdown menu. */
+.brand-row { display: contents; }
+.menu-toggle { display: none; }
+.menu-body { display: contents; }
+/* The ☰ glyph renders dark on some phones, so the hamburger is drawn
+   with bars instead — always white on the navy bar. */
+.menu-bars { display: inline-flex; flex-direction: column; gap: 4px; }
+.menu-bars i { display: block; width: 20px; height: 2px; background: #fff; border-radius: 2px; }
+
 .main { flex: 1; padding: 22px 26px; min-width: 0; }
 .main h2 { margin: 2px 0 18px; font-size: 21px; color: #14532d; }
 
@@ -674,3 +685,36 @@ tr.row-warning td { background: #fffdf5; }
 .detail-stats { display: flex; gap: 28px; flex-wrap: wrap; margin: 12px 0; }
 .detail-stat-label { display: block; font-size: 13px; color: #64748b; margin-bottom: 2px; }
 .detail-stat-value { font-size: 17px; font-weight: 700; }
+
+/* ---------- Phone layout (Phase 3: same app, small screen) ----------
+   On a narrow screen the sidebar becomes a slim top bar: the brand on one
+   side, a ☰ button on the other. Tapping ☰ opens the menu as a tidy
+   stacked list (as on desktop); picking a page closes it again. Content
+   goes full width, dashboard panels stack, and cards use two columns
+   where they fit. Tables already scroll sideways inside their panels, so
+   nothing here changes how tables behave. Desktop layout is untouched. */
+@media (max-width: 720px) {
+  .app { flex-direction: column; }
+  .sidebar { width: 100%; padding: 10px; gap: 6px; }
+  .brand-row {
+    display: flex; align-items: center; justify-content: space-between;
+    width: 100%; gap: 8px;
+  }
+  .brand-row .brand { padding: 2px 6px; }
+  .menu-toggle {
+    display: block; background: transparent; flex-shrink: 0;
+    border: 1px solid rgba(255, 255, 255, 0.4); color: #fff;
+    font-size: 20px; line-height: 1; padding: 7px 12px; border-radius: 8px;
+  }
+  .menu-body { display: none; }
+  .menu-body.open { display: flex; flex-direction: column; gap: 4px; width: 100%; }
+  .menu-body button.nav { width: 100%; font-size: 15px; padding: 10px 12px; }
+  .menu-body .spacer { display: none; }
+  .menu-body .user-box { width: 100%; padding: 10px 8px 0; }
+  .menu-body button.logout { width: 100%; }
+  .main { padding: 14px 12px; }
+  .main h2 { font-size: 19px; }
+  .cards { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+  .dash-grid { grid-template-columns: 1fr; }
+  .panel { padding: 14px 12px; }
+}
