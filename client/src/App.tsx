@@ -7538,6 +7538,7 @@ function SettingsPage({
           <p className="muted" style={{ fontSize: 14, marginTop: -6 }}>
             {t(lang, 'passwordResetNote')}
           </p>
+          <div className="table-scroll rows-3" style={{ border: '1px solid #cbd5e1', borderRadius: 10 }}>
           <table>
             <thead>
               <tr>
@@ -7603,6 +7604,7 @@ function SettingsPage({
               ))}
             </tbody>
           </table>
+          </div>
 
           {resetUser && (
             <form onSubmit={submitResetPassword} style={{ marginTop: 16 }}>

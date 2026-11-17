@@ -987,3 +987,74 @@ test('reports: the Main admin reads another branch reports, a child admin cannot
   assert.equal(Number(childView.data.summary.sales_count), 2);
   assert.equal(Number(childView.data.summary.revenue), 20);
 });
+
+test('approvals: editing or deleting an approved purchase re-pends its day', async () => {
+  const today = dayStr(0);
+  // A fresh approved purchase in Branch Two, through the normal flow:
+  // created waiting, then accepted by the Main admin.
+  const pur = await api(
+    'POST',
+    '/purchases',
+    {
+      invoice_no: 'B2-EDIT-1',
+      items: [{ medicine_id: S.b2MedA, batch_no: 'B2-EDIT', expiry_date: dayStr(365), quantity: 5, purchase_price: 8 }],
+    },
+    S.b2Token
+  );
+  assert.equal(pur.status, 201);
+  assert.equal(pur.data.purchase.approval_status, 'pending');
+  const acceptPur = await api('POST', `/approvals/purchases/${pur.data.purchase.id}/accept`, undefined, S.token);
+  assert.equal(acceptPur.status, 200);
+
+  // The boss accepts the day; the branch then edits the purchase (the
+  // quantity changes, so the day's purchase figures change too).
+  assert.equal((await api('POST', '/approvals/days/accept', { branch_id: S.branchTwo, date: today }, S.token)).status, 200);
+  const edited = await api(
+    'PUT',
+    `/purchases/${pur.data.purchase.id}`,
+    {
+      invoice_no: 'B2-EDIT-1',
+      items: [{ medicine_id: S.b2MedA, batch_no: 'B2-EDIT', expiry_date: dayStr(365), quantity: 7, purchase_price: 8 }],
+    },
+    S.b2Token
+  );
+  assert.equal(edited.status, 200);
+  const queue = await api('GET', '/approvals/pending', undefined, S.token);
+  assert.equal(queue.status, 200);
+  assert.ok(queue.data.days.some((d) => d.branch_id === S.branchTwo && d.date === today));
+
+  // Accept again, then delete the purchase — pending once more.
+  assert.equal((await api('POST', '/approvals/days/accept', { branch_id: S.branchTwo, date: today }, S.token)).status, 200);
+  const deleted = await api('DELETE', `/purchases/${pur.data.purchase.id}`, undefined, S.b2Token);
+  assert.equal(deleted.status, 200);
+  const queue2 = await api('GET', '/approvals/pending', undefined, S.token);
+  assert.equal(queue2.status, 200);
+  assert.ok(queue2.data.days.some((d) => d.branch_id === S.branchTwo && d.date === today));
+
+  // Editing a purchase that is still waiting does NOT disturb the
+  // accepted day — its figures were never part of the review.
+  const waiting = await api(
+    'POST',
+    '/purchases',
+    {
+      invoice_no: 'B2-EDIT-2',
+      items: [{ medicine_id: S.b2MedA, batch_no: 'B2-EDIT2', expiry_date: dayStr(365), quantity: 3, purchase_price: 8 }],
+    },
+    S.b2Token
+  );
+  assert.equal(waiting.status, 201);
+  assert.equal((await api('POST', '/approvals/days/accept', { branch_id: S.branchTwo, date: today }, S.token)).status, 200);
+  const editedWaiting = await api(
+    'PUT',
+    `/purchases/${waiting.data.purchase.id}`,
+    {
+      invoice_no: 'B2-EDIT-2',
+      items: [{ medicine_id: S.b2MedA, batch_no: 'B2-EDIT2', expiry_date: dayStr(365), quantity: 4, purchase_price: 8 }],
+    },
+    S.b2Token
+  );
+  assert.equal(editedWaiting.status, 200);
+  const queue3 = await api('GET', '/approvals/pending', undefined, S.token);
+  assert.equal(queue3.status, 200);
+  assert.ok(!queue3.data.days.some((d) => d.branch_id === S.branchTwo && d.date === today));
+});

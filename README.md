@@ -63,7 +63,7 @@ A full-stack web application that runs locally (no internet needed) and handles 
 - **Expiry is guarded at every door** — it cannot be *entered* (past dates are rejected), it is *watched* (per-medicine warning windows on the dashboard and the expiry page), it cannot be *sold* (FEFO skips it), and it leaves the books only through a recorded *write-off*.
 - **Branch-scoped data** — every record carries a `branch_id` taken from the user's login token (never from the request), so the same system serves one pharmacy or many branches without mixing data.
 - **Backup that is actually tested** — an in-app `mysqldump` backup, with a restore into a separate test database verified end-to-end.
-- **Automated tests** — `npm test` in the `server` folder runs 27 tests against a separate `pharmacy_db_test` database, covering FEFO, oversell/over-return rejection, reports netting, day close, roles, branches and the Main-admin-only branch-management guard, branch-scoped user administration and audit log, the central dashboard, the approval workflow and per-branch report reading.
+- **Automated tests** — `npm test` in the `server` folder runs 28 tests against a separate `pharmacy_db_test` database, covering FEFO, oversell/over-return rejection, reports netting, day close, roles, branches and the Main-admin-only branch-management guard, branch-scoped user administration and audit log, the central dashboard, the approval workflow, per-branch report reading and purchase edits re-pending the reviewed day.
 
 ## Run it locally
 

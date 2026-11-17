@@ -9,7 +9,7 @@ const pool = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
 const { auditLog } = require('../audit');
 const { isDayClosed, todayStr, dayOf, dayClosedMessage } = require('../dayClose');
-const { getMainBranchId } = require('../mainBranch');
+const { getMainBranchId, resetDayReview } = require('../mainBranch');
 
 const router = express.Router();
 
@@ -797,6 +797,11 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
       [supplierId, invoiceNo, newTotal, paidAmount, notes, purchase.id]
     );
     await conn.commit();
+    // The purchase day's figures changed — a reviewed day returns to
+    // "pending" so the boss sees the new numbers (same hook as sales,
+    // awaited for the same reason). Waiting/rejected purchases never
+    // reach this path, and their figures were never part of a review.
+    await resetDayReview(pool, branchId, dayOf(purchase.purchase_date)).catch(() => {});
     auditLog(req, 'purchase.updated', 'purchases', purchase.id, {
       summary: `Purchase ${invoiceNo} edited: total ${newTotal} AFN, paid ${paidAmount} AFN`,
       invoice_no: invoiceNo, total_amount: newTotal, paid_amount: paidAmount,
@@ -882,6 +887,10 @@ router.delete('/:id', authRequired, requireRole('admin', 'pharmacist'), async (r
     }
     await conn.query('UPDATE purchases SET is_deleted = 1 WHERE id = ?', [req.params.id]);
     await conn.commit();
+    // The purchase day's figures changed — a reviewed day returns to
+    // "pending" so the boss sees the new numbers (same hook as sales,
+    // awaited for the same reason).
+    await resetDayReview(pool, branchId, deletePurchaseDay).catch(() => {});
     auditLog(req, 'purchase.deleted', 'purchases', req.params.id, {
       summary: `Purchase ${head[0].invoice_no} deleted`,
       invoice_no: head[0].invoice_no,

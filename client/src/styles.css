@@ -288,6 +288,9 @@ th { color: #64748b; font-weight: 600; font-size: 13px; }
 .table-scroll { max-height: 320px; overflow-y: auto; overflow-x: auto; }
 /* Reports tables: same scroll box, sized for six records at a time */
 .table-scroll.rows-6 { max-height: 268px; }
+/* Users table: same scroll box, sized for three users at a time (its
+   rows are taller — they carry action buttons) */
+.table-scroll.rows-3 { max-height: 230px; }
 .table-scroll thead th { position: sticky; top: 0; background: #fff; z-index: 1; }
 
 /* Scrollbars inside table boxes stay visible and easy to grab — the side
