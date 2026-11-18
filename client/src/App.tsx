@@ -328,7 +328,7 @@ interface PurchRow {
   net: number;
 }
 
-type Page = 'dashboard' | 'medicines' | 'expiry' | 'sales' | 'purchases' | 'suppliers' | 'reports' | 'customers' | 'backup' | 'settings' | 'approvals';
+type Page = 'dashboard' | 'medicines' | 'expiry' | 'sales' | 'purchases' | 'suppliers' | 'reports' | 'customers' | 'backup' | 'settings' | 'approvals' | 'whatsapp';
 
 const USER_KEY = 'pharmacy_user';
 const LANG_KEY = 'pharmacy_lang';
@@ -489,10 +489,10 @@ export default function App() {
   // every route, so hiding a menu item is never the only protection.
   const allowedPages: Page[] =
     user.role === 'cashier'
-      ? ['dashboard', 'sales', 'customers', 'settings', 'backup']
+      ? ['dashboard', 'sales', 'customers', 'settings', 'backup', 'whatsapp']
       : user.role === 'pharmacist'
-        ? ['dashboard', 'medicines', 'expiry', 'sales', 'purchases', 'suppliers', 'reports', 'customers', 'settings', 'backup']
-        : ['dashboard', 'medicines', 'expiry', 'sales', 'purchases', 'suppliers', 'reports', 'customers', 'settings', 'backup', 'approvals'];
+        ? ['dashboard', 'medicines', 'expiry', 'sales', 'purchases', 'suppliers', 'reports', 'customers', 'settings', 'backup', 'whatsapp']
+        : ['dashboard', 'medicines', 'expiry', 'sales', 'purchases', 'suppliers', 'reports', 'customers', 'settings', 'backup', 'approvals', 'whatsapp'];
   // Menu order: daily work first, then stock, buying, people, analysis,
   // and the system sections (backup, settings) last.
   const allMenu: { key: Page; label: string; icon: string }[] = [
@@ -504,6 +504,7 @@ export default function App() {
     { key: 'suppliers', label: t(lang, 'suppliers'), icon: '🚚' },
     { key: 'customers', label: t(lang, 'customers'), icon: '👥' },
     { key: 'reports', label: t(lang, 'reports'), icon: '📊' },
+    { key: 'whatsapp', label: t(lang, 'whatsapp'), icon: '📲' },
     { key: 'approvals', label: t(lang, 'approvals'), icon: '🔔' },
     { key: 'backup', label: t(lang, 'backup'), icon: '💾' },
     { key: 'settings', label: t(lang, 'settings'), icon: '⚙️' },
@@ -565,6 +566,7 @@ export default function App() {
         {visiblePage === 'purchases' && <PurchasesPage lang={lang} />}
         {visiblePage === 'suppliers' && <SuppliersPage lang={lang} />}
         {visiblePage === 'reports' && <ReportsPage lang={lang} role={user.role} isMainAdmin={approvalInfo?.isMainAdmin ?? false} />}
+        {visiblePage === 'whatsapp' && <WhatsAppPage lang={lang} isMainAdmin={approvalInfo?.isMainAdmin ?? false} />}
         {visiblePage === 'customers' && <CustomersPage lang={lang} role={user.role} />}
         {visiblePage === 'backup' && <BackupPage lang={lang} isAdmin={user.role === 'admin'} onLogout={logout} />}
         {visiblePage === 'settings' && <SettingsPage lang={lang} user={user} setLang={setLang} isMainAdmin={approvalInfo?.isMainAdmin ?? false} />}
@@ -801,45 +803,6 @@ function Dashboard({
   } | null>(null);
   const [error, setError] = useState('');
 
-  // WhatsApp daily summary for every user, cashiers included: today's
-  // full report to each owner. The figures come from the dedicated
-  // whatsapp-summary route, which is the one place a cashier reads
-  // branch-wide numbers (the owner's decision).
-  const [waNumbers, setWaNumbers] = useState<string[]>([]);
-  const [waSending, setWaSending] = useState(false);
-  const [waMessage, setWaMessage] = useState('');
-
-  useEffect(() => {
-    api
-      .get('/settings/owner-whatsapp')
-      .then((data) => setWaNumbers((data.numbers as string[]) || []))
-      .catch(() => undefined);
-  }, []);
-
-  const sendWhatsApp = async (number: string) => {
-    setWaSending(true);
-    setWaMessage('');
-    try {
-      const date = todayStr();
-      const data = await api.get(`/reports/whatsapp-summary?date=${date}`);
-      const text = buildWaSummaryMessage(
-        lang,
-        (data.branch_name as string) || '',
-        date,
-        data.summary as Summary,
-        Number(data.purchases?.bills || 0),
-        Number(data.purchases?.net || 0),
-        data.cash,
-        !!data.closed
-      );
-      window.open(`https://wa.me/${number}?text=${encodeURIComponent(text)}`, '_blank');
-    } catch (err) {
-      setWaMessage(err instanceof Error ? err.message : 'Error');
-    } finally {
-      setWaSending(false);
-    }
-  };
-
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -986,30 +949,6 @@ function Dashboard({
               📊 {t(lang, 'viewReports')}
             </button>
           </>
-        )}
-      </div>
-
-      <div className="panel">
-        <h3 style={{ marginTop: 0 }}>📲 {t(lang, 'whatsappTitle')}</h3>
-        <p className="muted">{t(lang, 'whatsappDesc')}</p>
-        {waNumbers.length === 0 ? (
-          <p className="note-text">{t(lang, 'whatsappNoNumber')}</p>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {waNumbers.map((n) => (
-              <div key={n} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                <span style={{ fontFamily: 'monospace' }}>{n}</span>
-                <button className="btn-primary" onClick={() => sendWhatsApp(n)} disabled={waSending}>
-                  {t(lang, 'whatsappSend')}
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        {waMessage && (
-          <p className="note-text" style={{ marginTop: 8 }}>
-            {waMessage}
-          </p>
         )}
       </div>
 
@@ -4890,6 +4829,226 @@ function DayClosePanel({ lang, date, role }: { lang: Lang; date: string; role: s
   );
 }
 
+// WhatsApp reports — one section for sending the day's summary to the
+// owners and managing their numbers. Every user can send (the owner's
+// decision); only the Main Branch admin manages the numbers. The figures
+// come from the whatsapp-summary route, which serves any date for the
+// caller's own branch to any role. The preview shows exactly the text
+// that will open in WhatsApp, so the sender can check it first.
+function WhatsAppPage({ lang, isMainAdmin }: { lang: Lang; isMainAdmin: boolean }) {
+  const [date, setDate] = useState(todayStr());
+  const [numbers, setNumbers] = useState<string[]>([]);
+  const [newNumber, setNewNumber] = useState('');
+  const [numMsg, setNumMsg] = useState('');
+  const [numError, setNumError] = useState('');
+  const [preview, setPreview] = useState('');
+  const [previewError, setPreviewError] = useState('');
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState('');
+
+  const fetchMessage = async (d: string): Promise<string> => {
+    const data = await api.get(`/reports/whatsapp-summary?date=${d}`);
+    return buildWaSummaryMessage(
+      lang,
+      (data.branch_name as string) || '',
+      d,
+      data.summary as Summary,
+      Number(data.purchases?.bills || 0),
+      Number(data.purchases?.net || 0),
+      data.cash,
+      !!data.closed
+    );
+  };
+
+  useEffect(() => {
+    api
+      .get('/settings/owner-whatsapp')
+      .then((data) => setNumbers((data.numbers as string[]) || []))
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    setPreviewLoading(true);
+    setPreviewError('');
+    fetchMessage(date)
+      .then((text) => {
+        if (alive) setPreview(text);
+      })
+      .catch((err) => {
+        if (alive) {
+          setPreview('');
+          setPreviewError(err instanceof Error ? err.message : 'Error');
+        }
+      })
+      .finally(() => {
+        if (alive) setPreviewLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date, lang]);
+
+  const cleanWaNumber = (raw: string) => {
+    let n = raw
+      .replace(/[\s\-()]/g, '')
+      .replace(/^\+/, '');
+    if (n.startsWith('00')) n = n.slice(2);
+    // Same rule as the server: Afghan local format 0XXXXXXXXX becomes
+    // 93XXXXXXXXX, which is what wa.me needs.
+    if (/^0\d{9}$/.test(n)) n = `93${n.slice(1)}`;
+    return n;
+  };
+
+  const addNumber = () => {
+    setNumMsg('');
+    setNumError('');
+    const cleaned = cleanWaNumber(newNumber);
+    if (cleaned === '') return;
+    if (!/^\d{9,15}$/.test(cleaned)) {
+      setNumError(t(lang, 'ownerWhatsappInvalid'));
+      return;
+    }
+    if (numbers.includes(cleaned)) {
+      setNumError(t(lang, 'ownerWhatsappDuplicate'));
+      return;
+    }
+    setNumbers([...numbers, cleaned]);
+    setNewNumber('');
+  };
+
+  const saveNumbers = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setNumMsg('');
+    setNumError('');
+    try {
+      const data = await api.post('/settings/owner-whatsapp', { numbers });
+      setNumbers((data.numbers as string[]) || []);
+      setNumMsg(t(lang, 'saved'));
+    } catch (err) {
+      setNumError(err instanceof Error ? err.message : 'Error');
+    }
+  };
+
+  const sendTo = async (number: string) => {
+    setSending(true);
+    setSendError('');
+    try {
+      // Rebuilt fresh at send time so the figures are never stale.
+      const text = await fetchMessage(date);
+      window.open(`https://wa.me/${number}?text=${encodeURIComponent(text)}`, '_blank');
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : 'Error');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <>
+      <h2>📲 {t(lang, 'whatsappTitle')}</h2>
+      <p className="muted">{t(lang, 'whatsappDesc')}</p>
+
+      <div className="panel">
+        <h3 style={{ marginTop: 0 }}>📤 {t(lang, 'whatsappSendTitle')}</h3>
+        <div className="form-grid">
+          <div className="field">
+            <label>{t(lang, 'dateLabel')}</label>
+            <input
+              className="cell-input"
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+            />
+          </div>
+        </div>
+        {numbers.length === 0 ? (
+          <p className="note-text">{isMainAdmin ? t(lang, 'whatsappNoNumber') : t(lang, 'whatsappAskAdmin')}</p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {numbers.map((n) => (
+              <div key={n} className="wa-row">
+                <span className="wa-number">{n}</span>
+                <button className="btn-primary wa-send" onClick={() => sendTo(n)} disabled={sending}>
+                  {t(lang, 'whatsappSend')}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {sendError && <div className="error-box">{sendError}</div>}
+      </div>
+
+      <div className="panel">
+        <h3 style={{ marginTop: 0 }}>👁️ {t(lang, 'whatsappPreview')}</h3>
+        {previewLoading ? (
+          <p className="muted">{t(lang, 'loading')}</p>
+        ) : previewError ? (
+          <div className="error-box">{previewError}</div>
+        ) : (
+          <pre className="wa-preview">{preview}</pre>
+        )}
+      </div>
+
+      {isMainAdmin && (
+        <div className="panel">
+          <h3>📲 {t(lang, 'ownerWhatsapp')}</h3>
+          <p className="muted" style={{ fontSize: 14, marginTop: -6 }}>
+            {t(lang, 'ownerWhatsappDesc')}
+          </p>
+          {numbers.length === 0 ? (
+            <p className="muted">{t(lang, 'ownerWhatsappNone')}</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+              {numbers.map((n) => (
+                <div key={n} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ fontFamily: 'monospace' }}>{n}</span>
+                  <button
+                    type="button"
+                    className="btn-remove"
+                    onClick={() => setNumbers(numbers.filter((x) => x !== n))}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <form onSubmit={saveNumbers}>
+            <div className="form-grid">
+              <div className="field">
+                <label>{t(lang, 'ownerWhatsapp')}</label>
+                <input
+                  value={newNumber}
+                  onChange={(e) => setNewNumber(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      addNumber();
+                    }
+                  }}
+                  placeholder="93700123456"
+                  inputMode="tel"
+                />
+              </div>
+            </div>
+            <button type="button" className="btn-secondary" onClick={addNumber}>
+              {t(lang, 'ownerWhatsappAdd')}
+            </button>{' '}
+            <button className="btn-save" type="submit">
+              {t(lang, 'save')}
+            </button>
+            {numError && <div className="error-box">{numError}</div>}
+            {numMsg && <div className="success-box">{numMsg}</div>}
+          </form>
+        </div>
+      )}
+    </>
+  );
+}
+
 function ReportsPage({
   lang,
   role,
@@ -5436,9 +5595,9 @@ function ReportsPage({
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {waNumbers.map((n) => (
-                <div key={n} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <span style={{ fontFamily: 'monospace' }}>{n}</span>
-                  <button className="btn-primary" onClick={() => sendWhatsApp(n)} disabled={waSending}>
+                <div key={n} className="wa-row">
+                  <span className="wa-number">{n}</span>
+                  <button className="btn-primary wa-send" onClick={() => sendWhatsApp(n)} disabled={waSending}>
                     {t(lang, 'whatsappSend')}
                   </button>
                 </div>
@@ -7315,13 +7474,6 @@ function SettingsPage({
   const [brListError, setBrListError] = useState('');
   const [delBranchId, setDelBranchId] = useState('');
 
-  // The owners' WhatsApp numbers: the daily summary goes to each of
-  // them. A list, set by the Main Branch admin only.
-  const [ownerWaList, setOwnerWaList] = useState<string[]>([]);
-  const [newOwnerWa, setNewOwnerWa] = useState('');
-  const [ownerWaMsg, setOwnerWaMsg] = useState('');
-  const [ownerWaError, setOwnerWaError] = useState('');
-
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [nuName, setNuName] = useState('');
   const [nuUsername, setNuUsername] = useState('');
@@ -7387,58 +7539,6 @@ function SettingsPage({
   const loadBranches = async () => {
     const data = await api.get('/branches');
     setBranches(data.branches as BranchRow[]);
-  };
-
-  const loadOwnerWa = async () => {
-    const data = await api.get('/settings/owner-whatsapp');
-    setOwnerWaList((data.numbers as string[]) || []);
-  };
-
-  useEffect(() => {
-    if (!isAdmin || !isMainAdmin) return;
-    loadOwnerWa().catch(() => undefined);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin, isMainAdmin]);
-
-  const cleanWaNumber = (raw: string) => {
-    let n = raw
-      .replace(/[\s\-()]/g, '')
-      .replace(/^\+/, '');
-    if (n.startsWith('00')) n = n.slice(2);
-    // Same rule as the server: Afghan local format 0XXXXXXXXX becomes
-    // 93XXXXXXXXX, which is what wa.me needs.
-    if (/^0\d{9}$/.test(n)) n = `93${n.slice(1)}`;
-    return n;
-  };
-
-  const addOwnerWa = () => {
-    setOwnerWaMsg('');
-    setOwnerWaError('');
-    const cleaned = cleanWaNumber(newOwnerWa);
-    if (cleaned === '') return;
-    if (!/^\d{9,15}$/.test(cleaned)) {
-      setOwnerWaError(t(lang, 'ownerWhatsappInvalid'));
-      return;
-    }
-    if (ownerWaList.includes(cleaned)) {
-      setOwnerWaError(t(lang, 'ownerWhatsappDuplicate'));
-      return;
-    }
-    setOwnerWaList([...ownerWaList, cleaned]);
-    setNewOwnerWa('');
-  };
-
-  const saveOwnerWa = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setOwnerWaMsg('');
-    setOwnerWaError('');
-    try {
-      const data = await api.post('/settings/owner-whatsapp', { numbers: ownerWaList });
-      setOwnerWaList((data.numbers as string[]) || []);
-      setOwnerWaMsg(t(lang, 'saved'));
-    } catch (err) {
-      setOwnerWaError(err instanceof Error ? err.message : 'Error');
-    }
   };
 
   useEffect(() => {
@@ -7757,60 +7857,6 @@ function SettingsPage({
             <button className="btn-save" type="submit">
               {t(lang, 'save')}
             </button>
-          </form>
-        </div>
-      )}
-
-      {isAdmin && isMainAdmin && (
-        <div className="panel">
-          <h3>📲 {t(lang, 'ownerWhatsapp')}</h3>
-          <p className="muted" style={{ fontSize: 14, marginTop: -6 }}>
-            {t(lang, 'ownerWhatsappDesc')}
-          </p>
-          {ownerWaList.length === 0 ? (
-            <p className="muted">{t(lang, 'ownerWhatsappNone')}</p>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
-              {ownerWaList.map((n) => (
-                <div key={n} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <span style={{ fontFamily: 'monospace' }}>{n}</span>
-                  <button
-                    type="button"
-                    className="btn-remove"
-                    onClick={() => setOwnerWaList(ownerWaList.filter((x) => x !== n))}
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          <form onSubmit={saveOwnerWa}>
-            <div className="form-grid">
-              <div className="field">
-                <label>{t(lang, 'ownerWhatsapp')}</label>
-                <input
-                  value={newOwnerWa}
-                  onChange={(e) => setNewOwnerWa(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      addOwnerWa();
-                    }
-                  }}
-                  placeholder="93700123456"
-                  inputMode="tel"
-                />
-              </div>
-            </div>
-            <button type="button" className="btn-secondary" onClick={addOwnerWa}>
-              {t(lang, 'ownerWhatsappAdd')}
-            </button>{' '}
-            <button className="btn-save" type="submit">
-              {t(lang, 'save')}
-            </button>
-            {ownerWaError && <div className="error-box">{ownerWaError}</div>}
-            {ownerWaMsg && <div className="success-box">{ownerWaMsg}</div>}
           </form>
         </div>
       )}

@@ -686,13 +686,29 @@ tr.row-warning td { background: #fffdf5; }
 .detail-stat-label { display: block; font-size: 13px; color: #64748b; margin-bottom: 2px; }
 .detail-stat-value { font-size: 17px; font-weight: 700; }
 
+/* ---------- WhatsApp page ---------- */
+/* One tidy row per owner: the number on one side, a compact send button
+   on the other. btn-primary is full-width on its own, so the row's
+   button keeps its own size. */
+.wa-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.wa-number { font-family: monospace; font-size: 15px; flex: 1; min-width: 140px; }
+.wa-row .btn-primary { width: auto; margin-top: 0; padding: 9px 22px; }
+/* The message preview: the exact text that will open in WhatsApp. */
+.wa-preview {
+  white-space: pre-wrap; word-break: break-word; margin: 0;
+  background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px;
+  padding: 12px 14px; font-size: 14px; line-height: 1.6;
+}
+
 /* ---------- Phone layout (Phase 3: same app, small screen) ----------
    On a narrow screen the sidebar becomes a slim top bar: the brand on one
    side, a ☰ button on the other. Tapping ☰ opens the menu as a tidy
    stacked list (as on desktop); picking a page closes it again. Content
    goes full width, dashboard panels stack, and cards use two columns
-   where they fit. Tables already scroll sideways inside their panels, so
-   nothing here changes how tables behave. Desktop layout is untouched. */
+   where they fit. Tables keep scrolling sideways inside their panels,
+   with tighter cells so more columns fit. The tab row wraps instead of
+   stretching the page, and the content column clips any stray overflow
+   so the page itself never slides sideways. Desktop layout is untouched. */
 @media (max-width: 720px) {
   .app { flex-direction: column; }
   .sidebar { width: 100%; padding: 10px; gap: 6px; }
@@ -712,9 +728,15 @@ tr.row-warning td { background: #fffdf5; }
   .menu-body .spacer { display: none; }
   .menu-body .user-box { width: 100%; padding: 10px 8px 0; }
   .menu-body button.logout { width: 100%; }
-  .main { padding: 14px 12px; }
+  .main { padding: 14px 12px; overflow-x: clip; }
   .main h2 { font-size: 19px; }
   .cards { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
   .dash-grid { grid-template-columns: 1fr; }
   .panel { padding: 14px 12px; }
+  /* Report tabs wrap to a second row instead of pushing the page wider
+     than the screen (the sideways slide in the Reports screenshots). */
+  .tabs { flex-wrap: wrap; }
+  .tabs button { padding: 7px 14px; }
+  /* Tighter table cells so more columns fit on a narrow screen. */
+  th, td { padding: 6px 6px; font-size: 13.5px; }
 }
