@@ -243,6 +243,56 @@ router.get('/daily', authRequired, async (req, res) => {
   }
 });
 
+// GET /api/reports/whatsapp-summary?date=YYYY-MM-DD — the day's full
+// figures for the WhatsApp report to the owners: branch-wide sales,
+// purchases and cash, plus the day-close state and the branch name.
+//
+// This is the ONE route where a cashier reads branch-wide money figures,
+// and only for sending the owners' report: the owner decided every user,
+// cashiers included, must be able to send the full report with profit.
+// Every other report route keeps its role scoping. The branch ALWAYS
+// comes from the login token — this route never accepts branch_id, so a
+// user can only ever send their own branch's day.
+router.get('/whatsapp-summary', authRequired, async (req, res) => {
+  const date = req.query.date === undefined ? fmtDate(new Date()) : String(req.query.date);
+  if (!isValidDateString(date)) {
+    return res.status(400).json({ status: 'error', message: 'date must be YYYY-MM-DD' });
+  }
+  const end = nextDayString(date);
+  try {
+    const branchId = req.user.branch_id;
+    const summary = await summaryForRange(branchId, date, end);
+    const suppliers = await purchasesForRange(branchId, date, end);
+    const cash = await cashForDay(branchId, date, end);
+    let closed = false;
+    try {
+      const [rows] = await pool.query(
+        'SELECT 1 FROM day_closes WHERE branch_id = ? AND close_date = ? LIMIT 1',
+        [branchId, date]
+      );
+      closed = rows.length > 0;
+    } catch (err) {
+      if (!isMissingDayCloseTable(err)) throw err;
+      closed = false;
+    }
+    const [[branchRow]] = await pool.query('SELECT name FROM branches WHERE id = ? LIMIT 1', [branchId]);
+    return res.json({
+      status: 'ok',
+      date,
+      branch_name: branchRow ? branchRow.name : '',
+      summary,
+      purchases: {
+        bills: suppliers.reduce((a, r) => a + Number(r.bills || 0), 0),
+        net: suppliers.reduce((a, r) => a + Number(r.net || 0), 0),
+      },
+      cash,
+      closed,
+    });
+  } catch (err) {
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+});
+
 // GET /api/reports/central?date=YYYY-MM-DD — Main Branch admin only.
 // The central dashboard: one day's summary per branch, plus totals,
 // plus whether each branch closed its day. A child branch never sees

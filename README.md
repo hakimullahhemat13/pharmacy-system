@@ -33,6 +33,7 @@ A full-stack web application that runs locally (no internet needed) and handles 
 - **Multi-branch & central dashboard** — branches are managed from Settings; the Main Branch admin sees every branch's daily figures and day-close state in one central panel, and user management works across branches
 - **Branch approvals** — anything a child branch enters (new medicines, purchases) stays **pending** until the Main Branch admin accepts it: it counts in no stock figure and cannot be sold until then. Each child branch's day (sold / bought / revenue / profit) is likewise reviewed by the boss, and a rejected entry goes back to the branch with the boss's reason for correction. The Main admin gets an in-app notification (badge + queue) whenever something waits
 - **Per-branch reports** — the Main Branch admin can switch the whole Reports page (every period, stock value, Excel export and print) to any branch and read that branch's figures; a child branch always sees only its own, and closing a day stays each branch's own action
+- **Daily summary to WhatsApp** — the Main Branch admin saves the owners' WhatsApp numbers in Settings (a list — a pharmacy can have more than one owner); every user, cashiers included, can then send the day's full summary to each owner: sales, profit, returns, cash, credit given, customer payments, purchases, supplier payments, expected till cash and the day-close state. The Dashboard sends today's report for any user; the Daily report sends any selected date and, for the Main admin, any branch. Each branch sends its own day; another branch's summary carries sales and purchases only, never its cash figures
 
 ## Screenshots
 
@@ -63,7 +64,7 @@ A full-stack web application that runs locally (no internet needed) and handles 
 - **Expiry is guarded at every door** — it cannot be *entered* (past dates are rejected), it is *watched* (per-medicine warning windows on the dashboard and the expiry page), it cannot be *sold* (FEFO skips it), and it leaves the books only through a recorded *write-off*.
 - **Branch-scoped data** — every record carries a `branch_id` taken from the user's login token (never from the request), so the same system serves one pharmacy or many branches without mixing data.
 - **Backup that is actually tested** — an in-app `mysqldump` backup, with a restore into a separate test database verified end-to-end.
-- **Automated tests** — `npm test` in the `server` folder runs 28 tests against a separate `pharmacy_db_test` database, covering FEFO, oversell/over-return rejection, reports netting, day close, roles, branches and the Main-admin-only branch-management guard, branch-scoped user administration and audit log, the central dashboard, the approval workflow, per-branch report reading and purchase edits re-pending the reviewed day.
+- **Automated tests** — `npm test` in the `server` folder runs 30 tests against a separate `pharmacy_db_test` database, covering FEFO, oversell/over-return rejection, reports netting, day close, roles, branches and the Main-admin-only branch-management guard, branch-scoped user administration and audit log, the central dashboard, the approval workflow, per-branch report reading, purchase edits re-pending the reviewed day, the owners WhatsApp numbers guard and the WhatsApp summary route.
 
 ## Run it locally
 

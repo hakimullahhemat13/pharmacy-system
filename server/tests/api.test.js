@@ -1058,3 +1058,90 @@ test('approvals: editing or deleting an approved purchase re-pends its day', asy
   assert.equal(queue3.status, 200);
   assert.ok(!queue3.data.days.some((d) => d.branch_id === S.branchTwo && d.date === today));
 });
+
+test('settings: the owners WhatsApp numbers are a list, set by the Main admin alone', async () => {
+  // Nothing saved yet.
+  const empty = await api('GET', '/settings/owner-whatsapp', undefined, S.token);
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.data.numbers, []);
+  // Even a cashier may read the list: any user can send the report.
+  const cashier = await api('GET', '/settings/owner-whatsapp', undefined, S.cashierToken);
+  assert.equal(cashier.status, 200);
+  assert.deepEqual(cashier.data.numbers, []);
+  // Bad values are rejected.
+  const notArray = await api('POST', '/settings/owner-whatsapp', { numbers: '93700123456' }, S.token);
+  assert.equal(notArray.status, 400);
+  const bad = await api('POST', '/settings/owner-whatsapp', { numbers: ['abc'] }, S.token);
+  assert.equal(bad.status, 400);
+  const short = await api('POST', '/settings/owner-whatsapp', { numbers: ['12345678'] }, S.token);
+  assert.equal(short.status, 400);
+  // A child-branch admin may not set it.
+  const b2login = await api('POST', '/auth/login', { username: 'b2admin', password: 'admin123' });
+  const b2denied = await api('POST', '/settings/owner-whatsapp', { numbers: ['93700123456'] }, b2login.data.token);
+  assert.equal(b2denied.status, 403);
+  // A pharmacist may not set it either.
+  const pharm = await api('POST', '/settings/owner-whatsapp', { numbers: ['93700123456'] }, S.b2Token);
+  assert.equal(pharm.status, 403);
+  // The Main admin sets two numbers; values are normalized and de-duplicated.
+  const saved = await api(
+    'POST',
+    '/settings/owner-whatsapp',
+    { numbers: ['+93 70-012 3456', '93700987654', '93700123456'] },
+    S.token
+  );
+  assert.equal(saved.status, 200);
+  assert.deepEqual(saved.data.numbers, ['93700123456', '93700987654']);
+  // A pharmacist reads the same list.
+  const read = await api('GET', '/settings/owner-whatsapp', undefined, S.b2Token);
+  assert.equal(read.status, 200);
+  assert.deepEqual(read.data.numbers, ['93700123456', '93700987654']);
+  // Afghan local format converts to the country-code format wa.me needs.
+  const local = await api(
+    'POST',
+    '/settings/owner-whatsapp',
+    { numbers: ['0798820626', '0093700987654'] },
+    S.token
+  );
+  assert.equal(local.status, 200);
+  assert.deepEqual(local.data.numbers, ['93798820626', '93700987654']);
+  const reread = await api('GET', '/settings/owner-whatsapp', undefined, S.token);
+  assert.deepEqual(reread.data.numbers, ['93798820626', '93700987654']);
+  // Clearing it removes the list.
+  const cleared = await api('POST', '/settings/owner-whatsapp', { numbers: [] }, S.token);
+  assert.equal(cleared.status, 200);
+  assert.deepEqual(cleared.data.numbers, []);
+  const gone = await api('GET', '/settings/owner-whatsapp', undefined, S.token);
+  assert.deepEqual(gone.data.numbers, []);
+});
+
+test('reports: the WhatsApp summary gives every user their own branch full day', async () => {
+  const today = dayStr(0);
+  // A cashier reads the full branch-wide day here — profit and cash
+  // included — because the owner decided every user sends the report.
+  const asCashier = await api('GET', `/reports/whatsapp-summary?date=${today}`, undefined, S.cashierToken);
+  assert.equal(asCashier.status, 200);
+  assert.equal(asCashier.data.branch_name, 'Test Branch');
+  assert.equal(typeof asCashier.data.summary.sales_count, 'number');
+  assert.equal(typeof asCashier.data.summary.profit, 'number');
+  assert.equal(typeof asCashier.data.cash.expected, 'number');
+  assert.equal(typeof asCashier.data.purchases.net, 'number');
+  assert.equal(typeof asCashier.data.closed, 'boolean');
+  // The route never accepts branch_id: even the Main admin asking for
+  // Branch Two still gets their own branch.
+  const asked = await api(
+    'GET',
+    `/reports/whatsapp-summary?date=${today}&branch_id=${S.branchTwo}`,
+    undefined,
+    S.token
+  );
+  assert.equal(asked.status, 200);
+  assert.equal(asked.data.branch_name, 'Test Branch');
+  // A Branch Two cashier gets Branch Two's day, not the Main branch's.
+  const b2login = await api('POST', '/auth/login', { username: 'b2cashier', password: 'cashier1' });
+  const b2 = await api('GET', `/reports/whatsapp-summary?date=${today}`, undefined, b2login.data.token);
+  assert.equal(b2.status, 200);
+  assert.equal(b2.data.branch_name, 'Branch Two');
+  // A bad date is rejected.
+  const bad = await api('GET', '/reports/whatsapp-summary?date=not-a-date', undefined, S.token);
+  assert.equal(bad.status, 400);
+});

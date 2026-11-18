@@ -351,6 +351,61 @@ function fmt(n: number): string {
   return Number(n).toLocaleString('en-US');
 }
 
+// The WhatsApp daily summary text, shared by the Reports button and the
+// Dashboard button so both send exactly the same report. `cash` is null
+// when the figures come from another branch (cash stays local), and then
+// the message carries sales + purchases only.
+function buildWaSummaryMessage(
+  lang: Lang,
+  branchName: string,
+  date: string,
+  s: Summary,
+  purchBills: number,
+  purchNet: number,
+  cash: {
+    till: number;
+    customerPayments: number;
+    refunds: number;
+    supplierPaid: number;
+    expected: number;
+  } | null,
+  closed: boolean
+): string {
+  const returnsTotal = Number(s.returns_total || 0);
+  const lines: string[] = [];
+  lines.push(`📋 ${t(lang, 'waTitle')} — ${branchName} — ${date}`);
+  lines.push('');
+  lines.push(
+    `🛒 ${t(lang, 'waSales')}: ${fmt(s.sales_count)} ${t(lang, 'waBills')}, ${fmt(s.items_sold)} ${t(lang, 'waItems')}`
+  );
+  lines.push(`💰 ${t(lang, 'waTotal')}: ${fmt(s.revenue)} AFN`);
+  lines.push(`📈 ${t(lang, 'waProfit')}: ${fmt(s.profit)} AFN`);
+  lines.push(
+    `↩️ ${t(lang, 'waReturns')}: ${fmt(returnsTotal)} AFN (${fmt(Number(s.returned_items || 0))} ${t(lang, 'waItems')})`
+  );
+  if (cash) {
+    // Credit given at the till: what the day's bills totalled, minus what
+    // customers paid at the till. Revenue is already net of returns, so
+    // the returns are added back first.
+    const creditGiven = Math.max(
+      0,
+      Math.round((Number(s.revenue) + returnsTotal - Number(cash.till)) * 100) / 100
+    );
+    lines.push(`💵 ${t(lang, 'waCash')}: ${fmt(cash.till)} AFN`);
+    lines.push(`📒 ${t(lang, 'waCreditGiven')}: ${fmt(creditGiven)} AFN`);
+    lines.push(`🤝 ${t(lang, 'waCustPay')}: ${fmt(cash.customerPayments)} AFN`);
+  }
+  lines.push('');
+  lines.push(`📦 ${t(lang, 'waPurchases')}: ${fmt(purchNet)} AFN (${fmt(purchBills)} ${t(lang, 'waBills')})`);
+  if (cash) {
+    lines.push(`🏭 ${t(lang, 'waSuppPay')}: ${fmt(cash.supplierPaid)} AFN`);
+    lines.push('');
+    lines.push(`💵 ${t(lang, 'waExpected')}: ${fmt(cash.expected)} AFN`);
+    lines.push(`🔒 ${closed ? t(lang, 'waClosed') : t(lang, 'waOpen')}`);
+  }
+  return lines.join('\n');
+}
+
 // A mobile number, when given, is exactly 10 digits (empty = not given).
 const validPhone = (p: string) => p.trim() === '' || /^\d{10}$/.test(p.trim());
 
@@ -746,6 +801,45 @@ function Dashboard({
   } | null>(null);
   const [error, setError] = useState('');
 
+  // WhatsApp daily summary for every user, cashiers included: today's
+  // full report to each owner. The figures come from the dedicated
+  // whatsapp-summary route, which is the one place a cashier reads
+  // branch-wide numbers (the owner's decision).
+  const [waNumbers, setWaNumbers] = useState<string[]>([]);
+  const [waSending, setWaSending] = useState(false);
+  const [waMessage, setWaMessage] = useState('');
+
+  useEffect(() => {
+    api
+      .get('/settings/owner-whatsapp')
+      .then((data) => setWaNumbers((data.numbers as string[]) || []))
+      .catch(() => undefined);
+  }, []);
+
+  const sendWhatsApp = async (number: string) => {
+    setWaSending(true);
+    setWaMessage('');
+    try {
+      const date = todayStr();
+      const data = await api.get(`/reports/whatsapp-summary?date=${date}`);
+      const text = buildWaSummaryMessage(
+        lang,
+        (data.branch_name as string) || '',
+        date,
+        data.summary as Summary,
+        Number(data.purchases?.bills || 0),
+        Number(data.purchases?.net || 0),
+        data.cash,
+        !!data.closed
+      );
+      window.open(`https://wa.me/${number}?text=${encodeURIComponent(text)}`, '_blank');
+    } catch (err) {
+      setWaMessage(err instanceof Error ? err.message : 'Error');
+    } finally {
+      setWaSending(false);
+    }
+  };
+
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -892,6 +986,30 @@ function Dashboard({
               📊 {t(lang, 'viewReports')}
             </button>
           </>
+        )}
+      </div>
+
+      <div className="panel">
+        <h3 style={{ marginTop: 0 }}>📲 {t(lang, 'whatsappTitle')}</h3>
+        <p className="muted">{t(lang, 'whatsappDesc')}</p>
+        {waNumbers.length === 0 ? (
+          <p className="note-text">{t(lang, 'whatsappNoNumber')}</p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {waNumbers.map((n) => (
+              <div key={n} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <span style={{ fontFamily: 'monospace' }}>{n}</span>
+                <button className="btn-primary" onClick={() => sendWhatsApp(n)} disabled={waSending}>
+                  {t(lang, 'whatsappSend')}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {waMessage && (
+          <p className="note-text" style={{ marginTop: 8 }}>
+            {waMessage}
+          </p>
         )}
       </div>
 
@@ -4825,10 +4943,72 @@ function ReportsPage({
       .catch(() => undefined);
   }, [isMainAdmin]);
 
+  // WhatsApp daily summary: one send button per owner number. The
+  // message is built from fresh fetches (never from possibly stale page
+  // state) and opened in WhatsApp addressed to that owner.
+  const [waSending, setWaSending] = useState(false);
+  const [waMessage, setWaMessage] = useState('');
+  const [waNumbers, setWaNumbers] = useState<string[]>([]);
+
+  useEffect(() => {
+    api
+      .get('/settings/owner-whatsapp')
+      .then((data) => setWaNumbers((data.numbers as string[]) || []))
+      .catch(() => undefined);
+  }, []);
+
   // Append the viewed branch to a report URL (every report fetch and
   // export goes through this, so the whole page follows the selector).
   const q = (url: string) =>
     viewBranchId ? `${url}${url.includes('?') ? '&' : '?'}branch_id=${viewBranchId}` : url;
+
+  const sendWhatsApp = async (number: string) => {
+    setWaSending(true);
+    setWaMessage('');
+    try {
+      const daily = await api.get(q(`/reports/daily?date=${date}`));
+      const s = daily.summary as Summary;
+      const purch = await api.get(q(`/reports/purchases?period=daily&date=${date}`));
+      const rows = ((purch.suppliers as PurchRow[]) || []);
+      const purchBills = rows.reduce((a, r) => a + Number(r.bills || 0), 0);
+      const purchNet = rows.reduce((a, r) => a + Number(r.net || 0), 0);
+      // Cash and the close state belong to the own branch only: the
+      // day-close route never takes another branch's id, so another
+      // branch's message carries sales + purchases only.
+      let cash: {
+        till: number;
+        customerPayments: number;
+        refunds: number;
+        supplierPaid: number;
+        expected: number;
+      } | null = null;
+      let closed = false;
+      if (!viewingOther) {
+        try {
+          const dc = await api.get(`/reports/day-close?date=${date}`);
+          cash = dc.cash;
+          closed = !!dc.closed;
+        } catch {
+          cash = null;
+        }
+      }
+      const text = buildWaSummaryMessage(
+        lang,
+        printBranch?.name || '',
+        date,
+        s,
+        purchBills,
+        purchNet,
+        cash,
+        closed
+      );
+      window.open(`https://wa.me/${number}?text=${encodeURIComponent(text)}`, '_blank');
+    } catch (err) {
+      setWaMessage(err instanceof Error ? err.message : 'Error');
+    } finally {
+      setWaSending(false);
+    }
+  };
 
   // Print the report sheet as soon as it has rendered (same pattern as
   // the receipt): the browser dialog offers both the printer and
@@ -5246,6 +5426,32 @@ function ReportsPage({
 
       {tab === 'daily' && !viewingOther && <DayClosePanel lang={lang} date={date} role={role} />}
       {tab === 'daily' && viewingOther && <p className="muted">{t(lang, 'dayCloseOwnBranchOnly')}</p>}
+
+      {tab === 'daily' && (
+        <div className="panel">
+          <h3 style={{ marginTop: 0 }}>📲 {t(lang, 'whatsappTitle')}</h3>
+          <p className="muted">{t(lang, 'whatsappDesc')}</p>
+          {waNumbers.length === 0 ? (
+            <p className="note-text">{t(lang, 'whatsappNoNumber')}</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {waNumbers.map((n) => (
+                <div key={n} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <span style={{ fontFamily: 'monospace' }}>{n}</span>
+                  <button className="btn-primary" onClick={() => sendWhatsApp(n)} disabled={waSending}>
+                    {t(lang, 'whatsappSend')}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {waMessage && (
+            <p className="note-text" style={{ marginTop: 8 }}>
+              {waMessage}
+            </p>
+          )}
+        </div>
+      )}
 
       {tab === 'daily' && summary && (
         <div className="panel">
@@ -7109,6 +7315,13 @@ function SettingsPage({
   const [brListError, setBrListError] = useState('');
   const [delBranchId, setDelBranchId] = useState('');
 
+  // The owners' WhatsApp numbers: the daily summary goes to each of
+  // them. A list, set by the Main Branch admin only.
+  const [ownerWaList, setOwnerWaList] = useState<string[]>([]);
+  const [newOwnerWa, setNewOwnerWa] = useState('');
+  const [ownerWaMsg, setOwnerWaMsg] = useState('');
+  const [ownerWaError, setOwnerWaError] = useState('');
+
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [nuName, setNuName] = useState('');
   const [nuUsername, setNuUsername] = useState('');
@@ -7174,6 +7387,58 @@ function SettingsPage({
   const loadBranches = async () => {
     const data = await api.get('/branches');
     setBranches(data.branches as BranchRow[]);
+  };
+
+  const loadOwnerWa = async () => {
+    const data = await api.get('/settings/owner-whatsapp');
+    setOwnerWaList((data.numbers as string[]) || []);
+  };
+
+  useEffect(() => {
+    if (!isAdmin || !isMainAdmin) return;
+    loadOwnerWa().catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin, isMainAdmin]);
+
+  const cleanWaNumber = (raw: string) => {
+    let n = raw
+      .replace(/[\s\-()]/g, '')
+      .replace(/^\+/, '');
+    if (n.startsWith('00')) n = n.slice(2);
+    // Same rule as the server: Afghan local format 0XXXXXXXXX becomes
+    // 93XXXXXXXXX, which is what wa.me needs.
+    if (/^0\d{9}$/.test(n)) n = `93${n.slice(1)}`;
+    return n;
+  };
+
+  const addOwnerWa = () => {
+    setOwnerWaMsg('');
+    setOwnerWaError('');
+    const cleaned = cleanWaNumber(newOwnerWa);
+    if (cleaned === '') return;
+    if (!/^\d{9,15}$/.test(cleaned)) {
+      setOwnerWaError(t(lang, 'ownerWhatsappInvalid'));
+      return;
+    }
+    if (ownerWaList.includes(cleaned)) {
+      setOwnerWaError(t(lang, 'ownerWhatsappDuplicate'));
+      return;
+    }
+    setOwnerWaList([...ownerWaList, cleaned]);
+    setNewOwnerWa('');
+  };
+
+  const saveOwnerWa = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setOwnerWaMsg('');
+    setOwnerWaError('');
+    try {
+      const data = await api.post('/settings/owner-whatsapp', { numbers: ownerWaList });
+      setOwnerWaList((data.numbers as string[]) || []);
+      setOwnerWaMsg(t(lang, 'saved'));
+    } catch (err) {
+      setOwnerWaError(err instanceof Error ? err.message : 'Error');
+    }
   };
 
   useEffect(() => {
@@ -7492,6 +7757,60 @@ function SettingsPage({
             <button className="btn-save" type="submit">
               {t(lang, 'save')}
             </button>
+          </form>
+        </div>
+      )}
+
+      {isAdmin && isMainAdmin && (
+        <div className="panel">
+          <h3>📲 {t(lang, 'ownerWhatsapp')}</h3>
+          <p className="muted" style={{ fontSize: 14, marginTop: -6 }}>
+            {t(lang, 'ownerWhatsappDesc')}
+          </p>
+          {ownerWaList.length === 0 ? (
+            <p className="muted">{t(lang, 'ownerWhatsappNone')}</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+              {ownerWaList.map((n) => (
+                <div key={n} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ fontFamily: 'monospace' }}>{n}</span>
+                  <button
+                    type="button"
+                    className="btn-remove"
+                    onClick={() => setOwnerWaList(ownerWaList.filter((x) => x !== n))}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <form onSubmit={saveOwnerWa}>
+            <div className="form-grid">
+              <div className="field">
+                <label>{t(lang, 'ownerWhatsapp')}</label>
+                <input
+                  value={newOwnerWa}
+                  onChange={(e) => setNewOwnerWa(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      addOwnerWa();
+                    }
+                  }}
+                  placeholder="93700123456"
+                  inputMode="tel"
+                />
+              </div>
+            </div>
+            <button type="button" className="btn-secondary" onClick={addOwnerWa}>
+              {t(lang, 'ownerWhatsappAdd')}
+            </button>{' '}
+            <button className="btn-save" type="submit">
+              {t(lang, 'save')}
+            </button>
+            {ownerWaError && <div className="error-box">{ownerWaError}</div>}
+            {ownerWaMsg && <div className="success-box">{ownerWaMsg}</div>}
           </form>
         </div>
       )}

@@ -6,6 +6,8 @@
 //   GET   /api/settings/users             admin: Main admin sees all branches, any other admin only their own
 //   POST  /api/settings/users             admin: create a user (branch_id optional, defaults to own branch; another branch only for the Main admin)
 //   PATCH /api/settings/users/:id/active  admin: activate / deactivate a user (own branch, or any branch for the Main admin)
+//   GET   /api/settings/owner-whatsapp    any logged-in user: the owners' WhatsApp numbers (a list, possibly empty)
+//   POST  /api/settings/owner-whatsapp    Main admin only: set the owners' WhatsApp numbers (an empty list clears them)
 // Branch and identity ALWAYS come from the login token, never the request.
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -369,6 +371,119 @@ router.get('/audit-log', requireRole('admin'), async (req, res) => {
         );
     return res.json({ status: 'ok', entries: rows, total, actions: acts.map((r) => r.action) });
   } catch (err) {
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+});
+
+// --- Owner WhatsApp numbers ------------------------------------------------
+// The daily summary goes to the owners' WhatsApp: a pharmacy can have
+// more than one owner, so Settings holds a LIST of numbers and the report
+// is sent to each of them. The list lives in app_settings as one JSON
+// array (no migration — the table already exists). Every logged-in user
+// may READ the list — any user, cashiers included, can send the report,
+// which is the owner's own decision — but only the Main Branch admin may
+// SET it: a child branch never decides where the owners' reports go.
+// wa.me wants digits only, so every stored value is normalized: the
+// leading +, spaces and dashes are stripped.
+const OWNER_WHATSAPP_KEY = 'owner_whatsapp_numbers';
+const OWNER_WHATSAPP_LEGACY_KEY = 'owner_whatsapp';
+
+function normalizeWhatsappNumber(raw) {
+  if (raw === undefined || raw === null) return '';
+  let n = String(raw)
+    .replace(/[\s\-()]/g, '')
+    .replace(/^\+/, '');
+  if (n.startsWith('00')) n = n.slice(2);
+  // Afghan numbers are usually written with a leading 0 (07...), but
+  // wa.me needs the country code instead, so 0XXXXXXXXX becomes
+  // 93XXXXXXXXX. A number starting with 0 is never valid for wa.me.
+  if (/^0\d{9}$/.test(n)) n = `93${n.slice(1)}`;
+  return n;
+}
+
+// Normalize a stored list the same way, dropping anything invalid, so a
+// number saved in local format is used correctly without re-saving it.
+function normalizeWhatsappList(arr) {
+  const out = [];
+  for (const entry of arr) {
+    const n = normalizeWhatsappNumber(entry);
+    if (/^\d{9,15}$/.test(n) && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
+router.get('/owner-whatsapp', async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      'SELECT setting_key, setting_value FROM app_settings WHERE setting_key IN (?, ?)',
+      [OWNER_WHATSAPP_KEY, OWNER_WHATSAPP_LEGACY_KEY]
+    );
+    const byKey = new Map(rows.map((r) => [r.setting_key, r.setting_value]));
+    let numbers = [];
+    if (byKey.has(OWNER_WHATSAPP_KEY)) {
+      try {
+        const parsed = JSON.parse(byKey.get(OWNER_WHATSAPP_KEY));
+        if (Array.isArray(parsed)) numbers = normalizeWhatsappList(parsed.filter((n) => typeof n === 'string'));
+      } catch {
+        numbers = [];
+      }
+    } else if (byKey.has(OWNER_WHATSAPP_LEGACY_KEY)) {
+      // A number saved by the single-number build: read it as a list of one.
+      numbers = normalizeWhatsappList([byKey.get(OWNER_WHATSAPP_LEGACY_KEY)]);
+    }
+    return res.json({ status: 'ok', numbers });
+  } catch (err) {
+    if (err.code === 'ER_NO_SUCH_TABLE') return res.json({ status: 'ok', numbers: [] });
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+});
+
+router.post('/owner-whatsapp', requireRole('admin'), async (req, res) => {
+  if (!(await isMainAdminReq(req))) {
+    return res.status(403).json({ status: 'error', message: 'Only the Main Branch admin can do this' });
+  }
+  const raw = (req.body || {}).numbers;
+  if (!Array.isArray(raw)) {
+    return res.status(400).json({ status: 'error', message: 'numbers must be an array' });
+  }
+  const numbers = [];
+  for (const entry of raw) {
+    const n = normalizeWhatsappNumber(entry);
+    if (n === '') continue;
+    if (!/^\d{9,15}$/.test(n)) {
+      return res
+        .status(400)
+        .json({ status: 'error', message: 'each number must be 9 to 15 digits, with the country code' });
+    }
+    if (!numbers.includes(n)) numbers.push(n);
+  }
+  try {
+    if (numbers.length === 0) {
+      await pool.query('DELETE FROM app_settings WHERE setting_key IN (?, ?)', [
+        OWNER_WHATSAPP_KEY,
+        OWNER_WHATSAPP_LEGACY_KEY,
+      ]);
+    } else {
+      await pool.query(
+        'INSERT INTO app_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)',
+        [OWNER_WHATSAPP_KEY, JSON.stringify(numbers)]
+      );
+      await pool.query('DELETE FROM app_settings WHERE setting_key = ?', [OWNER_WHATSAPP_LEGACY_KEY]);
+    }
+    auditLog(req, 'settings.owner_whatsapp', 'app_settings', null, {
+      summary:
+        numbers.length === 0
+          ? 'Owner WhatsApp numbers cleared'
+          : `${numbers.length} owner WhatsApp number(s) saved`,
+    });
+    return res.json({ status: 'ok', numbers });
+  } catch (err) {
+    if (err.code === 'ER_NO_SUCH_TABLE') {
+      return res.status(400).json({
+        status: 'error',
+        message: 'app_settings table is missing — run migration-auto-backup-audit.sql, then restart the server',
+      });
+    }
     return res.status(500).json({ status: 'error', message: err.code || err.message });
   }
 });
