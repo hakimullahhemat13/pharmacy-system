@@ -636,101 +636,83 @@ function Login({
 
   return (
     <div className="login-wrap">
-      <div className="login-split">
-        <div className="login-brand">
-          <div className="brand-orb orb-1" />
-          <div className="brand-orb orb-2" />
-          <div className="login-brand-logo">💊</div>
-          <h1>{t(lang, 'appName')}</h1>
-          <p className="login-tagline">{t(lang, 'loginTagline')}</p>
-          <ul className="login-feats">
-            <li>
-              <span>💊</span> {t(lang, 'loginFeat1')}
-            </li>
-            <li>
-              <span>🧾</span> {t(lang, 'loginFeat2')}
-            </li>
-            <li>
-              <span>📊</span> {t(lang, 'loginFeat3')}
-            </li>
-          </ul>
-        </div>
-        <form className="login-card" onSubmit={submit}>
-          <LangSwitch lang={lang} setLang={setLang} />
-          <h2>{t(lang, 'loginWelcome')}</h2>
-          {isNativeApp() && (
-            <>
-              <label htmlFor="serverHost">{t(lang, 'serverAddress')}</label>
-              <div className="field-icon">
-                <span className="field-icon-mark">🖥️</span>
-                <input
-                  id="serverHost"
-                  value={serverHost}
-                  onChange={(e) => setServerHostState(e.target.value)}
-                  placeholder="192.168.1.5"
-                  autoComplete="off"
-                  required
-                />
-              </div>
-              <p className="muted" style={{ fontSize: 13, marginTop: -8 }}>
-                {t(lang, 'serverAddressHint')}
-              </p>
-            </>
-          )}
-          <label htmlFor="username">{t(lang, 'username')}</label>
-          <div className="field-icon">
-            <span className="field-icon-mark">👤</span>
-            <input
-              id="username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              autoComplete="username"
-              autoFocus
-              required
-            />
-          </div>
-          <label htmlFor="password">{t(lang, 'password')}</label>
-          <div className="field-icon has-eye">
-            <span className="field-icon-mark">🔒</span>
-            <input
-              id="password"
-              type={showPw ? 'text' : 'password'}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              onKeyDown={checkCaps}
-              onKeyUp={checkCaps}
-              onBlur={() => setCapsOn(false)}
-              autoComplete="current-password"
-              required
-            />
-            <button
-              type="button"
-              className="pw-eye"
-              onClick={() => setShowPw(!showPw)}
-              title={t(lang, 'showPassword')}
-              aria-label={t(lang, 'showPassword')}
-            >
-              {showPw ? '🙈' : '👁️'}
-            </button>
-          </div>
-          {capsOn && <div className="caps-warn">⚠️ {t(lang, 'capsLock')}</div>}
-          {error && (
-            <div key={shakeKey} className="error-box shake">
-              ⚠️ {error}
+      <form className="login-card" onSubmit={submit}>
+        <LangSwitch lang={lang} setLang={setLang} />
+        <div className="login-logo">ه</div>
+        <h1>{t(lang, 'appName')}</h1>
+        <p className="login-tagline">{t(lang, 'loginTagline')}</p>
+        {isNativeApp() && (
+          <>
+            <label htmlFor="serverHost">{t(lang, 'serverAddress')}</label>
+            <div className="field-icon">
+              <span className="field-icon-mark">🖥️</span>
+              <input
+                id="serverHost"
+                value={serverHost}
+                onChange={(e) => setServerHostState(e.target.value)}
+                placeholder="192.168.1.5"
+                autoComplete="off"
+                required
+              />
             </div>
-          )}
-          <button className="btn-primary" type="submit" disabled={busy}>
-            {busy ? (
-              <>
-                <span className="spinner" /> {t(lang, 'loading')}
-              </>
-            ) : (
-              t(lang, 'login')
-            )}
+            <p className="muted" style={{ fontSize: 13, marginTop: -8 }}>
+              {t(lang, 'serverAddressHint')}
+            </p>
+          </>
+        )}
+        <label htmlFor="username">{t(lang, 'username')}</label>
+        <div className="field-icon">
+          <span className="field-icon-mark">👤</span>
+          <input
+            id="username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="username"
+            autoFocus
+            required
+          />
+        </div>
+        <label htmlFor="password">{t(lang, 'password')}</label>
+        <div className="field-icon has-eye">
+          <span className="field-icon-mark">🔒</span>
+          <input
+            id="password"
+            type={showPw ? 'text' : 'password'}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            onKeyDown={checkCaps}
+            onKeyUp={checkCaps}
+            onBlur={() => setCapsOn(false)}
+            autoComplete="current-password"
+            required
+          />
+          <button
+            type="button"
+            className="pw-eye"
+            onClick={() => setShowPw(!showPw)}
+            title={t(lang, 'showPassword')}
+            aria-label={t(lang, 'showPassword')}
+          >
+            {showPw ? '🙈' : '👁️'}
           </button>
-        </form>
-      </div>
-      <p className="login-foot">{t(lang, 'loginFooter')}</p>
+        </div>
+        {capsOn && <div className="caps-warn">⚠️ {t(lang, 'capsLock')}</div>}
+        {error && (
+          <div key={shakeKey} className="error-box shake">
+            ⚠️ {error}
+          </div>
+        )}
+        <button className="btn-primary" type="submit" disabled={busy}>
+          {busy ? (
+            <>
+              <span className="spinner" /> {t(lang, 'loading')}
+            </>
+          ) : (
+            <>🔒 {t(lang, 'login')}</>
+          )}
+        </button>
+        <p className="login-foot">{t(lang, 'loginFooter')}</p>
+      </form>
     </div>
   );
 }

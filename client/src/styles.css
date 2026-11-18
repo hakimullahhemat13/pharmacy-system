@@ -12,7 +12,7 @@ body {
 button { font-family: inherit; cursor: pointer; }
 input { font-family: inherit; }
 
-/* ---------- Login ---------- */
+/* ---------- Login (dark card) ---------- */
 .login-wrap {
   min-height: 100vh;
   display: flex;
@@ -20,81 +20,67 @@ input { font-family: inherit; }
   align-items: center;
   justify-content: center;
   padding: 16px;
-  background: linear-gradient(160deg, #e8f5ee 0%, #f2f5f3 55%, #e6edf7 100%);
+  background:
+    radial-gradient(700px 420px at 50% -8%, rgba(34, 197, 94, 0.22), transparent 65%),
+    linear-gradient(160deg, #07130e 0%, #0a1f16 55%, #050d09 100%);
 }
-.login-split {
-  display: flex;
+.login-card {
   width: 100%;
-  max-width: 860px;
-  border-radius: 16px;
-  overflow: hidden;
-  background: #fff;
-  box-shadow: 0 12px 40px rgba(20, 60, 40, 0.16);
+  max-width: 420px;
+  background: rgba(13, 28, 20, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 24px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  padding: 34px 30px 26px;
+  text-align: center;
   animation: login-in 0.45s ease both;
 }
 @keyframes login-in {
   from { opacity: 0; transform: translateY(14px); }
   to { opacity: 1; transform: none; }
 }
-.login-brand {
-  position: relative;
-  overflow: hidden;
-  flex: 1;
-  background: linear-gradient(160deg, #1e2d50, #2563eb, #1e40af);
-  background-size: 180% 180%;
-  animation: brand-shift 12s ease-in-out infinite alternate;
-  color: #fff;
-  padding: 40px 32px;
+.login-logo {
+  width: 68px;
+  height: 68px;
+  margin: 6px auto 16px;
   display: flex;
-  flex-direction: column;
+  align-items: center;
   justify-content: center;
-  text-align: start;
+  font-size: 38px;
+  font-weight: 800;
+  color: #052e1b;
+  background: linear-gradient(150deg, #4ade80, #10b981);
+  border-radius: 18px;
+  box-shadow: 0 0 34px rgba(34, 197, 94, 0.45);
 }
-@keyframes brand-shift {
-  from { background-position: 0% 0%; }
-  to { background-position: 100% 100%; }
-}
-.login-brand > *:not(.brand-orb) { position: relative; z-index: 1; }
-.brand-orb {
-  position: absolute;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.1);
-  animation: orb-float 9s ease-in-out infinite alternate;
-}
-.orb-1 { width: 190px; height: 190px; top: -70px; inset-inline-end: -50px; }
-.orb-2 { width: 130px; height: 130px; bottom: -45px; inset-inline-start: -35px; animation-delay: 2.5s; }
-@keyframes orb-float {
-  from { transform: translateY(0); }
-  to { transform: translateY(-16px); }
-}
-.login-brand-logo { font-size: 52px; }
-.login-brand h1 { font-size: 24px; margin: 14px 0 10px; color: #fff; }
-.login-tagline { font-size: 15px; line-height: 1.6; color: #dbe4f5; margin: 0 0 24px; }
-.login-feats { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
-.login-feats li { font-size: 15px; display: flex; align-items: center; gap: 10px; }
-.login-feats li span { font-size: 19px; }
-.login-card {
-  flex: 1;
-  background: #fff;
-  padding: 36px 32px;
-  text-align: center;
-}
-.login-card h2 { font-size: 20px; margin: 2px 0 18px; color: #14532d; }
+.login-card h1 { font-size: 24px; margin: 0 0 6px; color: #fff; }
+.login-tagline { font-size: 14px; line-height: 1.6; color: #9fb3a8; margin: 0 0 20px; }
 .login-card label {
   display: block;
   text-align: start;
-  font-size: 13px;
-  margin: 12px 0 5px;
-  color: #475569;
+  font-size: 13.5px;
+  margin: 14px 0 6px;
+  color: #cbd5d1;
 }
 .login-card input {
   width: 100%;
-  padding: 10px 12px;
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
+  padding: 11px 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
   font-size: 15px;
+  color: #fff;
 }
-.login-card input:focus { outline: 2px solid #22c55e; border-color: transparent; }
+.login-card input::placeholder { color: #6b7d74; }
+.login-card input:focus { outline: none; border-color: #22c55e; box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.22); }
+.login-card .muted { color: #9fb3a8; }
+/* Language pills on the dark card. */
+.login-card .lang-switch button {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.16);
+  color: #cbd5d1;
+}
+.login-card .lang-switch button.active { background: #22c55e; border-color: #22c55e; color: #052e1b; }
 .field-icon { position: relative; }
 .field-icon-mark {
   position: absolute;
@@ -105,13 +91,13 @@ input { font-family: inherit; }
   pointer-events: none;
 }
 .field-icon input { padding-inline-start: 38px; }
-.field-icon:focus-within input { box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18); }
+.field-icon:focus-within input { box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.22); }
 .caps-warn {
   margin-top: 8px;
   font-size: 13px;
-  color: #b45309;
-  background: #fffbeb;
-  border: 1px solid #fcd34d;
+  color: #fcd34d;
+  background: rgba(252, 211, 77, 0.1);
+  border: 1px solid rgba(252, 211, 77, 0.35);
   border-radius: 8px;
   padding: 7px 10px;
   text-align: start;
@@ -128,12 +114,21 @@ input { font-family: inherit; }
   align-items: center;
   justify-content: center;
   gap: 8px;
+  margin-top: 20px;
+  padding: 12px;
+  background: linear-gradient(150deg, #4ade80, #10b981);
+  color: #052e1b;
+  font-size: 16px;
+  font-weight: 700;
+  border-radius: 12px;
   transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
 }
 .login-card .btn-primary:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(22, 163, 74, 0.35);
+  box-shadow: 0 8px 22px rgba(34, 197, 94, 0.4);
 }
+/* Dark spinner: the button is light green now, so the spinner is dark. */
+.login-card .spinner { border-color: rgba(5, 46, 27, 0.3); border-top-color: #052e1b; }
 .spinner {
   width: 16px;
   height: 16px;
@@ -154,12 +149,11 @@ input { font-family: inherit; }
   font-size: 17px;
   padding: 4px 6px;
 }
-.login-foot { margin: 18px 0 0; font-size: 13px; color: #64748b; text-align: center; }
+.login-foot { margin: 20px 0 0; font-size: 13px; color: #7d938a; text-align: center; }
 @media (max-width: 720px) {
-  .login-split { flex-direction: column; }
-  .login-brand { padding: 28px 24px; }
-  .login-brand-logo { font-size: 40px; }
-  .login-brand h1 { font-size: 20px; }
+  .login-card { padding: 28px 22px 22px; }
+  .login-logo { width: 60px; height: 60px; font-size: 32px; }
+  .login-card h1 { font-size: 21px; }
 }
 .btn-primary {
   width: 100%;

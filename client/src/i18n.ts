@@ -15,10 +15,10 @@ export function dirFor(lang: Lang): 'rtl' | 'ltr' {
 type Dict = Record<string, string>;
 
 const ps: Dict = {
-  appName: 'د درملتون مدیریت سیستم',
+  appName: 'هڅاند درملتون',
   login: 'ننوتل',
   loginWelcome: 'بیا ځلې ښه راغلې',
-  loginTagline: 'درمل، سټاک، خرڅلاو او راپورونه — ټول په یو ځای کې',
+  loginTagline: 'د هڅاند درملتون مدیریت سیستم',
   loginFeat1: 'درمل او د ختمېدو نېټې',
   loginFeat2: 'چټک خرڅلاو او رسیدونه',
   loginFeat3: 'ګټه او راپورونه',
@@ -428,10 +428,10 @@ const ps: Dict = {
 };
 
 const fa: Dict = {
-  appName: 'سیستم مدیریت دواخانه',
+  appName: 'دواخانه هڅاند',
   login: 'ورود',
   loginWelcome: 'دوباره خوش آمدید',
-  loginTagline: 'دارو، موجودی، فروش و گزارش‌ها — همه در یک جا',
+  loginTagline: 'سیستم مدیریت دواخانه هڅاند',
   loginFeat1: 'داروها و تاریخ انقضا',
   loginFeat2: 'فروش سریع و رسیدها',
   loginFeat3: 'سود و گزارش‌ها',
@@ -841,10 +841,10 @@ const fa: Dict = {
 };
 
 const en: Dict = {
-  appName: 'Pharmacy Management System',
+  appName: 'Hasand Pharmacy',
   login: 'Log in',
   loginWelcome: 'Welcome back',
-  loginTagline: 'Medicines, stock, sales and reports — all in one place',
+  loginTagline: 'Hasand Pharmacy Management System',
   loginFeat1: 'Medicines & expiry dates',
   loginFeat2: 'Fast sales & receipts',
   loginFeat3: 'Profit & reports',
