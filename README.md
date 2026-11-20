@@ -1,4 +1,4 @@
-# Pharmacy Management System
+# MediCare Pharmacy Management System
 
 A complete management system for a pharmacy — medicines and stock, purchases and supplier accounts, customers, a fast point-of-sale with credit sales and returns, and rich profit reports (daily to yearly, custom ranges, charts, Excel export and print/PDF) — built to run on the pharmacy's own computer, in **Pashto, Dari and English**.
 
@@ -64,7 +64,7 @@ A full-stack web application that runs locally (no internet needed) and handles 
 - **Expiry is guarded at every door** — it cannot be *entered* (past dates are rejected), it is *watched* (per-medicine warning windows on the dashboard and the expiry page), it cannot be *sold* (FEFO skips it), and it leaves the books only through a recorded *write-off*.
 - **Branch-scoped data** — every record carries a `branch_id` taken from the user's login token (never from the request), so the same system serves one pharmacy or many branches without mixing data.
 - **Backup that is actually tested** — an in-app `mysqldump` backup, with a restore into a separate test database verified end-to-end.
-- **Automated tests** — `npm test` in the `server` folder runs 30 tests against a separate `pharmacy_db_test` database, covering FEFO, oversell/over-return rejection, reports netting, day close, roles, branches and the Main-admin-only branch-management guard, branch-scoped user administration and audit log, the central dashboard, the approval workflow, per-branch report reading, purchase edits re-pending the reviewed day, the owners WhatsApp numbers guard and the WhatsApp summary route.
+- **Automated tests** — `npm test` in the `server` folder runs 31 tests against a separate `pharmacy_db_test` database, covering FEFO, oversell/over-return rejection, reports netting, day close, roles, branches and the Main-admin-only branch-management guard, branch-scoped user administration and audit log, the central dashboard, the approval workflow, per-branch report reading, purchase edits re-pending the reviewed day, the owners WhatsApp numbers guard and the WhatsApp summary route, and the supplier added-date.
 
 ## Run it locally
 
@@ -72,7 +72,7 @@ A full-stack web application that runs locally (no internet needed) and handles 
 
 ```bash
 git clone https://github.com/hakimullahhemat13/pharmacy-system.git
-cd pharmacy-system
+cd MediCare-Pharmacy-Management-System
 ```
 
 **1. Database** — create the database and load the schema:
@@ -93,7 +93,7 @@ Create a dedicated app user (do not use root) and grant it access to `pharmacy_d
 cd server
 copy .env.example .env   # then fill in DB_PASSWORD and a long JWT_SECRET
 npm install
-npm run dev              # http://localhost:5000  — check /api/health
+npm run dev              # http://localhost:5001  — check /api/health
 ```
 
 **3. First admin user** (run once, from the `server` folder, with the
@@ -109,7 +109,7 @@ node scripts/create-admin.js
 ```bash
 cd ../client
 npm install
-npm run dev              # http://localhost:5173
+npm run dev              # http://localhost:5174
 ```
 
 Log in with the admin user and the system is ready.

@@ -15,10 +15,10 @@ export function dirFor(lang: Lang): 'rtl' | 'ltr' {
 type Dict = Record<string, string>;
 
 const ps: Dict = {
-  appName: 'هڅاند درملتون',
+  appName: 'MediCare Pharmacy',
   login: 'ننوتل',
   loginWelcome: 'بیا ځلې ښه راغلې',
-  loginTagline: 'د هڅاند درملتون مدیریت سیستم',
+  loginTagline: 'MediCare Pharmacy Management System',
   loginFeat1: 'درمل او د ختمېدو نېټې',
   loginFeat2: 'چټک خرڅلاو او رسیدونه',
   loginFeat3: 'ګټه او راپورونه',
@@ -88,7 +88,7 @@ const ps: Dict = {
   stockSummary: 'سټاک',
   totalMedicines: 'ټول درمل',
   lowStock: 'کم سټاک',
-  currency: 'افغانۍ',
+  currency: 'افغانۍ (AFN)',
   loading: 'لږ صبر…',
   search: 'لټون (نوم، عمومي نوم یا بارکوډ)…',
   addMedicine: 'نوی درمل ورزیات کړه',
@@ -502,7 +502,7 @@ const fa: Dict = {
   stockSummary: 'موجودی',
   totalMedicines: 'مجموع ادویه',
   lowStock: 'موجودی کم',
-  currency: 'افغانی',
+  currency: 'افغانی (AFN)',
   loading: 'کمی صبر…',
   search: 'جستجو (نام، نام عمومی یا بارکود)…',
   addMedicine: 'ثبت دوای جدید',

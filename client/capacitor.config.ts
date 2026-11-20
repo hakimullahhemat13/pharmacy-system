@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.hakimullahhemat.pharmacy',
-  appName: 'هڅاند درملتون',
+  appName: 'MediCare Pharmacy',
   webDir: 'dist',
   android: {
     allowMixedContent: true,

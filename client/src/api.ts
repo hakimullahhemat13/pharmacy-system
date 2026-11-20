@@ -9,6 +9,9 @@ import { Capacitor } from '@capacitor/core';
 // phone itself, so the computer's address must be entered once (on the login
 // screen) and is then remembered here. A stored address always wins.
 const SERVER_KEY = 'pharmacy_server_host';
+// MediCare runs beside the original pharmacy project, which uses port 5000.
+// Keep this copy on port 5001 so it never conflicts with the original project.
+const API_PORT = 5001;
 
 export function isNativeApp(): boolean {
   return Capacitor.isNativePlatform();
@@ -29,7 +32,7 @@ export function setServerHost(host: string): void {
 }
 
 function base(): string {
-  return `http://${getServerHost()}:5000/api`;
+  return `http://${getServerHost()}:${API_PORT}/api`;
 }
 
 const TOKEN_KEY = 'pharmacy_token';

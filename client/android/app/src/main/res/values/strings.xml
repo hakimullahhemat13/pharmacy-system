@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">هڅاند درملتون</string>
-    <string name="title_activity_main">هڅاند درملتون</string>
+    <string name="app_name">MediCare Pharmacy</string>
+    <string name="title_activity_main">MediCare Pharmacy</string>
     <string name="package_name">com.hakimullahhemat.pharmacy</string>
     <string name="custom_url_scheme">com.hakimullahhemat.pharmacy</string>
 </resources>

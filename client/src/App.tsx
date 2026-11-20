@@ -145,6 +145,7 @@ interface Supplier {
   id: string;
   name: string;
   phone: string | null;
+  created_at: string;
 }
 
 interface SupplierRow extends Supplier {
@@ -562,6 +563,25 @@ export default function App() {
         </div>
       </aside>
       <main className="main">
+        <header className="workspace-topbar">
+          <div className="workspace-context">
+            <span className="workspace-context-mark" aria-hidden="true">✚</span>
+            <div className="workspace-context-copy">
+              <strong>MediCare Pharmacy</strong>
+              <span>{t(lang, 'loginTagline')}</span>
+            </div>
+          </div>
+          <div className="workspace-topbar-actions">
+            <div className="workspace-date"><span aria-hidden="true">📅</span>{todayStr()}</div>
+            <div className="workspace-profile">
+              <span className="workspace-avatar">{user.full_name.trim().charAt(0).toLocaleUpperCase()}</span>
+              <span className="workspace-profile-copy">
+                <strong>{user.full_name}</strong>
+                <small>{user.role}</small>
+              </span>
+            </div>
+          </div>
+        </header>
         {visiblePage === 'dashboard' && <Dashboard lang={lang} userName={user.full_name} role={user.role} onNavigate={setPage} approvalInfo={approvalInfo} />}
         {visiblePage === 'approvals' && <ApprovalsPage lang={lang} onChanged={loadApprovalInfo} />}
         {visiblePage === 'medicines' && <Medicines lang={lang} prefillBarcode={prefillBarcode} onPrefillConsumed={() => setPrefillBarcode('')} />}
@@ -640,7 +660,25 @@ function Login({
 
   return (
     <div className="login-wrap">
-      <form className="login-card" onSubmit={submit}>
+      <div className="login-shell">
+        <section className="login-showcase" aria-label={t(lang, 'loginTagline')}>
+          <div className="showcase-brand">
+            <span className="showcase-brand-mark">✚</span>
+            <span>MediCare</span>
+          </div>
+          <div className="showcase-content">
+            <span className="showcase-kicker">PHARMACY MANAGEMENT</span>
+            <h2>{t(lang, 'appName')}</h2>
+            <p>{t(lang, 'loginTagline')}</p>
+            <div className="showcase-features">
+              <div><span>💊</span>{t(lang, 'loginFeat1')}</div>
+              <div><span>🧾</span>{t(lang, 'loginFeat2')}</div>
+              <div><span>📊</span>{t(lang, 'loginFeat3')}</div>
+            </div>
+          </div>
+          <div className="showcase-footer"><span className="showcase-footer-dot" />{t(lang, 'loginFooter')}</div>
+        </section>
+        <form className="login-card" onSubmit={submit}>
         <LangSwitch lang={lang} setLang={setLang} />
         <div className="login-logo">ه</div>
         <h1>{t(lang, 'appName')}</h1>
@@ -716,7 +754,8 @@ function Login({
           )}
         </button>
         <p className="login-foot">{t(lang, 'loginFooter')}</p>
-      </form>
+        </form>
+      </div>
     </div>
   );
 }
@@ -3240,12 +3279,14 @@ function SuppliersPage({ lang }: { lang: Lang }) {
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [address, setAddress] = useState('');
+  const [supDate, setSupDate] = useState(todayStr());
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
   const [detail, setDetail] = useState<SupplierDetail | null>(null);
   const [eName, setEName] = useState('');
   const [ePhone, setEPhone] = useState('');
   const [eAddress, setEAddress] = useState('');
+  const [eDate, setEDate] = useState('');
   const [editMsg, setEditMsg] = useState('');
   const [payAmount, setPayAmount] = useState('');
   const [payMsg, setPayMsg] = useState('');
@@ -3306,11 +3347,13 @@ function SuppliersPage({ lang }: { lang: Lang }) {
         name: name.trim(),
         phone: phone.trim() || undefined,
         address: address.trim() || undefined,
+        date_added: supDate,
       });
       setMsg(`✅ ${t(lang, 'supplierAdded')}`);
       setName('');
       setPhone('');
       setAddress('');
+      setSupDate(todayStr());
       setSupFormOpen(false);
       await load();
     } catch (err) {
@@ -3330,6 +3373,7 @@ function SuppliersPage({ lang }: { lang: Lang }) {
       setEName(s.name);
       setEPhone(s.phone || '');
       setEAddress(s.address || '');
+      setEDate(String(s.created_at).slice(0, 10));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error');
     }
@@ -3348,6 +3392,7 @@ function SuppliersPage({ lang }: { lang: Lang }) {
         name: eName.trim(),
         phone: ePhone.trim() || undefined,
         address: eAddress.trim() || undefined,
+        date_added: eDate,
       });
       setEditMsg(`✅ ${t(lang, 'saved')}`);
       await Promise.all([load(), openDetail(detail.id)]);
@@ -3456,6 +3501,10 @@ function SuppliersPage({ lang }: { lang: Lang }) {
               <label>{t(lang, 'address')}</label>
               <input value={address} onChange={(e) => setAddress(e.target.value)} />
             </div>
+            <div className="field">
+              <label>{t(lang, 'dateAdded')}</label>
+              <input type="date" value={supDate} onChange={(e) => setSupDate(e.target.value)} />
+            </div>
           </div>
           <button className="btn-secondary" type="submit">
             {t(lang, 'save')}
@@ -3483,6 +3532,7 @@ function SuppliersPage({ lang }: { lang: Lang }) {
                 <th>{t(lang, 'totalPurchased')}</th>
                 <th>{t(lang, 'paidAmount')}</th>
                 <th>{t(lang, 'due')}</th>
+                <th>{t(lang, 'dateAdded')}</th>
                 <th></th>
               </tr>
             </thead>
@@ -3502,6 +3552,7 @@ function SuppliersPage({ lang }: { lang: Lang }) {
                       '—'
                     )}
                   </td>
+                  <td>{String(s.created_at).slice(0, 10)}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <button className="btn small" onClick={() => editFromList(s.id)}>
                       {t(lang, 'edit')}
@@ -3530,7 +3581,7 @@ function SuppliersPage({ lang }: { lang: Lang }) {
               ))}
               {shown.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="muted">
+                  <td colSpan={7} className="muted">
                     {t(lang, 'noResults')}
                   </td>
                 </tr>
@@ -3586,6 +3637,10 @@ function SuppliersPage({ lang }: { lang: Lang }) {
               <div className="field">
                 <label>{t(lang, 'address')}</label>
                 <input value={eAddress} onChange={(e) => setEAddress(e.target.value)} />
+              </div>
+              <div className="field">
+                <label>{t(lang, 'dateAdded')}</label>
+                <input type="date" value={eDate} onChange={(e) => setEDate(e.target.value)} />
               </div>
             </div>
             <button className="btn-secondary" type="submit">

@@ -11,3 +11,9 @@ client/android/build/
 client/android/capacitor-cordova-android-plugins/build/
 local.properties
 *.iml
+
+# Local database backup and test scripts
+pharmacy_db-before-wipe-2026-11-20.sql
+wipe-test-data.sql
+client/tsconfig.tsbuildinfo
+PATCH-INSTRUCTIONS.txt
