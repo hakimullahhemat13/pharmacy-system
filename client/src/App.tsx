@@ -530,6 +530,10 @@ export default function App() {
           </button>
         </div>
         <div className={`menu-body${menuOpen ? ' open' : ''}`}>
+          <button className="menu-collapse" type="button" onClick={() => setMenuOpen(false)} aria-label={t(lang, 'menuClose')}>
+            <span className="menu-collapse-arrow" aria-hidden="true">▲</span>
+            {t(lang, 'menuClose')}
+          </button>
           {menu.map((m) => (
             <button
               key={m.key}

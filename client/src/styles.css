@@ -250,6 +250,9 @@ input { font-family: inherit; }
    exactly as before. On phones they become the top bar + dropdown menu. */
 .brand-row { display: contents; }
 .menu-toggle { display: none; }
+/* The collapse arrow at the top of the open phone menu: hidden on
+   desktop, where the sidebar is always open and has nothing to fold. */
+.menu-collapse { display: none; }
 .menu-body { display: contents; }
 /* The ☰ glyph renders dark on some phones, so the hamburger is drawn
    with bars instead — always white on the navy bar. */
@@ -718,6 +721,15 @@ tr.row-warning td { background: #fffdf5; }
   }
   .menu-body { display: none; }
   .menu-body.open { display: flex; flex-direction: column; gap: 4px; width: 100%; }
+  /* Collapse arrow: the first row of the open phone menu. Tapping it
+     folds the menu back up, the same as tapping ☰ again. */
+  .menu-body.open .menu-collapse {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    width: 100%; padding: 8px 12px; font-size: 15px; color: #dbe4f5;
+    background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 8px; cursor: pointer;
+  }
+  .menu-collapse-arrow { font-size: 13px; }
   .menu-body button.nav { width: 100%; font-size: 15px; padding: 10px 12px; }
   .menu-body .spacer { display: none; }
   .menu-body .user-box { width: 100%; padding: 10px 8px 0; }

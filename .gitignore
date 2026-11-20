@@ -3,3 +3,11 @@ node_modules/
 dist/
 *.log
 backups/
+# Android (Capacitor) build outputs — the android/ source itself is committed
+client/android/.gradle/
+client/android/.idea/
+client/android/app/build/
+client/android/build/
+client/android/capacitor-cordova-android-plugins/build/
+local.properties
+*.iml
