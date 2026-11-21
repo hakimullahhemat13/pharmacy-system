@@ -746,3 +746,478 @@ tr.row-warning td { background: #fffdf5; }
   /* Tighter table cells so more columns fit on a narrow screen. */
   th, td { padding: 6px 6px; font-size: 13.5px; }
 }
+/* ================================================================
+   UI refresh (from the MediCare design) — presentation only; business logic unchanged.
+   ================================================================ */
+:root {
+  --mc-ink: #172b3a;
+  --mc-muted: #647789;
+  --mc-primary: #087f73;
+  --mc-primary-dark: #075e56;
+  --mc-primary-soft: #e2f4f0;
+  --mc-bg: #f3f7f8;
+  --mc-surface: #ffffff;
+  --mc-border: #e1e9ed;
+  --mc-shadow: 0 8px 26px rgba(25, 55, 70, .07);
+  --mc-radius: 16px;
+}
+html { background: var(--mc-bg); }
+body { background: var(--mc-bg); color: var(--mc-ink); font-family: Inter, "Segoe UI", Tahoma, Arial, sans-serif; }
+button, input, select, textarea { font: inherit; }
+button { transition: background .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid rgba(8,127,115,.22); outline-offset: 1px; }
+.app { min-height: 100vh; background: var(--mc-bg); }
+.sidebar { width: 252px; padding: 22px 14px; gap: 7px; color: #e7f5f2; background: linear-gradient(180deg,#123d43 0%,#0c3038 100%); box-shadow: 5px 0 24px rgba(14,48,56,.08); }
+.sidebar .brand { padding: 8px 12px 22px; color: #fff; font-size: 17px; letter-spacing: .1px; }
+.sidebar button.nav { padding: 11px 13px; min-height: 44px; border-radius: 11px; color: #c7dedc; font-size: 14px; }
+.sidebar button.nav:hover { background: rgba(255,255,255,.09); color: #fff; }
+.sidebar button.nav.active { color: #fff; background: linear-gradient(100deg,#0c9b88,#087f73); box-shadow: 0 6px 15px rgba(0,0,0,.15); }
+.sidebar .nav-icon { font-size: 18px; }
+.sidebar .user-box { margin-top: 12px; padding: 13px 11px; border-top: 1px solid rgba(255,255,255,.13); color: #d2e5e2; }
+.sidebar button.logout { border-color: rgba(255,255,255,.22); border-radius: 11px; padding: 10px; }
+.main { padding: clamp(18px,2.4vw,34px); min-width: 0; }
+.main h2 { margin: 2px 0 22px; color: var(--mc-ink); font-size: clamp(21px,2vw,27px); font-weight: 750; letter-spacing: -.35px; }
+.cards { gap: 16px; grid-template-columns: repeat(auto-fit,minmax(190px,1fr)); }
+.card, .panel { background: var(--mc-surface); border: 1px solid var(--mc-border); border-radius: var(--mc-radius); box-shadow: var(--mc-shadow); }
+.card { padding: 19px 20px; }
+.card .card-label { color: var(--mc-muted); font-weight: 550; }
+.card .card-value { color: var(--mc-ink); font-size: 29px; letter-spacing: -.5px; }
+.card.profit .card-value, .card .card-value.profit-value { color: var(--mc-primary); }
+.panel { padding: 20px; margin-top: 18px; }
+.panel h3 { color: var(--mc-ink); font-size: 16px; font-weight: 700; }
+th { color: #536a78; font-weight: 700; background: #f7fafb; }
+th, td { padding: 11px 12px; border-bottom-color: #edf1f3; }
+tbody tr:hover { background: #f7fbfa; }
+input, select, textarea, .search-input { border: 1px solid #d7e2e7; border-radius: 10px; background: #fff; color: var(--mc-ink); min-height: 40px; }
+input:focus, select:focus, textarea:focus { border-color: var(--mc-primary); outline: none; box-shadow: 0 0 0 3px rgba(8,127,115,.11); }
+.btn, .btn-primary, .btn-save, .btn-secondary { border-radius: 10px; font-weight: 650; }
+.btn-primary, .btn.primary, .btn-save { background: var(--mc-primary); color: #fff; border: 1px solid var(--mc-primary); }
+.btn-primary:hover, .btn.primary:hover, .btn-save:hover { background: var(--mc-primary-dark); box-shadow: 0 5px 14px rgba(8,127,115,.18); }
+.btn-secondary { background: #f2f7f8; color: #36515e; border: 1px solid var(--mc-border); }
+.lang-switch button { border-radius: 999px; padding: 7px 16px; border-color: var(--mc-border); }
+.lang-switch button.active { background: var(--mc-primary); border-color: var(--mc-primary); }
+.badge { padding: 4px 10px; border-radius: 999px; }
+.table-scroll { border-radius: 10px; }
+@media (max-width: 900px) {.sidebar { width: 220px; }
+.main { padding: 18px; }
+.cards { grid-template-columns: repeat(auto-fit,minmax(160px,1fr)); }}
+@media (max-width: 720px) {.main { padding: 14px; }
+.main h2 { margin-bottom: 16px; }
+.panel { padding: 14px; border-radius: 13px; }
+.card { padding: 15px; }
+.cards { gap: 10px; grid-template-columns: repeat(2,minmax(0,1fr)); }
+.card .card-value { font-size: 23px; }}
+@media (max-width: 390px) {.cards { grid-template-columns: 1fr; }}
+/* ================================================================
+   Visual redesign (from the MediCare design) — application shell.
+   All existing page logic and controls remain intact.
+   ================================================================ */
+:root {
+  --mc-ink: #172b3a;
+  --mc-muted: #687d8b;
+  --mc-primary: #0b887d;
+  --mc-primary-dark: #08675f;
+  --mc-primary-soft: #e4f5f1;
+  --mc-bg: #f1f5f8;
+  --mc-surface: #ffffff;
+  --mc-border: #e1e9ef;
+  --mc-shadow: 0 12px 32px rgba(22, 48, 64, .075);
+  --mc-radius: 18px;
+}
+html, body, #root { min-height: 100%; }
+html { background: var(--mc-bg); }
+body {
+  background: radial-gradient(ellipse at 90% 0%, rgba(12, 136, 125, .055), transparent 34%), var(--mc-bg);
+  color: var(--mc-ink);
+  font-family: Inter, "Segoe UI", Tahoma, Arial, sans-serif;
+}
+button, input, select, textarea { font: inherit; }
+button { transition: background .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 3px solid rgba(11, 136, 125, .22); outline-offset: 2px;
+}
+/* Main application frame */
+.app { min-height: 100vh; background: transparent; }
+.sidebar {
+  position: sticky; top: 0; align-self: flex-start;
+  width: 274px; height: 100vh; min-height: 640px;
+  padding: 24px 16px 18px; gap: 8px;
+  color: #e6f3f2;
+  background: linear-gradient(165deg, #102f3e 0%, #123f49 48%, #0c343d 100%);
+  box-shadow: 8px 0 34px rgba(14, 42, 54, .12);
+  overflow-y: auto;
+}
+.sidebar .brand {
+  display: flex; align-items: center; gap: 11px;
+  min-height: 62px; margin-bottom: 17px; padding: 8px 11px 18px;
+  border-bottom: 1px solid rgba(229, 245, 242, .13);
+  color: #fff; font-size: 18px; font-weight: 800; letter-spacing: -.25px;
+}
+.sidebar .brand::first-letter { font-size: 25px; }
+.sidebar button.nav {
+  min-height: 46px; padding: 11px 13px; border: 1px solid transparent;
+  border-radius: 12px; color: #c6d9dd; font-size: 14px; font-weight: 560;
+}
+.sidebar button.nav:hover { color: #fff; background: rgba(255,255,255,.075); border-color: rgba(255,255,255,.07); }
+.sidebar button.nav.active {
+  color: #fff; font-weight: 700;
+  background: linear-gradient(105deg, #0d9d91, #08776f);
+  border-color: rgba(151, 242, 224, .17);
+  box-shadow: 0 8px 18px rgba(2, 22, 27, .22);
+}
+.sidebar .nav-icon { width: 25px; font-size: 18px; }
+.sidebar .spacer { min-height: 20px; }
+.sidebar .user-box {
+  margin-top: 10px; padding: 14px 12px;
+  border: 1px solid rgba(226, 244, 241, .13); border-radius: 13px;
+  background: rgba(255,255,255,.055); color: #edf7f5; opacity: 1;
+}
+.sidebar button.logout {
+  min-height: 42px; border: 1px solid rgba(255,255,255,.18); border-radius: 11px;
+  color: #f3d9d9; background: rgba(255,255,255,.035);
+}
+.sidebar button.logout:hover { background: rgba(210, 55, 65, .17); border-color: rgba(255, 160, 160, .28); }
+.main { flex: 1; min-width: 0; padding: 20px clamp(18px, 2.6vw, 38px) 38px; }
+.workspace-topbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  min-height: 76px; margin: 0 0 25px; padding: 13px 18px;
+  border: 1px solid rgba(220, 231, 237, .9); border-radius: 17px;
+  background: rgba(255,255,255,.88); box-shadow: 0 7px 22px rgba(20, 48, 65, .045);
+  backdrop-filter: blur(14px);
+}
+.workspace-context, .workspace-topbar-actions, .workspace-profile { display: flex; align-items: center; }
+.workspace-context { gap: 12px; min-width: 0; }
+.workspace-context-mark {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 42px; height: 42px; flex: none; border-radius: 13px;
+  color: #fff; background: linear-gradient(145deg, #14a99a, #08776e);
+  box-shadow: 0 7px 15px rgba(8, 127, 115, .2); font-size: 22px; font-weight: 800;
+}
+.workspace-context-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.workspace-context-copy strong { color: #1a3442; font-size: 15px; font-weight: 800; }
+.workspace-context-copy span { color: #82939d; font-size: 11px; letter-spacing: .45px; }
+.workspace-topbar-actions { gap: 18px; }
+.workspace-date {
+  display: inline-flex; align-items: center; gap: 8px; padding: 9px 13px;
+  border: 1px solid #e6edf1; border-radius: 11px; color: #5c7280;
+  background: #f8fafb; font-size: 13px; white-space: nowrap;
+}
+.workspace-profile { gap: 10px; padding-inline-start: 16px; border-inline-start: 1px solid #e8eef1; }
+.workspace-avatar {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; flex: none; border-radius: 50%;
+  color: #fff; background: linear-gradient(145deg, #1b7d83, #214d68);
+  font-size: 15px; font-weight: 800; text-transform: uppercase;
+}
+.workspace-profile-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.workspace-profile-copy strong { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #263d4a; font-size: 13px; }
+.workspace-profile-copy small { color: #84949d; font-size: 11px; text-transform: capitalize; }
+/* Dashboard hero and information cards */
+.dash-head {
+  position: relative; overflow: hidden; align-items: center;
+  min-height: 142px; padding: 25px 28px; margin-bottom: 18px;
+  border-radius: 21px; color: #fff;
+  background: linear-gradient(112deg, #123c4b 0%, #126b6c 62%, #0d887b 100%);
+  box-shadow: 0 14px 30px rgba(13, 89, 91, .16);
+}
+.dash-head::after {
+  content: ''; position: absolute; width: 240px; height: 240px; inset-inline-end: 8%; top: -145px;
+  border: 1px solid rgba(255,255,255,.13); border-radius: 50%;
+  box-shadow: 0 0 0 28px rgba(255,255,255,.035), 0 0 0 58px rgba(255,255,255,.025);
+  pointer-events: none;
+}
+.dash-head > * { position: relative; z-index: 1; }
+.dash-head h2 { margin: 0; color: #fff; font-size: clamp(23px, 2.2vw, 30px); font-weight: 800; letter-spacing: -.45px; }
+.dash-sub { margin-top: 7px; color: rgba(238, 250, 248, .78); font-size: 14px; }
+.dash-date { padding: 9px 15px; border: 1px solid rgba(255,255,255,.2); border-radius: 11px; color: #fff; background: rgba(255,255,255,.11); box-shadow: none; }
+.quick-actions { gap: 9px; margin: 17px 0 5px; }
+.qa-label { margin-inline-end: 4px; color: #617683; font-size: 13px; font-weight: 750; }
+.quick-actions .btn-primary, .quick-actions .btn-secondary { min-height: 40px; padding: 9px 15px; border-radius: 11px; }
+.cards { gap: 15px; grid-template-columns: repeat(auto-fit, minmax(205px, 1fr)); }
+.card, .panel {
+  border: 1px solid var(--mc-border); border-radius: 17px;
+  background: var(--mc-surface); box-shadow: var(--mc-shadow);
+}
+.card { padding: 19px 20px; transition: transform .18s ease, box-shadow .18s ease; }
+.card:hover { transform: translateY(-2px); box-shadow: 0 15px 32px rgba(22,48,64,.1); }
+.card .card-label { color: #718491; font-size: 13px; font-weight: 650; }
+.card .card-value { color: #1b3443; font-size: 28px; font-weight: 800; letter-spacing: -.55px; }
+.card .card-sub { color: #8b9aa3; font-size: 12px; }
+.card.dash-card { padding: 19px 20px 20px; border-top: 0; }
+.card.dash-card::before { height: 4px; }
+.card-icon { width: 39px; height: 39px; border-radius: 12px; background: #e6f5f2; }
+.card.dash-card .card-value { margin-top: 12px; font-size: 29px; }
+.card.dash-card .profit-value { color: #078779; }
+.panel { padding: 21px; margin-top: 18px; }
+.panel h3 { color: #263f4d; font-size: 16px; font-weight: 800; }
+/* Tables and controls */
+th { color: #607582; background: #f5f8fa; font-weight: 750; }
+th, td { padding: 11px 12px; border-bottom-color: #eaf0f3; }
+tbody tr:hover { background: #f3faf8; }
+table { border-radius: 10px; }
+.table-scroll { border: 1px solid #e8eef1; border-radius: 12px; }
+.table-scroll thead th { background: #f5f8fa; }
+input, select, textarea, .search-input {
+  min-height: 42px; border: 1px solid #dce6eb; border-radius: 10px;
+  background: #fff; color: #1c3442;
+}
+input:focus, select:focus, textarea:focus { border-color: #0b887d; outline: none; box-shadow: 0 0 0 3px rgba(11,136,125,.11); }
+.btn, .btn-primary, .btn-save, .btn-secondary { border-radius: 10px; font-weight: 700; }
+.btn-primary, .btn.primary, .btn-save {
+  border: 1px solid #0b887d; color: #fff;
+  background: linear-gradient(110deg, #0b9689, #08756d);
+  box-shadow: 0 5px 13px rgba(11,136,125,.12);
+}
+.btn-primary:hover:not(:disabled), .btn.primary:hover, .btn-save:hover { background: #08675f; box-shadow: 0 7px 17px rgba(11,136,125,.2); transform: translateY(-1px); }
+.btn-secondary { border: 1px solid #dce7eb; color: #3d5966; background: #f6f9fa; }
+.btn-secondary:hover { border-color: #b7d6d1; color: #08675f; background: #edf8f5; }
+.badge { padding: 4px 10px; border-radius: 999px; font-weight: 700; }
+/* Tablet and mobile adaptations */
+@media (max-width: 980px) {.sidebar { width: 238px; }
+.workspace-context-copy span { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+@media (max-width: 760px) {.sidebar { position: relative; top: auto; align-self: stretch; width: 100%; height: auto; min-height: 0; padding: 10px; gap: 6px; overflow: visible; }
+.main { padding: 12px 12px 28px; }
+.workspace-topbar { min-height: 62px; margin-bottom: 16px; padding: 10px 12px; border-radius: 13px; }
+.workspace-context-mark { width: 36px; height: 36px; border-radius: 11px; }
+.workspace-context-copy span { display: none; }
+.workspace-topbar-actions { gap: 8px; }
+.workspace-date { padding: 7px 9px; font-size: 11px; }
+.workspace-profile { gap: 7px; padding-inline-start: 9px; }
+.workspace-avatar { width: 34px; height: 34px; }
+.workspace-profile-copy strong { max-width: 105px; font-size: 11px; }
+.workspace-profile-copy small { font-size: 10px; }
+.dash-head { min-height: 120px; padding: 20px; border-radius: 16px; }
+.dash-head h2 { font-size: 23px; }
+.cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.card { padding: 14px; border-radius: 13px; }
+.card .card-value { font-size: 23px; }
+.card.dash-card .card-value { font-size: 23px; }
+.panel { padding: 14px; border-radius: 13px; }}
+@media (max-width: 390px) {.workspace-context-copy strong { font-size: 12px; }
+.workspace-date { gap: 4px; font-size: 10px; }
+.workspace-profile-copy { display: none; }
+.cards { grid-template-columns: 1fr; }
+.dash-head { align-items: flex-start; flex-direction: column; }}
+@media (prefers-reduced-motion: reduce) {*, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }}
+/* ================================================================
+   Dark mode — toggled from the topbar button; the choice is saved
+   in localStorage (pharmacy_theme) and restored on the next login.
+   The login page keeps its own dark design and is untouched here.
+   ================================================================ */
+.theme-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; flex: none; padding: 0;
+  border: 1px solid var(--mc-border); border-radius: 12px;
+  background: #f8fafb; font-size: 18px; cursor: pointer;
+}
+.theme-toggle:hover { border-color: #b7d6d1; background: #edf8f5; }
+
+html[data-theme="dark"] {
+  --mc-ink: #e6eef2;
+  --mc-muted: #9db0bb;
+  --mc-primary: #14a99a;
+  --mc-primary-dark: #0b887d;
+  --mc-primary-soft: #123f3c;
+  --mc-bg: #0e1a21;
+  --mc-surface: #16262f;
+  --mc-border: #24404d;
+  --mc-shadow: 0 12px 32px rgba(0, 0, 0, .35);
+}
+html[data-theme="dark"] .sidebar {
+  background: linear-gradient(165deg, #0b222c 0%, #0e323c 48%, #092830 100%);
+  box-shadow: 8px 0 34px rgba(0, 0, 0, .3);
+}
+html[data-theme="dark"] .sidebar button.nav { color: #b9d2d6; }
+html[data-theme="dark"] .sidebar .user-box {
+  border-color: rgba(255, 255, 255, .1);
+  background: rgba(255, 255, 255, .04);
+}
+html[data-theme="dark"] .workspace-topbar {
+  background: rgba(22, 38, 47, .92);
+  border-color: rgba(255, 255, 255, .08);
+  box-shadow: 0 7px 22px rgba(0, 0, 0, .3);
+}
+html[data-theme="dark"] .workspace-context-copy strong { color: #e8f1f4; }
+html[data-theme="dark"] .workspace-context-copy span { color: #8fa3ad; }
+html[data-theme="dark"] .workspace-date {
+  background: #1d323d; border-color: #2b4756; color: #c3d4dc;
+}
+html[data-theme="dark"] .workspace-profile {
+  border-inline-start-color: #2b4756;
+}
+html[data-theme="dark"] .workspace-profile-copy strong { color: #e8f1f4; }
+html[data-theme="dark"] .workspace-profile-copy small { color: #93a7b1; }
+html[data-theme="dark"] .theme-toggle {
+  background: #1d323d; border-color: #2b4756;
+}
+html[data-theme="dark"] .theme-toggle:hover {
+  background: #143c3a; border-color: #0b887d;
+}
+html[data-theme="dark"] .card-icon { background: #143c3a; }
+html[data-theme="dark"] .card .card-sub { color: #8fa3ad; }
+html[data-theme="dark"] .card.dash-card .profit-value { color: #2bc4b2; }
+html[data-theme="dark"] .qa-label { color: #9db0bb; }
+html[data-theme="dark"] .panel h3 { color: #e6eef2; }
+html[data-theme="dark"] .muted { color: #a8b8c4; }
+html[data-theme="dark"] .note-text { color: #f87171; }
+html[data-theme="dark"] th { color: #a9bfc9; background: #1a2f3a; }
+html[data-theme="dark"] .table-scroll thead th { background: #1a2f3a; }
+html[data-theme="dark"] th, html[data-theme="dark"] td { border-bottom-color: #223946; }
+html[data-theme="dark"] tbody tr:hover { background: #1a2f3a; }
+html[data-theme="dark"] .table-scroll { border-color: #24404d; }
+html[data-theme="dark"] input,
+html[data-theme="dark"] select,
+html[data-theme="dark"] textarea,
+html[data-theme="dark"] .search-input {
+  background: #12222b; border-color: #2b4756; color: #e6eef2;
+}
+html[data-theme="dark"] input::placeholder,
+html[data-theme="dark"] textarea::placeholder { color: #7d939e; }
+html[data-theme="dark"] .btn-secondary {
+  background: #1a2f3a; border-color: #2b4756; color: #c3d4dc;
+}
+html[data-theme="dark"] .btn-secondary:hover {
+  border-color: #0b887d; color: #7fd6c9; background: #143c3a;
+}
+html[data-theme="dark"] .tabs button {
+  background: #1a2f3a; border-color: #2b4756; color: #d5e2e8;
+}
+html[data-theme="dark"] .wa-preview {
+  background: #12222b; border-color: #24404d;
+}
+
+/* ================================================================
+   Compact dashboard (2026-11-21, his feedback): the MediCare hero
+   and cards were too large — smaller hero, tighter cards.
+   Applies in light and dark mode alike.
+   ================================================================ */
+.dash-head { min-height: 108px; padding: 18px 22px; margin-bottom: 14px; border-radius: 18px; }
+.dash-head h2 { font-size: clamp(20px, 1.8vw, 25px); }
+.dash-sub { font-size: 13px; }
+.dash-date { padding: 7px 12px; }
+.quick-actions { margin: 12px 0 4px; }
+.cards { gap: 12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.card { padding: 14px 16px; }
+.card .card-label { font-size: 12.5px; }
+.card .card-value { font-size: 24px; }
+.card .card-sub { font-size: 11.5px; }
+.card.dash-card { padding: 14px 16px; }
+.card.dash-card .card-value { margin-top: 8px; font-size: 24px; }
+.card-icon { width: 34px; height: 34px; border-radius: 10px; }
+.panel { padding: 16px; margin-top: 14px; }
+@media (max-width: 760px) {
+  .dash-head { min-height: 96px; padding: 16px; margin-bottom: 12px; }
+  .dash-head h2 { font-size: 20px; }
+  .card { padding: 12px; }
+  .card .card-value { font-size: 21px; }
+  .card.dash-card .card-value { font-size: 21px; }
+}
+
+/* ================================================================
+   Whole-system compact (2026-11-21, his feedback): the whole UI
+   was too large — smaller sidebar, topbar, buttons, inputs, tables
+   and headings everywhere. Login is untouched. The small-screen
+   rules below re-assert the phone layout so it is not disturbed.
+   ================================================================ */
+body { font-size: 15px; }
+.sidebar { width: 232px; padding: 18px 12px 14px; gap: 6px; }
+.sidebar .brand { min-height: 52px; margin-bottom: 12px; padding: 6px 10px 12px; font-size: 16px; }
+.sidebar button.nav { min-height: 40px; padding: 9px 11px; font-size: 13.5px; }
+.sidebar .nav-icon { width: 22px; font-size: 16px; }
+.sidebar .spacer { min-height: 12px; }
+.sidebar .user-box { margin-top: 8px; padding: 10px; }
+.sidebar button.logout { min-height: 36px; }
+.main { padding: 14px clamp(14px, 2vw, 26px) 26px; }
+.main h2 { margin: 2px 0 14px; font-size: clamp(18px, 1.7vw, 22px); }
+.workspace-topbar { min-height: 62px; margin: 0 0 16px; padding: 9px 14px; border-radius: 14px; }
+.workspace-context-mark { width: 36px; height: 36px; border-radius: 11px; font-size: 19px; }
+.workspace-context-copy strong { font-size: 14px; }
+.workspace-date { padding: 7px 11px; font-size: 12px; }
+.workspace-avatar { width: 34px; height: 34px; font-size: 13px; }
+.workspace-profile-copy strong { font-size: 12px; }
+.workspace-profile-copy small { font-size: 10px; }
+.theme-toggle { width: 34px; height: 34px; border-radius: 10px; font-size: 16px; }
+th, td { padding: 8px 10px; }
+input, select, textarea, .search-input { min-height: 36px; border-radius: 9px; }
+.btn-primary { padding: 9px; margin-top: 14px; }
+.btn-save { padding: 8px 22px; margin-top: 10px; font-size: 14px; }
+.btn-secondary { padding: 7px 14px; margin-top: 8px; font-size: 13.5px; }
+.quick-actions .btn-primary, .quick-actions .btn-secondary { min-height: 36px; padding: 7px 12px; }
+.wa-row .btn-primary { padding: 8px 18px; }
+.tabs button { padding: 6px 16px; font-size: 13.5px; }
+.form-grid { gap: 10px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+.field label { font-size: 12.5px; margin-bottom: 4px; }
+.panel h3 { font-size: 15px; }
+.report-controls { gap: 10px; margin-bottom: 12px; }
+.wa-preview { padding: 10px 12px; font-size: 13.5px; }
+.wa-row { gap: 10px; }
+.badge { padding: 3px 8px; }
+.lang-switch button { padding: 6px 13px; }
+@media (max-width: 760px) {
+  .sidebar { position: relative; top: auto; align-self: stretch; width: 100%; height: auto; min-height: 0; padding: 8px; gap: 5px; overflow: visible; }
+  .main { padding: 10px 10px 22px; }
+  .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .workspace-topbar { min-height: 56px; margin-bottom: 12px; padding: 8px 10px; border-radius: 12px; }
+}
+@media (max-width: 720px) {
+  th, td { padding: 5px 6px; font-size: 13px; }
+  .tabs button { padding: 6px 12px; }
+}
+@media (max-width: 390px) {
+  .cards { grid-template-columns: 1fr; }
+}
+
+/* ================================================================
+   Sales page header (2026-11-21, his feedback): the Sales banner
+   was still too tall — a little smaller than the other page
+   headers, which stay as they are.
+   ================================================================ */
+.pos-head { min-height: 0; padding: 12px 18px; margin-bottom: 12px; }
+.pos-head h2 { font-size: 21px; }
+.pos-head .today-strip { padding: 6px 12px; font-size: 13px; }
+
+/* ================================================================
+   Bill items scroll (2026-11-21, his feedback): with many medicines
+   the bill grew taller than the screen and the Complete sale button
+   hid below the fold — the items list now scrolls inside the panel,
+   so the totals and the Complete sale button stay visible.
+   The panel itself never exceeds the screen either: on a short
+   screen it scrolls inside itself instead of pushing the button away.
+   (A sticky footer button was NOT used: .panel has overflow-x auto,
+   which makes a sticky child stick to the panel, not the screen.)
+   ================================================================ */
+.bill-items { max-height: 200px; }
+.pos-bill { max-height: calc(100vh - 32px); overflow-y: auto; }
+
+/* ================================================================
+   Bill compact text (2026-11-21, his example): smaller writing in
+   the bill — textboxes, buttons and the bill card — so the whole
+   bill fits on screen and never hides.
+   ================================================================ */
+.pos-bill { font-size: 13.5px; }
+.pos-bill h3 { font-size: 14px; margin-bottom: 10px; }
+.pos-bill th, .pos-bill td { font-size: 13.5px; padding: 6px 8px; }
+.pos-bill .total-row { font-size: 13.5px; padding: 4px 0; }
+.pos-bill .total-row.grand { font-size: 15px; margin-top: 6px; padding-top: 8px; }
+.pos-bill .grand-amount { font-size: 17px; }
+.pos-bill .discount-input { width: 96px; padding: 4px 6px; font-size: 13px; }
+.pos-bill .qty-stepper button { width: 24px; height: 26px; font-size: 14px; }
+.pos-bill .qty-stepper .qty-input { width: 46px; padding: 4px 6px; font-size: 13px; }
+.pos-bill .qty-input { font-size: 13px; }
+.pos-bill select, .pos-bill input { font-size: 13.5px; min-height: 32px; }
+.pos-bill .btn-save { font-size: 13.5px; padding: 7px 18px; }
+.pos-bill .btn-secondary { font-size: 13px; padding: 6px 12px; }
+.pos-bill .btn-remove { font-size: 14px; }
+.pos-bill .field label { font-size: 12px; }
+
+/* ================================================================
+   Bill scrollbars (2026-11-21, his drawing): two always-visible,
+   nicely styled scrollbars — one for the medicines list, one for
+   the whole bill panel — so the bill never hides.
+   ================================================================ */
+.bill-items { max-height: 200px; overflow-y: scroll; scrollbar-width: auto; scrollbar-color: #94a3b8 var(--mc-border); }
+.pos-bill { max-height: calc(100vh - 32px); overflow-y: scroll; scrollbar-width: auto; scrollbar-color: #94a3b8 var(--mc-border); }
+.bill-items::-webkit-scrollbar, .pos-bill::-webkit-scrollbar { width: 14px; height: 14px; }
+.bill-items::-webkit-scrollbar-track, .pos-bill::-webkit-scrollbar-track { background: var(--mc-border); border-radius: 8px; }
+.bill-items::-webkit-scrollbar-thumb, .pos-bill::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 8px; border: 2px solid var(--mc-border); }
+.bill-items::-webkit-scrollbar-thumb:hover, .pos-bill::-webkit-scrollbar-thumb:hover { background: var(--mc-primary); }

@@ -145,6 +145,7 @@ interface Supplier {
   id: string;
   name: string;
   phone: string | null;
+  created_at: string;
 }
 
 interface SupplierRow extends Supplier {
@@ -426,6 +427,21 @@ export default function App() {
   const [lang, setLangState] = useState<Lang>(loadLang);
   const [page, setPage] = useState<Page>('dashboard');
   const [prefillBarcode, setPrefillBarcode] = useState('');
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    try {
+      return localStorage.getItem('pharmacy_theme') === 'dark' ? 'dark' : 'light';
+    } catch {
+      return 'light';
+    }
+  });
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    try {
+      localStorage.setItem('pharmacy_theme', theme);
+    } catch {
+      /* Storage unavailable — the theme still applies for this session. */
+    }
+  }, [theme]);
   // On phones the menu hides behind a ☰ button; on desktop it is always open.
   const [menuOpen, setMenuOpen] = useState(false);
   // The approval notification: whether this user is the Main Branch
@@ -562,6 +578,34 @@ export default function App() {
         </div>
       </aside>
       <main className="main">
+        <header className="workspace-topbar">
+          <div className="workspace-context">
+            <span className="workspace-context-mark" aria-hidden="true">ه</span>
+            <div className="workspace-context-copy">
+              <strong>{t(lang, 'appName')}</strong>
+              <span>{t(lang, 'loginTagline')}</span>
+            </div>
+          </div>
+          <div className="workspace-topbar-actions">
+            <div className="workspace-date"><span aria-hidden="true">📅</span>{todayStr()}</div>
+            <button
+              type="button"
+              className="theme-toggle"
+              onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+              title={t(lang, theme === 'light' ? 'themeDark' : 'themeLight')}
+              aria-label={t(lang, theme === 'light' ? 'themeDark' : 'themeLight')}
+            >
+              {theme === 'light' ? '🌙' : '☀️'}
+            </button>
+            <div className="workspace-profile">
+              <span className="workspace-avatar">{user.full_name.trim().charAt(0).toLocaleUpperCase()}</span>
+              <span className="workspace-profile-copy">
+                <strong>{user.full_name}</strong>
+                <small>{user.role}</small>
+              </span>
+            </div>
+          </div>
+        </header>
         {visiblePage === 'dashboard' && <Dashboard lang={lang} userName={user.full_name} role={user.role} onNavigate={setPage} approvalInfo={approvalInfo} />}
         {visiblePage === 'approvals' && <ApprovalsPage lang={lang} onChanged={loadApprovalInfo} />}
         {visiblePage === 'medicines' && <Medicines lang={lang} prefillBarcode={prefillBarcode} onPrefillConsumed={() => setPrefillBarcode('')} />}
@@ -2677,7 +2721,7 @@ function SalesPage({ lang, role, onAddMedicine }: { lang: Lang; role: string; on
 
   return (
     <>
-      <div className="dash-head">
+      <div className="dash-head pos-head">
         <h2>{t(lang, 'sales')}</h2>
         {today && (
           <span className="today-strip">
@@ -2748,49 +2792,51 @@ function SalesPage({ lang, role, onAddMedicine }: { lang: Lang; role: string; on
               {t(lang, 'billEmpty')}
             </p>
           ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>{t(lang, 'name')}</th>
-                  <th>{t(lang, 'salePrice')}</th>
-                  <th>{t(lang, 'qty')}</th>
-                  <th>{t(lang, 'lineTotal')}</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {bill.map((i) => (
-                  <tr key={i.medicine_id}>
-                    <td>{i.name}</td>
-                    <td>{fmt(i.unit_price)}</td>
-                    <td>
-                      <div className="qty-stepper">
-                        <button type="button" onClick={() => setQty(i.medicine_id, i.quantity - 1)}>
-                          −
-                        </button>
-                        <input
-                          className="qty-input"
-                          type="number"
-                          min="1"
-                          step="1"
-                          value={i.quantity}
-                          onChange={(e) => setQty(i.medicine_id, Number(e.target.value))}
-                        />
-                        <button type="button" onClick={() => setQty(i.medicine_id, i.quantity + 1)}>
-                          +
-                        </button>
-                      </div>
-                    </td>
-                    <td>{fmt(i.unit_price * i.quantity)}</td>
-                    <td>
-                      <button className="btn-remove" onClick={() => removeItem(i.medicine_id)}>
-                        ✕
-                      </button>
-                    </td>
+            <div className="table-scroll bill-items">
+              <table>
+                <thead>
+                  <tr>
+                    <th>{t(lang, 'name')}</th>
+                    <th>{t(lang, 'salePrice')}</th>
+                    <th>{t(lang, 'qty')}</th>
+                    <th>{t(lang, 'lineTotal')}</th>
+                    <th></th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {bill.map((i) => (
+                    <tr key={i.medicine_id}>
+                      <td>{i.name}</td>
+                      <td>{fmt(i.unit_price)}</td>
+                      <td>
+                        <div className="qty-stepper">
+                          <button type="button" onClick={() => setQty(i.medicine_id, i.quantity - 1)}>
+                            −
+                          </button>
+                          <input
+                            className="qty-input"
+                            type="number"
+                            min="1"
+                            step="1"
+                            value={i.quantity}
+                            onChange={(e) => setQty(i.medicine_id, Number(e.target.value))}
+                          />
+                          <button type="button" onClick={() => setQty(i.medicine_id, i.quantity + 1)}>
+                            +
+                          </button>
+                        </div>
+                      </td>
+                      <td>{fmt(i.unit_price * i.quantity)}</td>
+                      <td>
+                        <button className="btn-remove" onClick={() => removeItem(i.medicine_id)}>
+                          ✕
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
 
           <div style={{ marginTop: 14 }}>
@@ -3240,12 +3286,14 @@ function SuppliersPage({ lang }: { lang: Lang }) {
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [address, setAddress] = useState('');
+  const [supDate, setSupDate] = useState(todayStr());
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
   const [detail, setDetail] = useState<SupplierDetail | null>(null);
   const [eName, setEName] = useState('');
   const [ePhone, setEPhone] = useState('');
   const [eAddress, setEAddress] = useState('');
+  const [eDate, setEDate] = useState('');
   const [editMsg, setEditMsg] = useState('');
   const [payAmount, setPayAmount] = useState('');
   const [payMsg, setPayMsg] = useState('');
@@ -3306,11 +3354,13 @@ function SuppliersPage({ lang }: { lang: Lang }) {
         name: name.trim(),
         phone: phone.trim() || undefined,
         address: address.trim() || undefined,
+        date_added: supDate,
       });
       setMsg(`✅ ${t(lang, 'supplierAdded')}`);
       setName('');
       setPhone('');
       setAddress('');
+      setSupDate(todayStr());
       setSupFormOpen(false);
       await load();
     } catch (err) {
@@ -3330,6 +3380,7 @@ function SuppliersPage({ lang }: { lang: Lang }) {
       setEName(s.name);
       setEPhone(s.phone || '');
       setEAddress(s.address || '');
+      setEDate(String(s.created_at).slice(0, 10));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error');
     }
@@ -3348,6 +3399,7 @@ function SuppliersPage({ lang }: { lang: Lang }) {
         name: eName.trim(),
         phone: ePhone.trim() || undefined,
         address: eAddress.trim() || undefined,
+        date_added: eDate,
       });
       setEditMsg(`✅ ${t(lang, 'saved')}`);
       await Promise.all([load(), openDetail(detail.id)]);
@@ -3456,6 +3508,10 @@ function SuppliersPage({ lang }: { lang: Lang }) {
               <label>{t(lang, 'address')}</label>
               <input value={address} onChange={(e) => setAddress(e.target.value)} />
             </div>
+            <div className="field">
+              <label>{t(lang, 'dateAdded')}</label>
+              <input type="date" value={supDate} onChange={(e) => setSupDate(e.target.value)} />
+            </div>
           </div>
           <button className="btn-secondary" type="submit">
             {t(lang, 'save')}
@@ -3483,6 +3539,7 @@ function SuppliersPage({ lang }: { lang: Lang }) {
                 <th>{t(lang, 'totalPurchased')}</th>
                 <th>{t(lang, 'paidAmount')}</th>
                 <th>{t(lang, 'due')}</th>
+                <th>{t(lang, 'dateAdded')}</th>
                 <th></th>
               </tr>
             </thead>
@@ -3502,6 +3559,7 @@ function SuppliersPage({ lang }: { lang: Lang }) {
                       '—'
                     )}
                   </td>
+                  <td>{String(s.created_at).slice(0, 10)}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <button className="btn small" onClick={() => editFromList(s.id)}>
                       {t(lang, 'edit')}
@@ -3530,7 +3588,7 @@ function SuppliersPage({ lang }: { lang: Lang }) {
               ))}
               {shown.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="muted">
+                  <td colSpan={7} className="muted">
                     {t(lang, 'noResults')}
                   </td>
                 </tr>
@@ -3586,6 +3644,10 @@ function SuppliersPage({ lang }: { lang: Lang }) {
               <div className="field">
                 <label>{t(lang, 'address')}</label>
                 <input value={eAddress} onChange={(e) => setEAddress(e.target.value)} />
+              </div>
+              <div className="field">
+                <label>{t(lang, 'dateAdded')}</label>
+                <input type="date" value={eDate} onChange={(e) => setEDate(e.target.value)} />
               </div>
             </div>
             <button className="btn-secondary" type="submit">

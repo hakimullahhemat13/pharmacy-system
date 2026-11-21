@@ -1145,3 +1145,33 @@ test('reports: the WhatsApp summary gives every user their own branch full day',
   const bad = await api('GET', '/reports/whatsapp-summary?date=not-a-date', undefined, S.token);
   assert.equal(bad.status, 400);
 });
+
+test('suppliers: the added date can be set on create and edit, and a bad date is rejected', async () => {
+  // A supplier added with an old date keeps that date in the list.
+  const created = await api(
+    'POST',
+    '/suppliers',
+    { name: 'Date Test Pharma', phone: '0700123456', date_added: '2026-01-15' },
+    S.token
+  );
+  assert.equal(created.status, 201);
+  assert.equal(String(created.data.supplier.created_at).slice(0, 10), '2026-01-15');
+  const id = created.data.supplier.id;
+  // Bad dates are rejected: not a date, and a day that does not exist.
+  const bad = await api('POST', '/suppliers', { name: 'Bad Date Pharma', date_added: 'not-a-date' }, S.token);
+  assert.equal(bad.status, 400);
+  const bad2 = await api('POST', '/suppliers', { name: 'Bad Date Pharma', date_added: '2026-02-30' }, S.token);
+  assert.equal(bad2.status, 400);
+  // Editing the date works, and the list shows the new date.
+  const edited = await api(
+    'PUT',
+    `/suppliers/${id}`,
+    { name: 'Date Test Pharma', date_added: '2026-03-10' },
+    S.token
+  );
+  assert.equal(edited.status, 200);
+  assert.equal(String(edited.data.supplier.created_at).slice(0, 10), '2026-03-10');
+  const list = await api('GET', '/suppliers', undefined, S.token);
+  const row = list.data.suppliers.find((s) => s.id === id);
+  assert.equal(String(row.created_at).slice(0, 10), '2026-03-10');
+});

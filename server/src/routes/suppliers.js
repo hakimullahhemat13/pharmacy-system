@@ -22,6 +22,19 @@ function phoneError(phone) {
   return /^\d{10}$/.test(phone) ? null : 'Phone number must be exactly 10 digits';
 }
 
+// The date a supplier was added. Optional — when given it must be a real
+// calendar date (YYYY-MM-DD); otherwise the database stamps today.
+function dateAddedError(dateAdded) {
+  if (dateAdded === null || dateAdded === undefined || dateAdded === '') return null;
+  const s = String(dateAdded);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return 'Date added must be YYYY-MM-DD';
+  const d = new Date(`${s}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return 'Date added must be a real date';
+  const pad = (n) => String(n).padStart(2, '0');
+  const back = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return back === s ? null : 'Date added must be a real date';
+}
+
 // The money position with one supplier. Works on the pool or on a
 // transaction connection (anything with .query).
 async function supplierMoney(db, branchId, supplierId) {
@@ -56,7 +69,7 @@ async function supplierMoney(db, branchId, supplierId) {
   };
 }
 
-// POST /api/suppliers  (admin or pharmacist)  Body: { name, phone?, address? }
+// POST /api/suppliers  (admin or pharmacist)  Body: { name, phone?, address?, date_added? }
 router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   const body = req.body || {};
   const name = String(body.name || '').trim();
@@ -65,16 +78,31 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
   }
   const phone = body.phone ? String(body.phone).trim() : null;
   const address = body.address ? String(body.address).trim() : null;
+  const dateAdded = body.date_added ? String(body.date_added).trim() : null;
   const pErr = phoneError(phone);
   if (pErr) {
     return res.status(400).json({ status: 'error', message: pErr });
   }
+  const dErr = dateAddedError(dateAdded);
+  if (dErr) {
+    return res.status(400).json({ status: 'error', message: dErr });
+  }
   try {
     const id = uuidv4();
-    await pool.query(
-      'INSERT INTO suppliers (id, branch_id, name, phone, address) VALUES (?, ?, ?, ?, ?)',
-      [id, req.user.branch_id, name, phone, address]
-    );
+    if (dateAdded) {
+      // Stored at noon, not midnight: the list shows created_at with
+      // .slice(0, 10) on the UTC string, and midnight local time would
+      // read as the previous day in timezones ahead of UTC.
+      await pool.query(
+        'INSERT INTO suppliers (id, branch_id, name, phone, address, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        [id, req.user.branch_id, name, phone, address, `${dateAdded} 12:00:00`]
+      );
+    } else {
+      await pool.query(
+        'INSERT INTO suppliers (id, branch_id, name, phone, address) VALUES (?, ?, ?, ?, ?)',
+        [id, req.user.branch_id, name, phone, address]
+      );
+    }
     const [rows] = await pool.query(
       'SELECT id, branch_id, name, phone, address, created_at FROM suppliers WHERE id = ? LIMIT 1',
       [id]
@@ -168,7 +196,7 @@ router.get('/:id', authRequired, async (req, res) => {
   }
 });
 
-// PUT /api/suppliers/:id  (admin or pharmacist)  Body: { name, phone?, address? }
+// PUT /api/suppliers/:id  (admin or pharmacist)  Body: { name, phone?, address?, date_added? }
 router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   const body = req.body || {};
   const name = String(body.name || '').trim();
@@ -177,15 +205,25 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
   }
   const phone = body.phone ? String(body.phone).trim() : null;
   const address = body.address ? String(body.address).trim() : null;
+  const dateAdded = body.date_added ? String(body.date_added).trim() : null;
   const pErr = phoneError(phone);
   if (pErr) {
     return res.status(400).json({ status: 'error', message: pErr });
   }
+  const dErr = dateAddedError(dateAdded);
+  if (dErr) {
+    return res.status(400).json({ status: 'error', message: dErr });
+  }
   try {
-    const [result] = await pool.query(
-      'UPDATE suppliers SET name = ?, phone = ?, address = ? WHERE id = ? AND branch_id = ? AND is_deleted = 0',
-      [name, phone, address, req.params.id, req.user.branch_id]
-    );
+    const [result] = dateAdded
+      ? await pool.query(
+          'UPDATE suppliers SET name = ?, phone = ?, address = ?, created_at = ? WHERE id = ? AND branch_id = ? AND is_deleted = 0',
+          [name, phone, address, `${dateAdded} 12:00:00`, req.params.id, req.user.branch_id]
+        )
+      : await pool.query(
+          'UPDATE suppliers SET name = ?, phone = ?, address = ? WHERE id = ? AND branch_id = ? AND is_deleted = 0',
+          [name, phone, address, req.params.id, req.user.branch_id]
+        );
     if (result.affectedRows === 0) {
       return res.status(404).json({ status: 'error', message: 'Supplier not found' });
     }
