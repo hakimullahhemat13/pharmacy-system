@@ -371,32 +371,64 @@ th { color: #64748b; font-weight: 600; font-size: 13px; }
     color: #000;
     background: #fff;
   }
+  /* Report template header (2026-11-21, his sample): navy organisation
+     bar, pale branch/date row, brown title bar. print-color-adjust keeps
+     the colours in the printout/PDF even when the browser's "Background
+     graphics" is off. */
   #report-print .print-head {
-    text-align: center;
     margin-bottom: 12px;
-    border-bottom: 2px solid #14532d;
-    padding-bottom: 8px;
+    border: 1.5px solid #1f3864;
+    border-radius: 10px 10px 0 0;
+    overflow: hidden;
   }
-  #report-print .print-brand { font-size: 22px; font-weight: 700; color: #14532d; }
-  #report-print .print-title { font-size: 15px; font-weight: 600; margin-top: 6px; }
+  #report-print .print-org {
+    background: #1f3864; color: #fff;
+    font-size: 22px; font-weight: 700; text-align: center; padding: 10px 8px;
+  }
+  #report-print .print-meta {
+    background: #e2efda; color: #000;
+    display: flex; justify-content: space-between; gap: 12px;
+    padding: 6px 12px; font-size: 13px; font-weight: 600;
+  }
+  #report-print .print-title {
+    background: #7b3f00; color: #fff;
+    font-size: 16px; font-weight: 700; padding: 8px 12px;
+  }
+  #report-print .print-org, #report-print .print-meta, #report-print .print-title,
+  #report-print th, #report-print tfoot td,
+  #report-print .print-summary td:first-child,
+  #report-print .print-summary tr.profit-row td {
+    print-color-adjust: exact; -webkit-print-color-adjust: exact;
+  }
   #report-print table { width: 100%; border-collapse: collapse; margin-top: 10px; }
   #report-print thead { display: table-header-group; }
   #report-print tr { page-break-inside: avoid; }
-  #report-print th { background: #f1f5f9; }
+  #report-print th { background: #1f3864; color: #fff; }
   #report-print th, #report-print td { border: 1px solid #94a3b8; padding: 5px 8px; text-align: start; }
   #report-print td.num, #report-print th.num { text-align: end; }
   #report-print table.print-nums td + td, #report-print table.print-nums th + th { text-align: end; }
-  #report-print .print-summary td:first-child { background: #f8fafc; width: 55%; }
+  #report-print .print-summary td:first-child { background: #eaf0f7; width: 55%; }
   #report-print .print-summary td:last-child { font-weight: 600; text-align: end; }
-  #report-print .print-summary tr.profit-row td { border-top: 2px solid #14532d; }
+  #report-print .print-summary tr.profit-row td { border-top: 2px solid #1f3864; background: #c6e0b4; }
   #report-print .print-section {
-    font-size: 14px; font-weight: 700; margin-top: 16px;
-    border-bottom: 1px solid #cbd5e1; padding-bottom: 3px;
+    font-size: 14px; font-weight: 700; margin-top: 16px; color: #1f3864;
+    border-bottom: 1px solid #1f3864; padding-bottom: 3px;
   }
-  #report-print tfoot td { font-weight: 700; background: #f8fafc; }
+  #report-print tfoot td { font-weight: 700; background: #c6e0b4; }
   #report-print .print-footer {
     margin-top: 14px; border-top: 1px solid #cbd5e1;
     padding-top: 6px; font-size: 11px; color: #64748b;
+  }
+  #report-print .print-signatures {
+    display: flex; justify-content: space-between; gap: 40px;
+    margin-top: 30px; padding: 0 12px;
+  }
+  #report-print .print-sign {
+    width: 38%; text-align: center; font-size: 12px;
+    border-top: 1px solid #000; padding-top: 4px;
+  }
+  #report-print .print-dev {
+    text-align: center; font-size: 11px; color: #475569; margin-top: 20px;
   }
 }
 

@@ -1758,9 +1758,20 @@ function ExpiryPage({ lang }: { lang: Lang }) {
         createPortal(
           <div id="report-print" dir={lang === 'en' ? 'ltr' : 'rtl'}>
             <div className="print-head">
-              <div className="print-brand">{branch?.name || 'Pharmacy'}</div>
-              {branch?.address && <div>{branch.address}</div>}
-              {branch?.phone && <div>{branch.phone}</div>}
+              <div className="print-org">{t(lang, 'appName')}</div>
+              <div className="print-meta">
+                <span>
+                  {t(lang, 'branchCol')}: {branch?.name || '—'}
+                </span>
+                {branch?.phone && (
+                  <span>
+                    {t(lang, 'phone')}: {branch.phone}
+                  </span>
+                )}
+                <span>
+                  {t(lang, 'dateLabel')}: {todayStr()}
+                </span>
+              </div>
               <div className="print-title">
                 {t(lang, 'expiryDates')} —{' '}
                 {filter === 'all'
@@ -1769,8 +1780,7 @@ function ExpiryPage({ lang }: { lang: Lang }) {
                     ? t(lang, 'filterExpired')
                     : filter === 'warning'
                       ? t(lang, 'filterWarning')
-                      : t(lang, 'filterOk')}{' '}
-                — {todayStr()}
+                      : t(lang, 'filterOk')}
               </div>
             </div>
             <table className="print-nums">
@@ -1811,8 +1821,13 @@ function ExpiryPage({ lang }: { lang: Lang }) {
               </tfoot>
             </table>
             <div className="print-footer">
-              {t(lang, 'generatedOn')}: {new Date().toLocaleString()}
+              {t(lang, 'generatedOn')}: {todayStr()} {new Date().toTimeString().slice(0, 5)}
             </div>
+            <div className="print-signatures">
+              <div className="print-sign">{t(lang, 'signPrepared')}</div>
+              <div className="print-sign">{t(lang, 'signManager')}</div>
+            </div>
+            <div className="print-dev">{t(lang, 'printDevLine')}</div>
           </div>,
           document.body
         )}
@@ -5900,9 +5915,20 @@ function ReportsPage({
         createPortal(
           <div id="report-print" dir={lang === 'en' ? 'ltr' : 'rtl'}>
             <div className="print-head">
-              <div className="print-brand">{printBranch?.name || 'Pharmacy'}</div>
-              {printBranch?.address && <div>{printBranch.address}</div>}
-              {printBranch?.phone && <div>{printBranch.phone}</div>}
+              <div className="print-org">{t(lang, 'appName')}</div>
+              <div className="print-meta">
+                <span>
+                  {t(lang, 'branchCol')}: {printBranch?.name || '—'}
+                </span>
+                {printBranch?.phone && (
+                  <span>
+                    {t(lang, 'phone')}: {printBranch.phone}
+                  </span>
+                )}
+                <span>
+                  {t(lang, 'dateLabel')}: {todayStr()}
+                </span>
+              </div>
               <div className="print-title">
                 {t(lang, 'reports')} — {periodTitle}
               </div>
@@ -6179,8 +6205,13 @@ function ReportsPage({
               </>
             )}
             <div className="print-footer">
-              {t(lang, 'generatedOn')}: {new Date().toLocaleString()}
+              {t(lang, 'generatedOn')}: {todayStr()} {new Date().toTimeString().slice(0, 5)}
             </div>
+            <div className="print-signatures">
+              <div className="print-sign">{t(lang, 'signPrepared')}</div>
+              <div className="print-sign">{t(lang, 'signManager')}</div>
+            </div>
+            <div className="print-dev">{t(lang, 'printDevLine')}</div>
           </div>,
           document.body
         )}
@@ -6191,9 +6222,20 @@ function ReportsPage({
         createPortal(
           <div id="report-print" dir={lang === 'en' ? 'ltr' : 'rtl'}>
             <div className="print-head">
-              <div className="print-brand">{printBranch?.name || 'Pharmacy'}</div>
-              {printBranch?.address && <div>{printBranch.address}</div>}
-              {printBranch?.phone && <div>{printBranch.phone}</div>}
+              <div className="print-org">{t(lang, 'appName')}</div>
+              <div className="print-meta">
+                <span>
+                  {t(lang, 'branchCol')}: {printBranch?.name || '—'}
+                </span>
+                {printBranch?.phone && (
+                  <span>
+                    {t(lang, 'phone')}: {printBranch.phone}
+                  </span>
+                )}
+                <span>
+                  {t(lang, 'dateLabel')}: {todayStr()}
+                </span>
+              </div>
               <div className="print-title">
                 {t(lang, 'reports')} — {t(lang, 'stockValue')}
               </div>
@@ -6255,8 +6297,13 @@ function ReportsPage({
               </tbody>
             </table>
             <div className="print-footer">
-              {t(lang, 'generatedOn')}: {new Date().toLocaleString()}
+              {t(lang, 'generatedOn')}: {todayStr()} {new Date().toTimeString().slice(0, 5)}
             </div>
+            <div className="print-signatures">
+              <div className="print-sign">{t(lang, 'signPrepared')}</div>
+              <div className="print-sign">{t(lang, 'signManager')}</div>
+            </div>
+            <div className="print-dev">{t(lang, 'printDevLine')}</div>
           </div>,
           document.body
         )}
