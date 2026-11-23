@@ -236,9 +236,11 @@ router.get('/daily', authRequired, async (req, res) => {
     // their own; every other report route is admin/pharmacist only.
     const sellerId = req.user.role === 'cashier' ? req.user.sub : null;
     const summary = await summaryForRange(branchId, date, end, sellerId);
-    // Cashiers see only their own bills, never profit or cost.
+    // Cashiers see only their own bills, and their own profit — but
+    // never the cost (his choice, 2026-11-23: the owner asks the
+    // cashier to send the WhatsApp report with profit, so the cashier
+    // must be able to see the profit too).
     if (req.user.role === 'cashier') {
-      delete summary.profit;
       delete summary.cost_total;
     }
     const [sales] = await pool.query(
@@ -266,12 +268,11 @@ router.get('/daily', authRequired, async (req, res) => {
 // figures for the WhatsApp report to the owners: branch-wide sales,
 // purchases and cash, plus the day-close state and the branch name.
 //
-// This is the ONE route where a cashier reads branch-wide money figures,
-// and only for sending the owners' report: the owner decided every user,
-// cashiers included, must be able to send the full report with profit.
-// Every other report route keeps its role scoping. The branch ALWAYS
-// comes from the login token — this route never accepts branch_id, so a
-// user can only ever send their own branch's day.
+// A cashier sends ONLY their own day (his choice, 2026-11-23): their
+// own sales, their own cash, and no purchases — the branch-wide figures
+// are the admin's and pharmacist's to send. The branch ALWAYS comes
+// from the login token — this route never accepts branch_id, so a user
+// can only ever send their own branch's day.
 router.get('/whatsapp-summary', authRequired, async (req, res) => {
   const date = req.query.date === undefined ? fmtDate(new Date()) : String(req.query.date);
   if (!isValidDateString(date)) {
@@ -280,9 +281,10 @@ router.get('/whatsapp-summary', authRequired, async (req, res) => {
   const end = nextDayString(date);
   try {
     const branchId = req.user.branch_id;
-    const summary = await summaryForRange(branchId, date, end);
-    const suppliers = await purchasesForRange(branchId, date, end);
-    const cash = await cashForDay(branchId, date, end);
+    const sellerId = req.user.role === 'cashier' ? req.user.sub : null;
+    const summary = await summaryForRange(branchId, date, end, sellerId);
+    const suppliers = sellerId ? [] : await purchasesForRange(branchId, date, end);
+    const cash = await cashForDay(branchId, date, end, sellerId);
     let closed = false;
     try {
       const [rows] = await pool.query(
@@ -1097,19 +1099,22 @@ router.get('/export', authRequired, requireRole('admin', 'pharmacist'), async (r
 // bill is voided later: the till and customer-payments queries below do
 // NOT filter voided bills. The cash handed back on the void day does
 // count (see below), capped at what was actually paid for the bill.
-async function cashForDay(branchId, start, end) {
+async function cashForDay(branchId, start, end, sellerId = null) {
+  // A seller-scoped day is one user's own cash: their own till, the
+  // payments they personally collected, refunds on their own bills,
+  // and no supplier money (a cashier never pays suppliers).
   const [till] = await pool.query(
     `SELECT COALESCE(SUM(COALESCE(s.paid_amount, s.net_total)), 0) AS v
      FROM sales s
-     WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.sale_date >= ? AND s.sale_date < ?`,
-    [branchId, start, end]
+     WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.sale_date >= ? AND s.sale_date < ?${sellerId ? ' AND s.created_by = ?' : ''}`,
+    sellerId ? [branchId, start, end, sellerId] : [branchId, start, end]
   );
   const [cust] = await pool.query(
     `SELECT COALESCE(SUM(sp.amount), 0) AS v
      FROM sale_payments sp
      JOIN sales s ON s.id = sp.sale_id
-     WHERE sp.branch_id = ? AND sp.is_deleted = 0 AND sp.created_at >= ? AND sp.created_at < ?`,
-    [branchId, start, end]
+     WHERE sp.branch_id = ? AND sp.is_deleted = 0 AND sp.created_at >= ? AND sp.created_at < ?${sellerId ? ' AND sp.created_by = ?' : ''}`,
+    sellerId ? [branchId, start, end, sellerId] : [branchId, start, end]
   );
   // Refunds are cash out of the drawer, so a return can hand back at most
   // what the customer actually paid for that bill: a return on an unpaid
@@ -1126,9 +1131,9 @@ async function cashForDay(branchId, start, end) {
      FROM stock_transactions sr
      JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
      JOIN sales sv ON sv.id = sr.reference_id AND sv.voided_at IS NULL
-     WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at >= ? AND sr.created_at < ?
+     WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at >= ? AND sr.created_at < ?${sellerId ? ' AND sv.created_by = ?' : ''}
      GROUP BY sr.reference_id`,
-    [branchId, start, end]
+    sellerId ? [branchId, start, end, sellerId] : [branchId, start, end]
   );
   // A void hands the bill's paid money back on the void day: what was
   // actually paid by the moment of the void, capped at the bill's net —
@@ -1139,8 +1144,8 @@ async function cashForDay(branchId, start, end) {
   const [voidBills] = await pool.query(
     `SELECT s.id AS sale_id, s.voided_at AS voided_at
      FROM sales s
-     WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at >= ? AND s.voided_at < ?`,
-    [branchId, start, end]
+     WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at >= ? AND s.voided_at < ?${sellerId ? ' AND s.created_by = ?' : ''}`,
+    sellerId ? [branchId, start, end, sellerId] : [branchId, start, end]
   );
   const refundSaleIds = [...new Set([...dayRets.map((r) => r.sale_id), ...voidBills.map((r) => r.sale_id)])];
   const paidBySale = new Map();
@@ -1219,13 +1224,18 @@ async function cashForDay(branchId, start, end) {
   // Opening stock is not cash paid that day: the OPEN purchase created
   // with a medicine carries paid_amount = total but no money left the
   // drawer, so it is excluded from the supplier cash-out.
-  const [sup1] = await pool.query(
+  // A seller-scoped day has no supplier money at all.
+  const [sup1] = sellerId
+    ? [[{ v: 0 }]]
+    : await pool.query(
     `SELECT COALESCE(SUM(paid_amount), 0) AS v
      FROM purchases
      WHERE branch_id = ? AND is_deleted = 0 AND approval_status = 'approved' AND (notes IS NULL OR notes <> 'Opening stock') AND purchase_date >= ? AND purchase_date < ?`,
     [branchId, start, end]
   );
-  const [sup2] = await pool.query(
+  const [sup2] = sellerId
+    ? [[{ v: 0 }]]
+    : await pool.query(
     `SELECT COALESCE(SUM(amount), 0) AS v
      FROM supplier_payments
      WHERE branch_id = ? AND is_deleted = 0 AND created_at >= ? AND created_at < ?`,

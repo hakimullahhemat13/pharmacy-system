@@ -1180,18 +1180,16 @@ function Dashboard({
             <div className="card-value">{fmt(summary.revenue)}</div>
             <div className="card-sub">{t(lang, 'currency')}</div>
           </div>
-          {!isCashier && (
-            <div className="card dash-card accent-teal">
-              <div className="card-top">
-                <span className="card-icon">📈</span>
-                <span className="card-label">{t(lang, 'todayProfit')}</span>
-              </div>
-              <div className="card-value profit-value">{fmt(summary.profit)}</div>
-              <div className="card-sub">
-                {t(lang, 'profitMargin')}: {margin}%
-              </div>
+          <div className="card dash-card accent-teal">
+            <div className="card-top">
+              <span className="card-icon">📈</span>
+              <span className="card-label">{t(lang, 'todayProfit')}</span>
             </div>
-          )}
+            <div className="card-value profit-value">{fmt(summary.profit)}</div>
+            <div className="card-sub">
+              {t(lang, 'profitMargin')}: {margin}%
+            </div>
+          </div>
           <div className="card dash-card accent-blue">
             <div className="card-top">
               <span className="card-icon">🧾</span>
