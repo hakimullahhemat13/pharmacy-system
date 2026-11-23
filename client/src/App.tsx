@@ -8,6 +8,10 @@ interface User {
   full_name: string;
   username: string;
   role: string;
+  // The login response carries this (the server puts the user's branch
+  // in the token too); the approvals fallback below compares it with
+  // the Main Branch id from the branches list.
+  branch_id?: string;
   language: string;
 }
 
@@ -351,7 +355,12 @@ function loadLang(): Lang {
 }
 
 function fmt(n: number): string {
-  return Number(n).toLocaleString('en-US');
+  const v = Number(n);
+  // Money keeps 2 decimals (100.10, not 100.1); whole counts stay whole
+  // (5 bills, not 5.00) — fmt() is shared by both, so integers get no decimals.
+  return Number.isInteger(v)
+    ? v.toLocaleString('en-US')
+    : v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 // 24-hour "HH:MM" → 12-hour "H:MM AM/PM", like the SENAN sample bill.
@@ -467,7 +476,21 @@ export default function App() {
       const data = await api.get('/approvals/counts');
       setApprovalInfo({ isMainAdmin: !!data.is_main_admin, counts: data.counts as ApprovalCounts });
     } catch {
-      setApprovalInfo(null);
+      // The counts call failed — do not silently hide the Approvals menu
+      // from the Main admin. Derive it from role + branch instead: the
+      // Main Branch is the oldest branch, and the branches list comes
+      // back oldest first, so its first row names it.
+      try {
+        const data = await api.get('/branches');
+        const branches = (data.branches as { id: string }[]) || [];
+        const mainId = branches.length > 0 ? branches[0].id : '';
+        setApprovalInfo({
+          isMainAdmin: user?.role === 'admin' && !!mainId && user?.branch_id === mainId,
+          counts: { medicines: 0, purchases: 0, days: 0, total: 0 },
+        });
+      } catch {
+        setApprovalInfo(null);
+      }
     }
   };
   useEffect(() => {
@@ -500,6 +523,18 @@ export default function App() {
     sessionStorage.removeItem(USER_KEY);
     setUser(null);
   };
+
+  // A 401 from any API call means the stored token is dead (e.g. the
+  // user was deactivated mid-session): api.ts fires this event, and the
+  // session is dropped here so the login screen comes back instead of
+  // leaving the user "logged in" with raw errors. One listener, not a
+  // 401 check in every page.
+  useEffect(() => {
+    const onUnauthorized = () => logout();
+    window.addEventListener('pharmacy-unauthorized', onUnauthorized);
+    return () => window.removeEventListener('pharmacy-unauthorized', onUnauthorized);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (!user) {
     return (
@@ -871,14 +906,21 @@ function Dashboard({
       try {
         const wDays = workWeekDays();
         const [range, sv, recent, centralRes] = await Promise.all([
-          api.get(`/reports/range?from=${wDays[0]}&to=${wDays[wDays.length - 1]}`).catch((err) => {
-            if (alive) setError(err instanceof Error ? err.message : 'Error');
-            return null;
-          }),
-          api.get('/reports/stock-value').catch((err) => {
-            if (alive) setError(err instanceof Error ? err.message : 'Error');
-            return null;
-          }),
+          // The week chart and the stock-value card are admin/pharmacist
+          // only server-side: a cashier's calls would 403 and the shared
+          // error state would paint a spurious "no permission" banner.
+          isCashier
+            ? Promise.resolve(null)
+            : api.get(`/reports/range?from=${wDays[0]}&to=${wDays[wDays.length - 1]}`).catch((err) => {
+                if (alive) setError(err instanceof Error ? err.message : 'Error');
+                return null;
+              }),
+          isCashier
+            ? Promise.resolve(null)
+            : api.get('/reports/stock-value').catch((err) => {
+                if (alive) setError(err instanceof Error ? err.message : 'Error');
+                return null;
+              }),
           api.get('/sales').catch((err) => {
             if (alive) setError(err instanceof Error ? err.message : 'Error');
             return null;
@@ -939,13 +981,20 @@ function Dashboard({
   }, []);
 
   useEffect(() => {
+    // Cashiers cannot read /approvals/my-branch (admin/pharmacist only),
+    // so do not fetch it for them — the panel below stays hidden and no
+    // 403 lands in the error banner. For everyone else a failure is
+    // shown instead of swallowed.
+    if (isCashier) return;
     let alive = true;
     api
       .get('/approvals/my-branch')
       .then((data) => {
         if (alive) setMyBranch(data as typeof myBranch);
       })
-      .catch(() => undefined);
+      .catch((err) => {
+        if (alive) setError(err instanceof Error ? err.message : 'Error');
+      });
     return () => {
       alive = false;
     };
@@ -1079,8 +1128,8 @@ function Dashboard({
                     <th>{t(lang, 'date')}</th>
                     <th>{t(lang, 'itemsSold')}</th>
                     <th>{t(lang, 'itemsBought')}</th>
-                    <th>{t(lang, 'revenue')}</th>
-                    <th>{t(lang, 'profit')}</th>
+                    {!isCashier && <th>{t(lang, 'revenue')}</th>}
+                    {!isCashier && <th>{t(lang, 'profit')}</th>}
                     <th>{t(lang, 'reviewNote')}</th>
                     <th></th>
                   </tr>
@@ -1091,8 +1140,10 @@ function Dashboard({
                       <td>{d.date}</td>
                       <td>{fmt(d.summary.items_sold)}</td>
                       <td>{fmt(d.summary.items_bought)}</td>
-                      <td>{fmt(d.summary.revenue)}</td>
-                      <td style={d.summary.profit < 0 ? { color: '#dc2626' } : undefined}>{fmt(d.summary.profit)}</td>
+                      {!isCashier && <td>{fmt(d.summary.revenue)}</td>}
+                      {!isCashier && (
+                        <td style={d.summary.profit < 0 ? { color: '#dc2626' } : undefined}>{fmt(d.summary.profit)}</td>
+                      )}
                       <td>
                         {d.review_status === 'accepted' ? (
                           <span className="badge ok">{t(lang, 'dayAccepted')}</span>
@@ -1104,7 +1155,7 @@ function Dashboard({
                         {d.review_note && <div className="note-text">{d.review_note}</div>}
                       </td>
                       <td>
-                        {d.review_status === 'rejected' && (
+                        {d.review_status === 'rejected' && !isCashier && (
                           <button className="btn small" onClick={() => resubmitDay(d.branch_id, d.date)}>
                             {t(lang, 'resubmit')}
                           </button>
@@ -1460,7 +1511,7 @@ function ExpiryPage({ lang }: { lang: Lang }) {
     api
       .get('/settings/branch')
       .then((data) => setBranch(data.branch as BranchInfo))
-      .catch(() => undefined);
+      .catch((err) => setError(err instanceof Error ? err.message : 'Error'));
   }, []);
 
   // Print the expiry sheet as soon as it has rendered (same pattern as
@@ -1970,7 +2021,7 @@ function Medicines({ lang, prefillBarcode, onPrefillConsumed }: { lang: Lang; pr
     api
       .get('/suppliers')
       .then((data) => setSuppliers(data.suppliers as Supplier[]))
-      .catch(() => undefined);
+      .catch((err) => setError(err instanceof Error ? err.message : 'Error'));
   }, []);
 
   const q = query.trim().toLowerCase();
@@ -3361,7 +3412,7 @@ function SalesPage({ lang, role, onAddMedicine }: { lang: Lang; role: string; on
               <tfoot>
                 <tr>
                   <td colSpan={3}>
-                    {t(lang, 'noOfItems')}: {receipt.items.length}
+                    {t(lang, 'noOfItems')}: {receipt.items.reduce((s, it) => s + Number(it.quantity), 0)}
                   </td>
                   <td></td>
                   <td className="num">0.00</td>
@@ -3579,7 +3630,10 @@ function SuppliersPage({ lang }: { lang: Lang }) {
   );
   const totalPurchased = list.reduce((s, r) => s + Number(r.purchases_total || 0), 0);
   const totalPaid = list.reduce((s, r) => s + Number(r.paid_total || 0), 0);
-  const totalDue = list.reduce((s, r) => s + Number(r.due_total || 0), 0);
+  // Signed dues must not cancel each other out in the header: what the
+  // pharmacy owes is one figure, what suppliers owe it (credit) another.
+  const totalDue = list.reduce((s, r) => s + Math.max(0, Number(r.due_total || 0)), 0);
+  const totalCredit = list.reduce((s, r) => s + Math.max(0, -Number(r.due_total || 0)), 0);
 
   return (
     <>
@@ -3631,7 +3685,9 @@ function SuppliersPage({ lang }: { lang: Lang }) {
             <span className="card-label">{t(lang, 'due')}</span>
           </div>
           <div className="card-value">{fmt(totalDue)}</div>
-          <div className="card-sub">{t(lang, 'currency')}</div>
+          <div className="card-sub">
+            {t(lang, 'currency')} · {t(lang, 'credit')}: {fmt(totalCredit)}
+          </div>
         </div>
       </div>
       {msg && <div className="success-box">{msg}</div>}
@@ -3808,13 +3864,15 @@ function SuppliersPage({ lang }: { lang: Lang }) {
             {editMsg && <span style={{ marginInlineStart: 10 }}>{editMsg}</span>}
           </form>
 
-          {Number(detail.due_total) > 0 && (
+          {Number(detail.due_total) !== 0 && (
             <form
               onSubmit={recordPayment}
               style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginTop: 14 }}
             >
               <div className="field" style={{ maxWidth: 220 }}>
-                <label>{t(lang, 'paidAmount')}</label>
+                <label>
+                  {Number(detail.due_total) < 0 ? t(lang, 'recordRefundReceived') : t(lang, 'paidAmount')}
+                </label>
                 <input
                   type="number"
                   min="0"
@@ -3824,7 +3882,7 @@ function SuppliersPage({ lang }: { lang: Lang }) {
                 />
               </div>
               <button className="btn-save" type="submit">
-                {t(lang, 'recordPayment')}
+                {Number(detail.due_total) < 0 ? t(lang, 'recordRefundReceived') : t(lang, 'recordPayment')}
               </button>
               {payMsg && <span style={{ marginInlineStart: 4 }}>{payMsg}</span>}
               {payError && <span style={{ marginInlineStart: 4 }}>{payError}</span>}
@@ -4028,7 +4086,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
   };
 
   useEffect(() => {
-    loadPurchases().catch(() => undefined);
+    loadPurchases().catch((err) => setListError(err instanceof Error ? err.message : 'Error'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [purQuery, purFrom, purTo]);
 
@@ -4094,8 +4152,8 @@ function PurchasesPage({ lang }: { lang: Lang }) {
 
   // Entry-time expiry warning: a row whose expiry is already past, or at most
   // 90 days away, is named here BEFORE saving. Warning only — never a block.
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
+  // The day boundary is Kabul's, so the day-diff matches the server's dates.
+  const todayStart = new Date(`${kabulToday()}T00:00:00`);
   const expiryWarnings = rows
     .filter((r) => r.medicine_id && r.expiry_date)
     .map((r) => ({
@@ -5077,7 +5135,7 @@ function WhatsAppPage({ lang, isMainAdmin }: { lang: Lang; isMainAdmin: boolean 
     api
       .get('/settings/owner-whatsapp')
       .then((data) => setNumbers((data.numbers as string[]) || []))
-      .catch(() => undefined);
+      .catch((err) => setNumError(err instanceof Error ? err.message : 'Error'));
   }, []);
 
   useEffect(() => {
@@ -5270,7 +5328,10 @@ function ReportsPage({
   role: string;
   isMainAdmin: boolean;
 }) {
-  const now = new Date();
+  // Defaults come from the Kabul date, not the browser's local date:
+  // near a month boundary a browser in another timezone would default
+  // the month/range one month off.
+  const now = new Date(`${kabulToday()}T00:00:00`);
   const [tab, setTab] = useState<ReportTab>('daily');
   const [date, setDate] = useState(todayStr());
   const [weekStart, setWeekStart] = useState(weekStartStr());
@@ -5303,7 +5364,7 @@ function ReportsPage({
     api
       .get('/settings/branch')
       .then((data) => setBranch(data.branch as BranchInfo))
-      .catch(() => undefined);
+      .catch((err) => setError(err instanceof Error ? err.message : 'Error'));
   }, []);
 
   useEffect(() => {
@@ -5311,7 +5372,7 @@ function ReportsPage({
     api
       .get('/branches')
       .then((data) => setBranches(data.branches as BranchRow[]))
-      .catch(() => undefined);
+      .catch((err) => setError(err instanceof Error ? err.message : 'Error'));
   }, [isMainAdmin]);
 
   // WhatsApp daily summary: one send button per owner number. The
@@ -5325,7 +5386,7 @@ function ReportsPage({
     api
       .get('/settings/owner-whatsapp')
       .then((data) => setWaNumbers((data.numbers as string[]) || []))
-      .catch(() => undefined);
+      .catch((err) => setError(err instanceof Error ? err.message : 'Error'));
   }, []);
 
   // Append the viewed branch to a report URL (every report fetch and
@@ -6588,7 +6649,11 @@ function CustomersPage({ lang, role }: { lang: Lang; role: string }) {
       (dueFilter === 'all' ? true : Number(r.due_total || 0) > 0)
   );
   const withDueCount = rows.filter((r) => Number(r.due_total || 0) > 0).length;
-  const totalDue = rows.reduce((sum, r) => sum + Number(r.due_total || 0), 0);
+  // Signed dues must not cancel each other out in the header: what
+  // customers owe is one figure, what the pharmacy owes them (credit)
+  // is another.
+  const totalDue = rows.reduce((sum, r) => sum + Math.max(0, Number(r.due_total || 0)), 0);
+  const totalCredit = rows.reduce((sum, r) => sum + Math.max(0, -Number(r.due_total || 0)), 0);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -6765,7 +6830,9 @@ function CustomersPage({ lang, role }: { lang: Lang; role: string }) {
             <span className="card-label">{t(lang, 'dueAmount')}</span>
           </div>
           <div className="card-value">{fmt(totalDue)}</div>
-          <div className="card-sub">{t(lang, 'currency')}</div>
+          <div className="card-sub">
+            {t(lang, 'currency')} · {t(lang, 'credit')}: {fmt(totalCredit)}
+          </div>
         </div>
       </div>
       {error && <div className="error-box">{error}</div>}
@@ -6852,6 +6919,10 @@ function CustomersPage({ lang, role }: { lang: Lang; role: string }) {
                     {Number(r.due_total || 0) > 0 ? (
                       <span className="badge warning">
                         {t(lang, 'credit')}: {fmt(Number(r.due_total))} {t(lang, 'currency')}
+                      </span>
+                    ) : Number(r.due_total || 0) < 0 ? (
+                      <span className="badge ok">
+                        {t(lang, 'credit')}: {fmt(Math.abs(Number(r.due_total)))} {t(lang, 'currency')}
                       </span>
                     ) : (
                       '—'
@@ -7317,7 +7388,7 @@ function BackupPage({
           <p className="muted" style={{ fontSize: 15 }}>
             {t(lang, 'autoBackupLast')}:{' '}
             {autoCfg.lastFile
-              ? `${autoCfg.lastFile}${autoCfg.lastRun ? ` — ${new Date(autoCfg.lastRun).toLocaleString()}` : ''}`
+              ? `${autoCfg.lastFile}${autoCfg.lastRun ? ` — ${new Date(autoCfg.lastRun).toLocaleString(undefined, { timeZone: 'Asia/Kabul' })}` : ''}`
               : t(lang, 'autoBackupNever')}
           </p>
         )}
@@ -8544,7 +8615,10 @@ function SettingsPage({
                   {auditEntries.map((e) => (
                     <tr key={e.id}>
                       <td style={{ whiteSpace: 'nowrap' }}>
-                        {new Date(e.created_at).toLocaleString()}
+                        {/* created_at is stored as Kabul wall-clock time: show
+                            it as stored instead of re-interpreting it in the
+                            browser's own timezone. */}
+                        {String(e.created_at).slice(0, 19).replace('T', ' ')}
                       </td>
                       <td>{e.full_name || e.username || '—'}</td>
                       {branches.length > 1 && <td>{e.branch_name || '—'}</td>}

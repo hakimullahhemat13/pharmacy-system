@@ -22,7 +22,7 @@ const pool = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
 const { auditLog } = require('../audit');
 const { getMainBranchId, resetDayReview } = require('../mainBranch');
-const { dayOf, isDayClosed, dayClosedMessage } = require('../dayClose');
+const { dayOf, isDayClosed, todayStr, dayClosedMessage } = require('../dayClose');
 
 const router = express.Router();
 
@@ -321,7 +321,7 @@ router.get('/pending', authRequired, requireMainAdmin, async (req, res) => {
 // its rejected entries (with the boss's notes) and its recent days with
 // their review states. The Main Branch has nothing here — its entries
 // never wait, and its days are never reviewed.
-router.get('/my-branch', authRequired, async (req, res) => {
+router.get('/my-branch', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   try {
     const mainId = await getMainBranchId(pool);
     if (req.user.branch_id === mainId) {
@@ -438,12 +438,17 @@ router.post('/purchases/:id/accept', authRequired, requireMainAdmin, async (req,
       return res.status(400).json({ status: 'error', message: 'This purchase is not waiting for approval' });
     }
     const purchase = head[0];
-    // An accepted purchase lands stock and money on its purchase day —
-    // a closed day takes no new money.
+    // An accepted purchase lands stock and money on its purchase day
+    // and writes ledger rows dated today — either day being closed
+    // blocks the accept (same pattern as purchase PUT/DELETE).
     const purchaseDay = dayOf(purchase.purchase_date);
-    if (await isDayClosed(conn, purchase.branch_id, purchaseDay)) {
+    const acceptDay = todayStr();
+    const acceptClosedDay = (await isDayClosed(conn, purchase.branch_id, purchaseDay))
+      ? purchaseDay
+      : (await isDayClosed(conn, purchase.branch_id, acceptDay)) ? acceptDay : null;
+    if (acceptClosedDay) {
       await conn.rollback();
-      return res.status(400).json({ status: 'error', message: dayClosedMessage(purchaseDay) });
+      return res.status(400).json({ status: 'error', message: dayClosedMessage(acceptClosedDay) });
     }
     const [items] = await conn.query(
       `SELECT pi.medicine_id, pi.batch_id, pi.quantity, pi.purchase_price,
@@ -612,7 +617,7 @@ router.post('/days/reject', authRequired, requireMainAdmin, (req, res) => review
 // of the branch sends a REJECTED day back for review after correcting
 // it. An accepted day can never be un-accepted from here — the boss's
 // decision stands unless new activity reopens the day.
-router.post('/days/resubmit', authRequired, async (req, res) => {
+router.post('/days/resubmit', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   const body = req.body || {};
   const branchId = String(body.branch_id || '');
   const date = String(body.date || '');

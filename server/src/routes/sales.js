@@ -53,6 +53,9 @@ router.post('/', authRequired, async (req, res) => {
     }
     seenMedicines.add(mid);
   }
+  if (body.discount !== undefined && body.discount !== null && !Number.isFinite(Number(body.discount))) {
+    return res.status(400).json({ status: 'error', message: 'discount must be a number, 0 or more' });
+  }
   const discount = body.discount === undefined || body.discount === null ? 0 : round2(body.discount);
   if (!Number.isFinite(discount) || discount < 0) {
     return res.status(400).json({ status: 'error', message: 'discount must be a number, 0 or more' });
@@ -62,6 +65,9 @@ router.post('/', authRequired, async (req, res) => {
   // Missing means "paid in full"; less than the total means the rest is owed.
   let paidAmount = null;
   if (body.paid_amount !== undefined && body.paid_amount !== null && body.paid_amount !== '') {
+    if (!Number.isFinite(Number(body.paid_amount))) {
+      return res.status(400).json({ status: 'error', message: 'paid_amount must be a number, 0 or more' });
+    }
     paidAmount = round2(body.paid_amount);
     if (!Number.isFinite(paidAmount) || paidAmount < 0) {
       return res.status(400).json({ status: 'error', message: 'paid_amount must be a number, 0 or more' });
@@ -80,9 +86,15 @@ router.post('/', authRequired, async (req, res) => {
 
   const conn = await pool.getConnection();
   try {
-    await conn.beginTransaction();
+    // The invoice number is COUNT(*)+1, so two tills selling at once can
+    // pick the same number; the second insert then hits uq_sales_branch_invoice.
+    // Retry the whole transaction (recomputing the number) instead of
+    // failing the sale with a raw 500.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await conn.beginTransaction();
 
-    if (customerId) {
+        if (customerId) {
       const [cust] = await conn.query(
         'SELECT id FROM customers WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
         [customerId, branchId]
@@ -213,9 +225,13 @@ router.post('/', authRequired, async (req, res) => {
       status: 'ok',
       sale: { id: saleId, invoice_no: invoiceNo, customer_id: customerId, total_amount: totalAmount, discount, net_total: netTotal, paid_amount: paidAmount, due_amount: Math.round((netTotal - paidAmount) * 100) / 100, items: allocations },
     });
-  } catch (err) {
-    try { await conn.rollback(); } catch (_) { /* already rolled back */ }
-    return res.status(500).json({ status: 'error', message: err.code || err.message });
+      } catch (err) {
+        try { await conn.rollback(); } catch (_) { /* already rolled back */ }
+        if ((err.code === 'ER_DUP_ENTRY' || err.errno === 1062) && attempt < 3) continue;
+        return res.status(500).json({ status: 'error', message: err.code || err.message });
+      }
+    }
+    return res.status(500).json({ status: 'error', message: 'Could not record the sale — please try again' });
   } finally {
     conn.release();
   }
@@ -389,10 +405,12 @@ router.get('/:id', authRequired, async (req, res) => {
        WHERE si.sale_id = ?`,
       [req.params.id, req.params.id]
     );
-    const itemsWithReturns = items.map((it) => ({
-      ...it,
-      returned_quantity: Number(it.returned_quantity),
-    }));
+    const itemsWithReturns = items.map((it) => {
+      const row = { ...it, returned_quantity: Number(it.returned_quantity) };
+      // A cashier must not see what each item cost the pharmacy.
+      if (req.user.role === 'cashier') delete row.cost_price;
+      return row;
+    });
     const [payments] = await pool.query(
       'SELECT id, amount, created_at FROM sale_payments WHERE sale_id = ? AND is_deleted = 0 ORDER BY created_at',
       [req.params.id]
@@ -400,9 +418,11 @@ router.get('/:id', authRequired, async (req, res) => {
     const money = await saleMoney(pool, head[0]);
     // Old balance for the invoice footer: what this customer still owed on
     // their EARLIER bills — only bills created before this one
-    // (sale_date < this bill's sale_date, never this bill itself), so a
-    // reprint never drifts when other bills change. Same due formula as
-    // the customers list, so the two always agree.
+    // (sale_date < this bill's sale_date, or the same second with a lower
+    // invoice number — sale_date is only second-precision, so two bills
+    // in the same second need the invoice-number tie-break), never this
+    // bill itself, so a reprint never drifts when other bills change.
+    // Same due formula as the customers list, so the two always agree.
     let oldBalance = 0;
     if (head[0].customer_id) {
       const [dueRows] = await pool.query(
@@ -428,9 +448,9 @@ router.get('/:id', authRequired, async (req, res) => {
              SELECT sale_id, SUM(amount) AS paid_sum
              FROM sale_payments WHERE is_deleted = 0 GROUP BY sale_id
            ) pay ON pay.sale_id = s.id
-           WHERE s.is_deleted = 0 AND s.customer_id = ? AND s.id <> ? AND s.sale_date < ?
+           WHERE s.is_deleted = 0 AND s.customer_id = ? AND s.id <> ? AND (s.sale_date < ? OR (s.sale_date = ? AND s.invoice_no < ?))
          ) per_sale`,
-        [head[0].customer_id, head[0].id, head[0].sale_date]
+        [head[0].customer_id, head[0].id, head[0].sale_date, head[0].sale_date, head[0].invoice_no]
       );
       const dueTotal = Math.round(Number(dueRows[0].due_total) * 100) / 100;
       // The query already sums due over EARLIER bills only (sale_date <

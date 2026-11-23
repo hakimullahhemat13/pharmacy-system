@@ -1,8 +1,11 @@
 // Auth middleware — verifies the JWT sent as: Authorization: Bearer <token>,
 // then re-checks the user row: a deactivated or deleted user loses access
 // at once, even though the token itself has no expiry (owner's choice —
-// the session stays valid until logout, so a password change alone does
-// not log anyone out; deactivation/deletion is the kill switch).
+// the session stays valid until logout). Role and branch are re-read
+// from the database on every request, so a role/branch change applies
+// at once instead of waiting for the next login. A password change
+// (or admin reset) bumps token_version, which invalidates every
+// existing session; deactivation/deletion is the other kill switch.
 const jwt = require('jsonwebtoken');
 
 const pool = require('../db');
@@ -22,13 +25,21 @@ async function authRequired(req, res, next) {
   }
   try {
     const [rows] = await pool.query(
-      'SELECT id, is_active, is_deleted FROM users WHERE id = ? LIMIT 1',
+      'SELECT id, role, branch_id, token_version, is_active, is_deleted FROM users WHERE id = ? LIMIT 1',
       [decoded.sub]
     );
     const user = rows[0];
     if (!user || !user.is_active || user.is_deleted) {
       return res.status(401).json({ status: 'error', message: 'Session expired or invalid token' });
     }
+    // The token's role/branch are stale the moment an admin changes
+    // them, so the database row wins on every request.
+    if ((decoded.token_version ?? 0) !== (user.token_version ?? 0)) {
+      return res.status(401).json({ status: 'error', message: 'Session expired or invalid token' });
+    }
+    decoded.role = user.role;
+    decoded.branch_id = user.branch_id;
+    decoded.token_version = user.token_version ?? 0;
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
   }

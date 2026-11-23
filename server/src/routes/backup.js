@@ -19,9 +19,10 @@ const { authRequired, requireRole, requireMainAdmin } = require('../middleware/a
 const { auditLog } = require('../audit');
 
 const router = express.Router();
-// Only an admin may DOWNLOAD a backup; only the Main Branch admin may
-// RESTORE one (it rewrites the whole database) or change automatic-backup
-// settings. A child-branch admin gets nothing here.
+// Every logged-in user may DOWNLOAD a backup (his explicit choice,
+// re-confirmed 2026-11-23). Only the Main Branch admin may RESTORE one
+// (it rewrites the whole database) or change automatic-backup settings.
+// A child-branch admin gets nothing here except the download.
 router.use(authRequired);
 
 function dbConfig() {
@@ -60,7 +61,7 @@ function localDay(d) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-router.get('/download', requireRole('admin'), (req, res) => {
+router.get('/download', (req, res) => {
   const cfg = dbConfig();
   const filename = `pharmacy_db-${stamp(new Date())}.sql`;
 

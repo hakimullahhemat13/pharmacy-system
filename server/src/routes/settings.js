@@ -55,7 +55,10 @@ router.post('/password', async (req, res) => {
       return res.status(401).json({ status: 'error', message: 'Current password is wrong' });
     }
     const hash = await bcrypt.hash(String(new_password), 12);
-    await pool.query('UPDATE users SET password_hash = ? WHERE id = ?', [hash, req.user.sub]);
+    await pool.query(
+      'UPDATE users SET password_hash = ?, token_version = token_version + 1 WHERE id = ?',
+      [hash, req.user.sub]
+    );
     auditLog(req, 'user.password_changed', 'users', req.user.sub, { summary: 'Own password changed' });
     return res.json({ status: 'ok', message: 'Password changed' });
   } catch (err) {
@@ -285,7 +288,7 @@ router.delete('/users/:id', requireRole('admin'), async (req, res) => {
 // stored as one-way bcrypt hashes, so nobody can read an existing password
 // back; the admin sets a NEW one instead. Body: { password } (min 6 chars,
 // same rule as creating a user). The user logs in with the new password;
-// their old sessions keep working until they log out.
+// their old sessions stop working at once (token_version is bumped).
 router.post('/users/:id/reset-password', requireRole('admin'), async (req, res) => {
   const { password } = req.body || {};
   if (!password || String(password).length < 6) {
@@ -303,7 +306,10 @@ router.post('/users/:id/reset-password', requireRole('admin'), async (req, res) 
       return res.status(403).json({ status: 'error', message: 'Only the Main Branch admin can reset passwords of another branch' });
     }
     const hash = await bcrypt.hash(String(password), 12);
-    await pool.query('UPDATE users SET password_hash = ? WHERE id = ?', [hash, req.params.id]);
+    await pool.query('UPDATE users SET password_hash = ?, token_version = token_version + 1 WHERE id = ?', [
+      hash,
+      req.params.id,
+    ]);
     auditLog(req, 'user.password_reset', 'users', req.params.id, {
       summary: `Password reset for user: ${target[0].username}`,
       username: target[0].username,

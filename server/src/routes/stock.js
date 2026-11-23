@@ -17,10 +17,11 @@ router.get('/', authRequired, async (req, res) => {
   try {
     const [rows] = await pool.query(
       `SELECT m.id AS medicine_id, m.name, m.generic_name, m.company, m.barcode, m.unit, m.category, m.sale_price, m.min_stock, m.warn_months, m.approval_status, m.rejection_note, m.created_at,
-              COALESCE(SUM(b.quantity_on_hand), 0) AS total_quantity,
+              COALESCE(SUM(CASE WHEN b.expiry_date >= CURDATE() THEN b.quantity_on_hand ELSE 0 END), 0) AS total_quantity,
+              COALESCE(SUM(CASE WHEN b.expiry_date < CURDATE() THEN b.quantity_on_hand ELSE 0 END), 0) AS expired_quantity,
               COUNT(b.id) AS batch_count,
               (SELECT MIN(b2.expiry_date) FROM medicine_batches b2
-                WHERE b2.medicine_id = m.id AND b2.branch_id = m.branch_id AND b2.is_deleted = 0 AND b2.quantity_on_hand > 0) AS nearest_expiry
+                WHERE b2.medicine_id = m.id AND b2.branch_id = m.branch_id AND b2.is_deleted = 0 AND b2.quantity_on_hand > 0 AND b2.expiry_date >= CURDATE()) AS nearest_expiry
        FROM medicines m
        LEFT JOIN medicine_batches b
          ON b.medicine_id = m.id AND b.branch_id = m.branch_id AND b.is_deleted = 0
@@ -32,6 +33,7 @@ router.get('/', authRequired, async (req, res) => {
     const stock = rows.map((r) => ({
       ...r,
       total_quantity: Number(r.total_quantity),
+      expired_quantity: Number(r.expired_quantity),
       low_stock: Number(r.total_quantity) <= Number(r.min_stock),
     }));
     return res.json({ status: 'ok', stock });
@@ -52,14 +54,17 @@ router.get('/expiring', authRequired, async (req, res) => {
        FROM medicine_batches b
        JOIN medicines m ON m.id = b.medicine_id
        WHERE b.branch_id = ? AND b.is_deleted = 0 AND m.is_deleted = 0 AND b.quantity_on_hand > 0
-         AND b.expiry_date <= DATE_ADD(CURDATE(), INTERVAL m.warn_months MONTH)
+         AND DATEDIFF(b.expiry_date, CURDATE()) <= m.warn_months * 30
        ORDER BY b.expiry_date ASC`,
       [req.user.branch_id]
     );
-    const batches = rows.map((r) => ({
-      ...r,
-      level: r.days_remaining < 0 ? 'expired' : r.days_remaining <= 30 ? 'critical' : 'warning',
-    }));
+    // Same day-count levels as everywhere else (levelFor): the window is
+    // warn_months x 30 days, not calendar months.
+    const batches = rows.map((r) => {
+      const row = { ...r, level: levelFor(r.days_remaining, r.warn_months) };
+      if (req.user.role === 'cashier') delete row.purchase_price;
+      return row;
+    });
     return res.json({ status: 'ok', batches });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
@@ -97,7 +102,14 @@ async function allBatches(branchId) {
 // "all expiry dates, always visible" view. Sorted soonest-expiring first.
 router.get('/all-batches', authRequired, async (req, res) => {
   try {
-    const batches = await allBatches(req.user.branch_id);
+    let batches = await allBatches(req.user.branch_id);
+    if (req.user.role === 'cashier') {
+      batches = batches.map((b) => {
+        const row = { ...b };
+        delete row.purchase_price;
+        return row;
+      });
+    }
     return res.json({ status: 'ok', batches });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
@@ -260,7 +272,7 @@ router.post('/batches/:batchId/write-off', authRequired, requireRole('admin', 'p
 });
 
 // GET /api/stock/write-offs — history of written-off stock, newest first.
-router.get('/write-offs', authRequired, async (req, res) => {
+router.get('/write-offs', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   try {
     const [rows] = await pool.query(
       `SELECT st.created_at, st.quantity_change, st.reason,

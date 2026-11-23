@@ -63,6 +63,11 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
     if (!Number.isInteger(qty) || qty <= 0) {
       return res.status(400).json({ status: 'error', message: `${label}: quantity must be a whole number above 0` });
     }
+    // Reject garbage up front: round2(NaN) silently becomes 0, which
+    // would record free stock. Validate the RAW input before rounding.
+    if (it.purchase_price !== undefined && it.purchase_price !== null && !Number.isFinite(Number(it.purchase_price))) {
+      return res.status(400).json({ status: 'error', message: `${label}: purchase_price must be a number, 0 or more` });
+    }
     const price = it.purchase_price === undefined || it.purchase_price === null ? 0 : round2(it.purchase_price);
     if (!Number.isFinite(price) || price < 0) {
       return res.status(400).json({ status: 'error', message: `${label}: purchase_price must be a number, 0 or more` });
@@ -88,6 +93,11 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
   const invoiceNo = body.invoice_no ? String(body.invoice_no).trim() : null;
   const notes = body.notes ? String(body.notes).trim() : null;
   const totalAmount = round2(items.reduce((sum, it) => sum + Number(it.quantity) * Number(it.purchase_price || 0), 0));
+  // Validate the RAW input before rounding: round2(NaN) silently
+  // becomes 0, which would record a fully unpaid purchase.
+  if (body.paid_amount !== undefined && body.paid_amount !== null && !Number.isFinite(Number(body.paid_amount))) {
+    return res.status(400).json({ status: 'error', message: 'paid_amount must be a number, 0 or more' });
+  }
   const paidAmount = body.paid_amount === undefined || body.paid_amount === null ? totalAmount : round2(body.paid_amount);
   if (!Number.isFinite(paidAmount) || paidAmount < 0) {
     return res.status(400).json({ status: 'error', message: 'paid_amount must be a number, 0 or more' });
@@ -110,6 +120,21 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
     const [dup] = await pool.query(
       'SELECT id FROM purchases WHERE branch_id = ? AND supplier_id = ? AND invoice_no = ? AND is_deleted = 0 LIMIT 1',
       [branchId, supplierId, invoiceNo]
+    );
+    if (dup.length > 0) {
+      return res.status(409).json({
+        status: 'error',
+        message: `DUPLICATE_INVOICE: invoice ${invoiceNo} is already recorded for this supplier`,
+      });
+    }
+  } else if (!supplierId && invoiceNo) {
+    // supplier_id and invoice_no are both NULLable, and MySQL treats
+    // NULLs as distinct in a UNIQUE index — so the index cannot catch
+    // two supplier-less purchases sharing one invoice number. Check
+    // for a NULL-supplier purchase with the same invoice explicitly.
+    const [dup] = await pool.query(
+      'SELECT id FROM purchases WHERE branch_id = ? AND supplier_id IS NULL AND invoice_no = ? AND is_deleted = 0 LIMIT 1',
+      [branchId, invoiceNo]
     );
     if (dup.length > 0) {
       return res.status(409).json({
@@ -252,7 +277,7 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
 // already returned to the supplier. Optional filters: ?q= matches the
 // invoice number or the supplier name; ?from= / ?to= (YYYY-MM-DD) bound
 // the purchase date.
-router.get('/', authRequired, async (req, res) => {
+router.get('/', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   try {
     const where = ['p.branch_id = ?', 'p.is_deleted = 0'];
     const params = [req.user.branch_id];
@@ -291,7 +316,7 @@ router.get('/', authRequired, async (req, res) => {
 });
 
 // GET /api/purchases/:id — one purchase with its items
-router.get('/:id', authRequired, async (req, res) => {
+router.get('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   try {
     const [head] = await pool.query(
       `SELECT p.id, p.supplier_id, p.invoice_no, p.purchase_date, p.total_amount, p.paid_amount, p.notes,
@@ -467,6 +492,11 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
     if (!Number.isInteger(qty) || qty <= 0) {
       return res.status(400).json({ status: 'error', message: `${label}: quantity must be a whole number above 0` });
     }
+    // Reject garbage up front: round2(NaN) silently becomes 0, which
+    // would record free stock. Validate the RAW input before rounding.
+    if (it.purchase_price !== undefined && it.purchase_price !== null && !Number.isFinite(Number(it.purchase_price))) {
+      return res.status(400).json({ status: 'error', message: `${label}: purchase_price must be a number, 0 or more` });
+    }
     const price = it.purchase_price === undefined || it.purchase_price === null ? 0 : round2(it.purchase_price);
     if (!Number.isFinite(price) || price < 0) {
       return res.status(400).json({ status: 'error', message: `${label}: purchase_price must be a number, 0 or more` });
@@ -487,7 +517,7 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
   const branchId = req.user.branch_id;
   const userId = req.user.sub;
 
-  if (body.supplier_id && body.invoice_no && String(body.invoice_no).trim() && !body.allow_duplicate) {
+  if (body.supplier_id && body.invoice_no && String(body.invoice_no).trim()) {
     const [dup] = await pool.query(
       'SELECT id FROM purchases WHERE branch_id = ? AND supplier_id = ? AND invoice_no = ? AND is_deleted = 0 AND id <> ? LIMIT 1',
       [branchId, String(body.supplier_id), String(body.invoice_no).trim(), req.params.id]
@@ -545,7 +575,36 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
     }
     const invoiceNo = body.invoice_no ? String(body.invoice_no).trim() : purchase.invoice_no;
     const notes = body.notes ? String(body.notes).trim() : purchase.notes;
+    // Duplicate-invoice check on the EFFECTIVE supplier/invoice: the
+    // pre-check above only sees what the body sent, so an edit that
+    // omits supplier_id (keeping the purchase's own supplier, which
+    // may be NULL) would slip past it. NULL supplier needs an explicit
+    // IS NULL check — MySQL treats NULLs as distinct in the UNIQUE index.
+    if (invoiceNo) {
+      const [dup] = supplierId
+        ? await conn.query(
+            'SELECT id FROM purchases WHERE branch_id = ? AND supplier_id = ? AND invoice_no = ? AND is_deleted = 0 AND id <> ? LIMIT 1',
+            [branchId, supplierId, invoiceNo, purchase.id]
+          )
+        : await conn.query(
+            'SELECT id FROM purchases WHERE branch_id = ? AND supplier_id IS NULL AND invoice_no = ? AND is_deleted = 0 AND id <> ? LIMIT 1',
+            [branchId, invoiceNo, purchase.id]
+          );
+      if (dup.length > 0) {
+        await conn.rollback();
+        return res.status(409).json({
+          status: 'error',
+          message: `DUPLICATE_INVOICE: invoice ${invoiceNo} is already recorded for this supplier`,
+        });
+      }
+    }
     const newTotal = round2(items.reduce((sum, it) => sum + Number(it.quantity) * Number(it.purchase_price || 0), 0));
+    // Validate the RAW input before rounding: round2(NaN) silently
+    // becomes 0, which would record a fully unpaid purchase.
+    if (body.paid_amount !== undefined && body.paid_amount !== null && !Number.isFinite(Number(body.paid_amount))) {
+      await conn.rollback();
+      return res.status(400).json({ status: 'error', message: 'paid_amount must be a number, 0 or more' });
+    }
     const paidAmount =
       body.paid_amount === undefined || body.paid_amount === null ? Number(purchase.paid_amount) : round2(body.paid_amount);
     if (!Number.isFinite(paidAmount) || paidAmount < 0) {
@@ -858,8 +917,40 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
       }
     }
 
+    // Editing an APPROVED purchase in a child branch sends it back for
+    // approval: totals, supplier or invoice may have changed, so the
+    // boss must see it again (same resubmit pattern as rejected rows).
+    // Main Branch edits stay approved.
+    const mainBranchId = await getMainBranchId(conn);
+    const repend = branchId !== mainBranchId;
+    // A re-pended purchase holds no stock: pending purchases never carry
+    // units (the accept handler adds the full quantity again on
+    // re-approval, and the delete path assumes pending means no stock).
+    // Without this the units stay sellable while the purchase waits,
+    // re-accept double-counts them, and a delete leaves phantom stock.
+    // Only the never-returned part is still in stock; takeOut refuses
+    // when part of it was already sold (same guard as delete).
+    if (repend) {
+      const [newItems] = await conn.query(
+        `SELECT pi.id, pi.medicine_id, pi.batch_id, pi.quantity, m.name AS medicine_name,
+                COALESCE(r.returned_qty, 0) AS returned_qty
+         FROM purchase_items pi
+         JOIN medicines m ON m.id = pi.medicine_id
+         LEFT JOIN (
+           SELECT purchase_item_id, SUM(quantity) AS returned_qty
+           FROM purchase_returns WHERE is_deleted = 0 GROUP BY purchase_item_id
+         ) r ON r.purchase_item_id = pi.id
+         WHERE pi.purchase_id = ?`,
+        [purchase.id]
+      );
+      for (const ni of newItems) {
+        const stillThere = Number(ni.quantity) - Number(ni.returned_qty);
+        if (stillThere <= 0) continue;
+        await takeOut(ni, stillThere);
+      }
+    }
     await conn.query(
-      'UPDATE purchases SET supplier_id = ?, invoice_no = ?, total_amount = ?, paid_amount = ?, notes = ? WHERE id = ?',
+      `UPDATE purchases SET supplier_id = ?, invoice_no = ?, total_amount = ?, paid_amount = ?, notes = ?${repend ? ", approval_status = 'pending', rejection_note = NULL" : ''} WHERE id = ?`,
       [supplierId, invoiceNo, newTotal, paidAmount, notes, purchase.id]
     );
     await conn.commit();
@@ -869,12 +960,15 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
     // reach this path, and their figures were never part of a review.
     await resetDayReview(pool, branchId, dayOf(purchase.purchase_date)).catch((err) => console.error('resetDayReview failed:', err.message));
     auditLog(req, 'purchase.updated', 'purchases', purchase.id, {
-      summary: `Purchase ${invoiceNo} edited: total ${newTotal} AFN, paid ${paidAmount} AFN`,
+      summary: repend
+        ? `Purchase ${invoiceNo} edited and sent back for approval: total ${newTotal} AFN, paid ${paidAmount} AFN`
+        : `Purchase ${invoiceNo} edited: total ${newTotal} AFN, paid ${paidAmount} AFN`,
       invoice_no: invoiceNo, total_amount: newTotal, paid_amount: paidAmount,
+      approval_status: repend ? 'pending' : purchase.approval_status,
     });
     return res.json({
       status: 'ok',
-      purchase: { id: purchase.id, supplier_id: supplierId, invoice_no: invoiceNo, total_amount: newTotal, paid_amount: paidAmount, approval_status: purchase.approval_status },
+      purchase: { id: purchase.id, supplier_id: supplierId, invoice_no: invoiceNo, total_amount: newTotal, paid_amount: paidAmount, approval_status: repend ? 'pending' : purchase.approval_status },
     });
   } catch (err) {
     try { await conn.rollback(); } catch (_) { /* already rolled back */ }
@@ -911,9 +1005,15 @@ router.delete('/:id', authRequired, requireRole('admin', 'pharmacist'), async (r
 
     // A waiting or rejected purchase holds no stock, so deleting it is
     // just the soft delete — no reversal, and no day-close block.
+    // (An approved purchase edited back to pending reaches here too;
+    // its stock was already taken out by the edit, so there is still
+    // nothing to reverse.)
     if (head[0].approval_status !== 'approved') {
       await conn.query('UPDATE purchases SET is_deleted = 1 WHERE id = ?', [req.params.id]);
       await conn.commit();
+      // The purchase is gone from its day's activity — a reviewed day
+      // returns to "pending" so the boss sees the change.
+      await resetDayReview(pool, branchId, dayOf(head[0].purchase_date)).catch((err) => console.error('resetDayReview failed:', err.message));
       auditLog(req, 'purchase.deleted', 'purchases', req.params.id, {
         summary: `Waiting purchase ${head[0].invoice_no} deleted before approval`,
         invoice_no: head[0].invoice_no,

@@ -7,7 +7,8 @@ const { v4: uuidv4 } = require('uuid');
 const pool = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
 const { auditLog } = require('../audit');
-const { getMainBranchId } = require('../mainBranch');
+const { isDayClosed, todayStr, dayClosedMessage } = require('../dayClose');
+const { getMainBranchId, resetDayReview } = require('../mainBranch');
 
 const router = express.Router();
 
@@ -106,6 +107,14 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
   }
 
   const branchId = req.user.branch_id;
+  // Opening stock writes a batch, an OPEN purchase and a ledger row dated
+  // today — a closed today takes none of that. No initial stock, no block.
+  if (initData) {
+    const today = todayStr();
+    if (await isDayClosed(pool, branchId, today)) {
+      return res.status(400).json({ status: 'error', message: dayClosedMessage(today) });
+    }
+  }
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
@@ -160,8 +169,12 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
         'INSERT INTO medicine_batches (id, branch_id, medicine_id, batch_no, expiry_date, purchase_price, quantity_on_hand) VALUES (?, ?, ?, ?, ?, ?, ?)',
         [batchId, branchId, id, initData.batch_no, initData.expiry_date, initData.purchase_price, batchQty]
       );
-      const [cntRows] = await conn.query('SELECT COUNT(*) AS c FROM purchases WHERE branch_id = ?', [branchId]);
-      const invoiceNo = `OPEN-${String(Number(cntRows[0].c) + 1).padStart(4, '0')}`;
+      // COUNT(*)+1 reuses a number once a purchase is deleted; MAX+1 never does.
+      const [maxRows] = await conn.query(
+        "SELECT MAX(CAST(SUBSTRING(invoice_no, 6) AS UNSIGNED)) AS m FROM purchases WHERE branch_id = ? AND invoice_no LIKE 'OPEN-%'",
+        [branchId]
+      );
+      const invoiceNo = `OPEN-${String((Number(maxRows[0].m) || 0) + 1).padStart(4, '0')}`;
       const total = initData.quantity * initData.purchase_price;
       const purchaseId = uuidv4();
       await conn.query(
@@ -274,20 +287,31 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
     }
     // Editing a REJECTED medicine is how the branch corrects it and
     // sends it back: the save returns it to "pending" and clears the
-    // boss's note. Waiting and approved medicines keep their state.
+    // boss's note. Editing an APPROVED medicine in a child branch does
+    // the same — the name/price the boss accepted must not change
+    // without a fresh review. Main Branch edits stay approved.
     const resubmitted = existing[0].approval_status === 'rejected';
+    const mainBranchId = await getMainBranchId(pool);
+    const repended =
+      existing[0].approval_status === 'approved' && branchId !== mainBranchId;
+    const needsPending = resubmitted || repended;
     await pool.query(
       `UPDATE medicines
           SET name = ?, generic_name = ?, company = ?, barcode = ?, unit = ?, category = ?, sale_price = ?, min_stock = ?, warn_months = ?
-            ${resubmitted ? ", approval_status = 'pending', rejection_note = NULL" : ''}
+            ${needsPending ? ", approval_status = 'pending', rejection_note = NULL" : ''}
         WHERE id = ? AND branch_id = ?`,
       [name, genericName, company, barcode, unit, category, salePrice, minStock, warnMonths, req.params.id, branchId]
     );
+    if (repended) {
+      await resetDayReview(pool, branchId, todayStr()).catch((err) => console.error('resetDayReview failed:', err.message));
+    }
     const [rows] = await pool.query(`SELECT ${COLUMNS} FROM medicines WHERE id = ?`, [req.params.id]);
     auditLog(req, 'medicine.updated', 'medicines', req.params.id, {
       summary: resubmitted
         ? `Medicine corrected and sent back for approval: ${rows[0].name}`
-        : `Medicine edited: ${rows[0].name}`,
+        : repended
+          ? `Medicine edited and sent back for approval: ${rows[0].name}`
+          : `Medicine edited: ${rows[0].name}`,
       name: rows[0].name,
       approval_status: rows[0].approval_status,
     });

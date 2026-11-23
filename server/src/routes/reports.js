@@ -57,14 +57,15 @@ async function returnsForRange(branchId, start, end, sellerId = null) {
   const [rows] = await pool.query(
     `SELECT COALESCE(SUM(sr.quantity_change), 0) AS qty,
             COALESCE(SUM(sr.quantity_change * si.unit_price * (CASE WHEN sv.total_amount > 0 THEN sv.net_total / sv.total_amount ELSE 0 END)), 0) AS value,
-            COALESCE(SUM(sr.quantity_change * si.cost_price), 0) AS cost
+            COALESCE(SUM(sr.quantity_change * si.cost_price), 0) AS cost,
+            COALESCE(SUM(sr.quantity_change * si.unit_price * (CASE WHEN sv.total_amount > 0 THEN sv.discount / sv.total_amount ELSE 0 END)), 0) AS discount
      FROM stock_transactions sr
      JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
      JOIN sales sv ON sv.id = sr.reference_id AND sv.voided_at IS NULL
      WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at >= ? AND sr.created_at < ?${sellerId ? ' AND sv.created_by = ?' : ''}`,
     sellerId ? [branchId, start, end, sellerId] : [branchId, start, end]
   );
-  return { qty: Number(rows[0].qty), value: Number(rows[0].value), cost: Number(rows[0].cost) };
+  return { qty: Number(rows[0].qty), value: Number(rows[0].value), cost: Number(rows[0].cost), discount: Number(rows[0].discount) };
 }
 
 async function summaryForRange(branchId, start, end, sellerId = null) {
@@ -91,7 +92,7 @@ async function summaryForRange(branchId, start, end, sellerId = null) {
     sales_count: Number(salesRows[0].sales_count),
     items_sold: Number(itemRows[0].items_sold) - ret.qty,
     revenue,
-    discount_total: round2(Number(salesRows[0].discount_total)),
+    discount_total: round2(Number(salesRows[0].discount_total) - ret.discount),
     cost_total: cost,
     profit: round2(revenue - cost),
     returns_total: round2(ret.value),
@@ -235,6 +236,11 @@ router.get('/daily', authRequired, async (req, res) => {
     // their own; every other report route is admin/pharmacist only.
     const sellerId = req.user.role === 'cashier' ? req.user.sub : null;
     const summary = await summaryForRange(branchId, date, end, sellerId);
+    // Cashiers see only their own bills, never profit or cost.
+    if (req.user.role === 'cashier') {
+      delete summary.profit;
+      delete summary.cost_total;
+    }
     const [sales] = await pool.query(
       `SELECT s.id, s.invoice_no, s.sale_date, s.total_amount, s.discount, s.net_total,
               c.name AS customer_name,
@@ -961,6 +967,22 @@ router.get('/export', authRequired, requireRole('admin', 'pharmacist'), async (r
           Number(s.net_total) - Number(s.refunded_total),
         ]);
       }
+      // The Summary sheet nets ALL of today's returns, including returns
+      // of bills sold on earlier days — but the rows above list only
+      // today's bills. Without this row the Bills sheet sums short of
+      // Summary revenue whenever an earlier bill is returned today.
+      const [earlierRets] = await pool.query(
+        `SELECT COALESCE(SUM(sr.quantity_change * si.unit_price * (CASE WHEN sv.total_amount > 0 THEN sv.net_total / sv.total_amount ELSE 0 END)), 0) AS value
+         FROM stock_transactions sr
+         JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
+         JOIN sales sv ON sv.id = sr.reference_id AND sv.voided_at IS NULL
+         WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at >= ? AND sr.created_at < ? AND sv.sale_date < ?`,
+        [branchId, start, end, start]
+      );
+      const earlierReturns = round2(Number(earlierRets[0].value));
+      if (earlierReturns !== 0) {
+        sh.addRow(['Returns of earlier bills', new Date(start), '', 0, 0, 0, earlierReturns, -earlierReturns]);
+      }
       sh.getColumn(2).numFmt = 'yyyy-mm-dd hh:mm';
       for (const col of [4, 5, 6, 7, 8]) sh.getColumn(col).numFmt = '#,##0.00';
       styleHeader(sh);
@@ -1071,29 +1093,33 @@ router.get('/export', authRequired, requireRole('admin', 'pharmacist'), async (r
 //   + later customer payments recorded that day
 //   − refunds paid out that day (returns, valued at sale prices)
 //   − paid to suppliers that day (paid at purchase + later payments)
-// A voided bill's sale never counts — its money is excluded everywhere,
-// same as the summaries — but the cash handed back on the void day does
+// Money that came in on the sale day stays on the sale day, even if the
+// bill is voided later: the till and customer-payments queries below do
+// NOT filter voided bills. The cash handed back on the void day does
 // count (see below), capped at what was actually paid for the bill.
 async function cashForDay(branchId, start, end) {
   const [till] = await pool.query(
     `SELECT COALESCE(SUM(COALESCE(s.paid_amount, s.net_total)), 0) AS v
      FROM sales s
-     WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at IS NULL AND s.sale_date >= ? AND s.sale_date < ?`,
+     WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.sale_date >= ? AND s.sale_date < ?`,
     [branchId, start, end]
   );
   const [cust] = await pool.query(
     `SELECT COALESCE(SUM(sp.amount), 0) AS v
      FROM sale_payments sp
      JOIN sales s ON s.id = sp.sale_id
-     WHERE sp.branch_id = ? AND sp.is_deleted = 0 AND s.voided_at IS NULL AND sp.created_at >= ? AND sp.created_at < ?`,
+     WHERE sp.branch_id = ? AND sp.is_deleted = 0 AND sp.created_at >= ? AND sp.created_at < ?`,
     [branchId, start, end]
   );
   // Refunds are cash out of the drawer, so a return can hand back at most
   // what the customer actually paid for that bill: a return on an unpaid
-  // (or partly paid) credit bill only cancels debt. The day's returns are
-  // grouped by bill and each bill's refund is capped at its paid total
-  // (paid at the till — NULL paid_amount counts as paid in full — plus
-  // later payments, capped at the bill's net).
+  // (or partly paid) credit bill only cancels debt. Each return is capped
+  // by the payments made up to that return's own timestamp (paid at the
+  // till — NULL paid_amount counts as paid in full — plus later payments
+  // made by then, capped at the bill's net), and the cap is cumulative:
+  // returns are replayed oldest-first per bill, so refunds already
+  // counted on earlier days consume the same paid money and one bill can
+  // never hand back more than was paid for it in total.
   const [dayRets] = await pool.query(
     `SELECT sr.reference_id AS sale_id,
             COALESCE(SUM(sr.quantity_change * si.unit_price * (CASE WHEN sv.total_amount > 0 THEN sv.net_total / sv.total_amount ELSE 0 END)), 0) AS value
@@ -1104,53 +1130,99 @@ async function cashForDay(branchId, start, end) {
      GROUP BY sr.reference_id`,
     [branchId, start, end]
   );
-  // A void hands the bill's paid money back on the void day. The void's
-  // sale_return rows are excluded above with the voided bill, so they are
-  // counted here instead: the cash-out is what was actually paid, capped
-  // at the bill's net — a voided unpaid bill hands back nothing — less
-  // anything already refunded for that bill before the void day, so one
-  // bill can never hand back more than was paid for it in total.
+  // A void hands the bill's paid money back on the void day: what was
+  // actually paid by the moment of the void, capped at the bill's net —
+  // a voided unpaid bill hands back nothing — less anything already
+  // refunded for that bill before the void happened (including a return
+  // made earlier on the void day itself), so one bill can never hand
+  // back more than was paid for it in total.
   const [voidBills] = await pool.query(
-    `SELECT s.id AS sale_id,
-            COALESCE((SELECT SUM(sr.quantity_change * si.unit_price * (CASE WHEN s.total_amount > 0 THEN s.net_total / s.total_amount ELSE 0 END))
-                      FROM stock_transactions sr
-                      JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
-                      WHERE sr.type = 'sale_return' AND sr.reference_id = s.id AND sr.created_at < ?), 0) AS prior_returned
+    `SELECT s.id AS sale_id, s.voided_at AS voided_at
      FROM sales s
      WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at >= ? AND s.voided_at < ?`,
-    [start, branchId, start, end]
+    [branchId, start, end]
   );
   const refundSaleIds = [...new Set([...dayRets.map((r) => r.sale_id), ...voidBills.map((r) => r.sale_id)])];
   const paidBySale = new Map();
+  const retsBySale = new Map();
+  const paysBySale = new Map();
+  const voidAtBySale = new Map(voidBills.map((v) => [String(v.sale_id), new Date(v.voided_at)]));
   if (refundSaleIds.length > 0) {
     const [paidRows] = await pool.query(
       `SELECT s.id AS sale_id, s.net_total AS net_total,
-              COALESCE(s.paid_amount, s.net_total) AS paid_at_sale,
-              COALESCE((SELECT SUM(amount) FROM sale_payments WHERE sale_id = s.id AND is_deleted = 0), 0) AS later_paid
+              COALESCE(s.paid_amount, s.net_total) AS paid_at_sale
        FROM sales s WHERE s.id IN (${refundSaleIds.map(() => '?').join(',')})`,
       refundSaleIds
     );
     for (const r of paidRows) paidBySale.set(String(r.sale_id), r);
+    // Every return of these bills up to the end of the day, one row per
+    // ledger row in time order, so the cumulative cap can be replayed.
+    // (No voided filter here: a voided bill's returns count towards
+    // what was already handed back before its void.)
+    const [retRows] = await pool.query(
+      `SELECT sr.reference_id AS sale_id, sr.created_at AS created_at,
+              COALESCE(sr.quantity_change * si.unit_price * (CASE WHEN sv.total_amount > 0 THEN sv.net_total / sv.total_amount ELSE 0 END), 0) AS value
+       FROM stock_transactions sr
+       JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
+       JOIN sales sv ON sv.id = sr.reference_id
+       WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at < ?
+         AND sr.reference_id IN (${refundSaleIds.map(() => '?').join(',')})
+       ORDER BY sr.created_at ASC`,
+      [branchId, end, ...refundSaleIds]
+    );
+    for (const r of retRows) {
+      const key = String(r.sale_id);
+      if (!retsBySale.has(key)) retsBySale.set(key, []);
+      retsBySale.get(key).push({ ts: new Date(r.created_at), value: Number(r.value) });
+    }
+    const [payRows] = await pool.query(
+      `SELECT sale_id, amount, created_at FROM sale_payments
+       WHERE sale_id IN (${refundSaleIds.map(() => '?').join(',')}) AND is_deleted = 0
+       ORDER BY created_at ASC`,
+      refundSaleIds
+    );
+    for (const r of payRows) {
+      const key = String(r.sale_id);
+      if (!paysBySale.has(key)) paysBySale.set(key, []);
+      paysBySale.get(key).push({ ts: new Date(r.created_at), amount: Number(r.amount) });
+    }
   }
-  // What one bill can hand back, at most: paid at the till plus later
-  // payments, never more than the bill's net.
-  const paidCap = (row) => Math.min(Number(row.net_total), round2(Number(row.paid_at_sale) + Number(row.later_paid)));
+  // What one bill can hand back, at most, as of one moment: paid at the
+  // till plus later payments made by then, never more than the bill's net.
+  const paidCapAt = (row, ts) => {
+    const later = (paysBySale.get(String(row.sale_id)) || [])
+      .filter((p) => p.ts <= ts)
+      .reduce((a, p) => a + p.amount, 0);
+    return Math.min(Number(row.net_total), round2(Number(row.paid_at_sale) + later));
+  };
+  const dayStart = new Date(`${start}T00:00:00`);
+  const dayEnd = new Date(`${end}T00:00:00`);
   let refunds = 0;
-  for (const r of dayRets) {
-    const paid = paidBySale.get(String(r.sale_id));
-    refunds += Math.min(Number(r.value), paid ? paidCap(paid) : 0);
-  }
-  for (const v of voidBills) {
-    const paid = paidBySale.get(String(v.sale_id));
+  for (const saleId of refundSaleIds) {
+    const key = String(saleId);
+    const paid = paidBySale.get(key);
     if (!paid) continue;
-    refunds += Math.max(0, round2(paidCap(paid) - Number(v.prior_returned)));
+    const voidAt = voidAtBySale.get(key);
+    let counted = 0;
+    for (const ret of retsBySale.get(key) || []) {
+      if (voidAt && ret.ts >= voidAt) break;
+      const countedThis = Math.max(0, Math.min(ret.value, round2(paidCapAt(paid, ret.ts) - counted)));
+      counted += countedThis;
+      if (ret.ts >= dayStart && ret.ts < dayEnd) refunds += countedThis;
+    }
+    if (voidAt) {
+      refunds += Math.max(0, round2(paidCapAt(paid, voidAt) - counted));
+    }
   }
   // Waiting purchases are not in the books yet — their paid amounts
   // count only once the Main Branch accepts them.
+  // Opening stock is not cash paid that day: the OPEN purchase created
+  // with a medicine carries paid_amount = total but no money left the
+  // drawer, so it is excluded from the supplier cash-out.
   const [sup1] = await pool.query(
     `SELECT COALESCE(SUM(paid_amount), 0) AS v
      FROM purchases
-     WHERE branch_id = ? AND is_deleted = 0 AND approval_status = 'approved' AND purchase_date >= ? AND purchase_date < ?`,
+     WHERE branch_id = ? AND is_deleted = 0 AND approval_status = 'approved' AND (notes IS NULL OR notes <> 'Opening stock') AND purchase_date >= ? AND purchase_date < ?`,
     [branchId, start, end]
   );
   const [sup2] = await pool.query(
@@ -1245,6 +1317,7 @@ async function stockCheckForDay(branchId, start, end) {
       saleReturned: byType.get('sale_return') || 0,
       purchaseReturned: -(byType.get('purchase_return') || 0),
       writtenOff: -(byType.get('expired') || 0),
+      adjustments: byType.get('adjustment') || 0,
     },
   };
 }

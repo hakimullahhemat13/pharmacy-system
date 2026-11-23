@@ -8,6 +8,16 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 
+// Without a JWT secret, signing a token throws and every login 500s
+// while /api/health still passes — fail loudly at startup instead of
+// running a server nobody can log into.
+if (!process.env.JWT_SECRET) {
+  console.error(
+    'JWT_SECRET is not set. Set JWT_SECRET in server/.env (a long random string) and restart the server.'
+  );
+  process.exit(1);
+}
+
 const pool = require('./db');
 const authRoutes = require('./routes/auth');
 const medicinesRoutes = require('./routes/medicines');
@@ -23,7 +33,37 @@ const branchesRoutes = require('./routes/branches');
 const approvalsRoutes = require('./routes/approvals');
 
 const app = express();
-app.use(cors());
+// CORS is NOT open to every origin: only the local frontend, the phone
+// over the same Wi-Fi (private LAN IPs) and over Tailscale (*.ts.net)
+// may call this API. Requests with no Origin (curl, mobile apps) are
+// allowed; anything else is rejected.
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  let url;
+  try {
+    url = new URL(origin);
+  } catch {
+    return false;
+  }
+  const host = url.hostname;
+  // localhost:5173 is the web frontend; https://localhost with no port
+  // is the Android app (Capacitor loads at https://localhost).
+  if (host === 'localhost' || host === '127.0.0.1') return url.port === '5173' || url.port === '';
+  if (host.endsWith('.ts.net')) return true;
+  if (/^192\.168\.\d+\.\d+$/.test(host)) return true;
+  if (/^10\.\d+\.\d+\.\d+$/.test(host)) return true;
+  const m = /^172\.(\d+)\.\d+\.\d+$/.exec(host);
+  if (m && Number(m[1]) >= 16 && Number(m[1]) <= 31) return true;
+  return false;
+}
+app.use(
+  cors({
+    origin(origin, cb) {
+      if (isAllowedOrigin(origin)) return cb(null, true);
+      return cb(new Error('Not allowed by CORS'));
+    },
+  })
+);
 app.use(express.json());
 
 // Health check: confirms server is up AND database answers

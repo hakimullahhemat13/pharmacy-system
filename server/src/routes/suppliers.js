@@ -123,7 +123,7 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
 });
 
 // GET /api/suppliers — every supplier with their account totals
-router.get('/', authRequired, async (req, res) => {
+router.get('/', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   try {
     const [rows] = await pool.query(
       `SELECT s.id, s.branch_id, s.name, s.phone, s.address, s.created_at,
@@ -162,7 +162,7 @@ router.get('/', authRequired, async (req, res) => {
 });
 
 // GET /api/suppliers/:id — account detail: totals, purchase history, payments
-router.get('/:id', authRequired, async (req, res) => {
+router.get('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   try {
     const branchId = req.user.branch_id;
     const [rows] = await pool.query(
@@ -311,14 +311,44 @@ router.post('/:id/payment', authRequired, requireRole('admin', 'pharmacist'), as
       return res.status(404).json({ status: 'error', message: 'Supplier not found' });
     }
     const money = await supplierMoney(conn, branchId, req.params.id);
-    if (money.due_total <= 0) {
+    if (money.due_total < 0) {
+      // Negative due: the supplier OWES the pharmacy (overpaid, or
+      // goods sent back). Accept the money back as a refund received,
+      // capped at what the supplier owes. It is stored as a NEGATIVE
+      // payment row, so paid_total falls and the signed due moves back
+      // toward 0 (due = purchases − paid).
+      const maxRefund = Math.round(-money.due_total * 100) / 100;
+      if (amount > maxRefund) {
+        await conn.rollback();
+        return res.status(400).json({
+          status: 'error',
+          message: `Refund is more than the supplier owes you (${maxRefund})`,
+        });
+      }
+      const id = uuidv4();
+      await conn.query(
+        'INSERT INTO supplier_payments (id, branch_id, supplier_id, amount, created_by) VALUES (?, ?, ?, ?, ?)',
+        [id, branchId, req.params.id, -amount, req.user.sub]
+      );
+      await conn.commit();
+      auditLog(req, 'supplier.refund_received', 'suppliers', req.params.id, {
+        summary: `Refund ${amount} AFN received from ${sup[0].name}`,
+        name: sup[0].name, amount,
+      });
+      return res.status(201).json({
+        status: 'ok',
+        refund_received: true,
+        message: `Refund of ${amount} AFN received from ${sup[0].name}`,
+        payment: { id, supplier_id: req.params.id, amount: -amount },
+        refund_amount: amount,
+        due_total: round2(money.due_total + amount),
+      });
+    }
+    if (money.due_total === 0) {
       await conn.rollback();
       return res.status(400).json({
         status: 'error',
-        message:
-          money.due_total < 0
-            ? `This supplier owes you ${Math.abs(money.due_total)} AFN — no payment is due.`
-            : 'Nothing is due to this supplier.',
+        message: 'Nothing is due to this supplier.',
       });
     }
     if (amount > money.due_total) {

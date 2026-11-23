@@ -52,6 +52,10 @@ router.post('/', authRequired, async (req, res) => {
 // sales, returns and payments themselves (never a stored number).
 router.get('/', authRequired, async (req, res) => {
   try {
+    // A cashier sees only their own bills in a customer's due: other
+    // cashiers' credit sales are not theirs to see.
+    const isCashier = req.user.role === 'cashier';
+    const cashierFilter = isCashier ? ' AND s.created_by = ?' : '';
     const [rows] = await pool.query(
       `SELECT c.id, c.branch_id, c.name, c.phone, c.balance, c.created_at,
               COALESCE(d.due_total, 0) AS due_total
@@ -81,13 +85,13 @@ router.get('/', authRequired, async (req, res) => {
              SELECT sale_id, SUM(amount) AS paid_sum
              FROM sale_payments WHERE is_deleted = 0 GROUP BY sale_id
            ) pay ON pay.sale_id = s.id
-           WHERE s.is_deleted = 0 AND s.customer_id IS NOT NULL
+           WHERE s.is_deleted = 0 AND s.customer_id IS NOT NULL${cashierFilter}
          ) per_sale
          GROUP BY customer_id
        ) d ON d.customer_id = c.id
        WHERE c.branch_id = ? AND c.is_deleted = 0
        ORDER BY c.name`,
-      [req.user.branch_id]
+      isCashier ? [req.user.sub, req.user.branch_id] : [req.user.branch_id]
     );
     const customers = rows.map((r) => ({ ...r, due_total: Math.round(Number(r.due_total) * 100) / 100 }));
     return res.json({ status: 'ok', customers });
@@ -106,6 +110,8 @@ router.get('/:id/history', authRequired, async (req, res) => {
     if (!cust[0]) {
       return res.status(404).json({ status: 'error', message: 'Customer not found' });
     }
+    // A cashier sees only their own bills for this customer.
+    const isCashier = req.user.role === 'cashier';
     const [rows] = await pool.query(
       `SELECT s.id, s.invoice_no, s.sale_date, s.net_total, s.paid_amount, s.voided_at,
               COUNT(si.id) AS items,
@@ -126,11 +132,11 @@ router.get('/:id/history', authRequired, async (req, res) => {
          SELECT sale_id, SUM(amount) AS paid_sum
          FROM sale_payments WHERE is_deleted = 0 GROUP BY sale_id
        ) pay ON pay.sale_id = s.id
-       WHERE s.customer_id = ? AND s.branch_id = ? AND s.is_deleted = 0
+       WHERE s.customer_id = ? AND s.branch_id = ? AND s.is_deleted = 0${isCashier ? ' AND s.created_by = ?' : ''}
        GROUP BY s.id, s.invoice_no, s.sale_date, s.net_total, s.paid_amount, s.voided_at,
                 rt.refunded_total, pay.paid_sum
        ORDER BY s.sale_date DESC, s.created_at DESC`,
-      [req.params.id, req.user.branch_id]
+      isCashier ? [req.params.id, req.user.branch_id, req.user.sub] : [req.params.id, req.user.branch_id]
     );
     // Same money math as the sales list: a NULL paid_amount means the bill
     // was paid in full at the till; a voided bill keeps no money (paid 0,
