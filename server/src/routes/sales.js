@@ -18,7 +18,9 @@ const router = express.Router();
 
 // POST /api/sales
 // Body: { customer_id?, discount?, items: [ { medicine_id, quantity, unit_price? } ] }
-// unit_price defaults to the medicine's sale_price.
+// The price is always the medicine's sale_price — a client-supplied
+// unit_price is accepted but never used (no per-item price override;
+// discount is whole-bill only).
 router.post('/', authRequired, async (req, res) => {
   const body = req.body || {};
   const items = Array.isArray(body.items) ? body.items : [];
@@ -113,9 +115,7 @@ router.post('/', authRequired, async (req, res) => {
           message: `${med[0].name} is still waiting for approval and cannot be sold yet`,
         });
       }
-      const unitPrice = it.unit_price === undefined || it.unit_price === null
-        ? Number(med[0].sale_price)
-        : Number(it.unit_price);
+      const unitPrice = Number(med[0].sale_price);
 
       // Sellable batches only: in stock, in this branch, NOT expired. Earliest expiry first.
       const [batches] = await conn.query(
@@ -433,7 +433,10 @@ router.get('/:id', authRequired, async (req, res) => {
         [head[0].customer_id, head[0].id, head[0].sale_date]
       );
       const dueTotal = Math.round(Number(dueRows[0].due_total) * 100) / 100;
-      oldBalance = Math.max(0, Math.round((dueTotal - money.due_amount) * 100) / 100);
+      // The query already sums due over EARLIER bills only (sale_date <
+      // this bill's), so the current bill's due must NOT be subtracted
+      // again — doing so understated the old balance by that amount.
+      oldBalance = Math.max(0, dueTotal);
     }
     return res.json({
       status: 'ok',
@@ -481,13 +484,19 @@ router.post('/:id/return', authRequired, requireRole('admin', 'pharmacist'), asy
     await conn.beginTransaction();
 
     const [sale] = await conn.query(
-      'SELECT id, invoice_no, sale_date FROM sales WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1 FOR UPDATE',
+      'SELECT id, invoice_no, sale_date, total_amount, net_total FROM sales WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1 FOR UPDATE',
       [saleId, branchId]
     );
     if (sale.length === 0) {
       await conn.rollback();
       return res.status(404).json({ status: 'error', message: 'Sale not found' });
     }
+
+    // A return refunds what the customer actually paid: the bill discount
+    // is shared pro-rata, same factor as saleMoney() — qty x unit_price x
+    // (net_total / total_amount). Factor 0 when total_amount is 0.
+    const returnTotalAmount = Number(sale[0].total_amount) || 0;
+    const returnFactor = returnTotalAmount > 0 ? Number(sale[0].net_total) / returnTotalAmount : 0;
 
     // A return touches two days: the refund lands on today's report, and
     // the bill's refunded total belongs to the sale's day. Either day
@@ -544,7 +553,7 @@ router.post('/:id/return', authRequired, requireRole('admin', 'pharmacist'), asy
         "INSERT INTO stock_transactions (id, branch_id, medicine_id, batch_id, type, quantity_change, reference_id, created_by) VALUES (?, ?, ?, ?, 'sale_return', ?, ?, ?)",
         [uuidv4(), branchId, sold.medicine_id, sold.batch_id, qty, saleId, userId]
       );
-      refundTotal += qty * Number(sold.unit_price);
+      refundTotal += qty * Number(sold.unit_price) * returnFactor;
       returned.push({
         item_id: sold.id,
         medicine_id: sold.medicine_id,
@@ -554,6 +563,7 @@ router.post('/:id/return', authRequired, requireRole('admin', 'pharmacist'), asy
         unit_price: Number(sold.unit_price),
       });
     }
+    refundTotal = round2(refundTotal);
 
     await conn.commit();
     await resetDayReview(pool, branchId, returnDay).catch((err) => console.error('resetDayReview failed:', err.message));
@@ -649,7 +659,7 @@ router.post('/:id/void', authRequired, requireRole('admin', 'pharmacist'), async
     await conn.beginTransaction();
 
     const [sale] = await conn.query(
-      'SELECT id, invoice_no, sale_date, voided_at FROM sales WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1 FOR UPDATE',
+      'SELECT id, invoice_no, sale_date, voided_at, total_amount, net_total FROM sales WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1 FOR UPDATE',
       [saleId, branchId]
     );
     if (sale.length === 0) {
@@ -672,6 +682,33 @@ router.post('/:id/void', authRequired, requireRole('admin', 'pharmacist'), async
       await conn.rollback();
       return res.status(400).json({ status: 'error', message: dayClosedMessage(voidClosedDay) });
     }
+
+    // A void also rewrites the days touched by later payments on this
+    // bill and by any earlier returns on it — a closed day among those
+    // blocks the void too, same as the sale/void days above.
+    const [payDays] = await conn.query(
+      'SELECT DISTINCT created_at FROM sale_payments WHERE sale_id = ? AND branch_id = ? AND is_deleted = 0',
+      [saleId, branchId]
+    );
+    const [retDays] = await conn.query(
+      "SELECT DISTINCT created_at FROM stock_transactions WHERE type = 'sale_return' AND reference_id = ? AND branch_id = ?",
+      [saleId, branchId]
+    );
+    let voidBlockedDay = null;
+    for (const row of [...payDays, ...retDays]) {
+      const d = dayOf(row.created_at);
+      if (await isDayClosed(conn, branchId, d)) { voidBlockedDay = d; break; }
+    }
+    if (voidBlockedDay) {
+      await conn.rollback();
+      return res.status(400).json({ status: 'error', message: dayClosedMessage(voidBlockedDay) });
+    }
+
+    // A void refunds what the customer actually paid: the bill discount
+    // is shared pro-rata, same factor as saleMoney() — qty x unit_price x
+    // (net_total / total_amount). Factor 0 when total_amount is 0.
+    const voidTotalAmount = Number(sale[0].total_amount) || 0;
+    const voidFactor = voidTotalAmount > 0 ? Number(sale[0].net_total) / voidTotalAmount : 0;
 
     const [soldItems] = await conn.query(
       `SELECT si.id, si.medicine_id, si.batch_id, si.quantity, si.unit_price
@@ -698,8 +735,9 @@ router.post('/:id/void', authRequired, requireRole('admin', 'pharmacist'), async
         "INSERT INTO stock_transactions (id, branch_id, medicine_id, batch_id, type, quantity_change, reference_id, created_by) VALUES (?, ?, ?, ?, 'sale_return', ?, ?, ?)",
         [uuidv4(), branchId, sold.medicine_id, sold.batch_id, remaining, saleId, userId]
       );
-      refundTotal += remaining * Number(sold.unit_price);
+      refundTotal += remaining * Number(sold.unit_price) * voidFactor;
     }
+    refundTotal = round2(refundTotal);
 
     await conn.query('UPDATE sales SET voided_at = NOW() WHERE id = ?', [saleId]);
     await conn.commit();

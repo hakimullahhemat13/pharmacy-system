@@ -116,28 +116,40 @@ async function medicinesForRange(branchId, start, end) {
     [branchId, start, end]
   );
   const [rets] = await pool.query(
-    `SELECT si.medicine_id AS mid,
+    `SELECT si.medicine_id AS mid, m.name AS name,
             COALESCE(SUM(sr.quantity_change), 0) AS qty,
             COALESCE(SUM(sr.quantity_change * si.unit_price * (CASE WHEN sv.total_amount > 0 THEN sv.net_total / sv.total_amount ELSE 0 END)), 0) AS value,
             COALESCE(SUM(sr.quantity_change * si.cost_price), 0) AS cost
      FROM stock_transactions sr
      JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
      JOIN sales sv ON sv.id = sr.reference_id AND sv.voided_at IS NULL
+     JOIN medicines m ON m.id = si.medicine_id
      WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at >= ? AND sr.created_at < ?
-     GROUP BY si.medicine_id`,
+     GROUP BY si.medicine_id, m.name`,
     [branchId, start, end]
   );
   const retByMed = new Map(
-    rets.map((r) => [String(r.mid), { qty: Number(r.qty), value: Number(r.value), cost: Number(r.cost) }])
+    rets.map((r) => [String(r.mid), { id: r.mid, name: r.name, qty: Number(r.qty), value: Number(r.value), cost: Number(r.cost) }])
   );
   const out = [];
   for (const r of rows) {
     const ret = retByMed.get(String(r.id)) || { qty: 0, value: 0, cost: 0 };
+    retByMed.delete(String(r.id));
     const quantity = Number(r.qty) - ret.qty;
     const revenue = round2(Number(r.revenue) - ret.value);
     const cost = round2(Number(r.cost) - ret.cost);
     if (quantity === 0 && revenue === 0) continue;
     out.push({ id: r.id, name: r.name, quantity, revenue, cost_total: cost, profit: round2(revenue - cost) });
+  }
+  // A medicine can be returned in this period without being sold in it
+  // (sold last month, returned this month) — it still belongs here, with
+  // negative figures, like a return-only day in dayBreakdown.
+  for (const ret of retByMed.values()) {
+    const quantity = -ret.qty;
+    const revenue = round2(-ret.value);
+    const cost = round2(-ret.cost);
+    if (quantity === 0 && revenue === 0) continue;
+    out.push({ id: ret.id, name: ret.name, quantity, revenue, cost_total: cost, profit: round2(revenue - cost) });
   }
   out.sort((a, b) => b.profit - a.profit || b.quantity - a.quantity);
   return out.slice(0, 100);
@@ -362,7 +374,7 @@ async function dayBreakdown(branchId, start, end) {
     );
     const [retDays] = await pool.query(
       `SELECT DATE_FORMAT(sr.created_at, '%Y-%m-%d') AS day,
-              COALESCE(SUM(sr.quantity_change * si.unit_price), 0) AS value,
+              COALESCE(SUM(sr.quantity_change * si.unit_price * (CASE WHEN sv.total_amount > 0 THEN sv.net_total / sv.total_amount ELSE 0 END)), 0) AS value,
               COALESCE(SUM(sr.quantity_change * si.cost_price), 0) AS cost
        FROM stock_transactions sr
        JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
@@ -518,7 +530,7 @@ router.get('/yearly', authRequired, requireRole('admin', 'pharmacist'), async (r
     );
     const [retMonths] = await pool.query(
       `SELECT MONTH(sr.created_at) AS month,
-              COALESCE(SUM(sr.quantity_change * si.unit_price), 0) AS value,
+              COALESCE(SUM(sr.quantity_change * si.unit_price * (CASE WHEN sv.total_amount > 0 THEN sv.net_total / sv.total_amount ELSE 0 END)), 0) AS value,
               COALESCE(SUM(sr.quantity_change * si.cost_price), 0) AS cost
        FROM stock_transactions sr
        JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
@@ -607,7 +619,7 @@ async function purchasesForRange(branchId, start, end) {
             COALESCE(SUM(pr.quantity * pr.unit_price), 0) AS value
      FROM purchase_returns pr
      JOIN purchases p ON p.id = pr.purchase_id
-     WHERE pr.branch_id = ? AND pr.is_deleted = 0 AND pr.created_at >= ? AND pr.created_at < ?
+     WHERE pr.branch_id = ? AND pr.is_deleted = 0 AND p.is_deleted = 0 AND p.approval_status = 'approved' AND pr.created_at >= ? AND pr.created_at < ?
      GROUP BY p.supplier_id`,
     [branchId, start, end]
   );
@@ -808,11 +820,18 @@ router.get('/export', authRequired, requireRole('admin', 'pharmacist'), async (r
     if (!isValidDateString(date)) {
       return res.status(400).json({ status: 'error', message: 'date must be YYYY-MM-DD' });
     }
+    // The week starts on Saturday — any other start day is refused.
+    const startDt = new Date(`${date}T00:00:00Z`);
+    if (startDt.getUTCDay() !== 6) {
+      return res.status(400).json({ status: 'error', message: 'Weekly report starts on Saturday' });
+    }
+    // The exclusive end is the next Saturday, start+7, so Friday's sales
+    // are included; the label names the week's last day (Friday, start+6).
     const endDt = new Date(`${date}T00:00:00Z`);
-    endDt.setUTCDate(endDt.getUTCDate() + 6);
+    endDt.setUTCDate(endDt.getUTCDate() + 7);
     end = `${endDt.getUTCFullYear()}-${pad(endDt.getUTCMonth() + 1)}-${pad(endDt.getUTCDate())}`;
     const lastDt = new Date(`${date}T00:00:00Z`);
-    lastDt.setUTCDate(lastDt.getUTCDate() + 5);
+    lastDt.setUTCDate(lastDt.getUTCDate() + 6);
     const last = `${lastDt.getUTCFullYear()}-${pad(lastDt.getUTCMonth() + 1)}-${pad(lastDt.getUTCDate())}`;
     start = date;
     label = `Weekly — ${date} to ${last}`;
@@ -973,7 +992,7 @@ router.get('/export', authRequired, requireRole('admin', 'pharmacist'), async (r
       );
       const [retMonths] = await pool.query(
         `SELECT MONTH(sr.created_at) AS month,
-                COALESCE(SUM(sr.quantity_change * si.unit_price), 0) AS value,
+                COALESCE(SUM(sr.quantity_change * si.unit_price * (CASE WHEN sv.total_amount > 0 THEN sv.net_total / sv.total_amount ELSE 0 END)), 0) AS value,
                 COALESCE(SUM(sr.quantity_change * si.cost_price), 0) AS cost
          FROM stock_transactions sr
          JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
@@ -1052,8 +1071,9 @@ router.get('/export', authRequired, requireRole('admin', 'pharmacist'), async (r
 //   + later customer payments recorded that day
 //   − refunds paid out that day (returns, valued at sale prices)
 //   − paid to suppliers that day (paid at purchase + later payments)
-// Voided bills never count — their money is excluded everywhere, same as
-// the summaries.
+// A voided bill's sale never counts — its money is excluded everywhere,
+// same as the summaries — but the cash handed back on the void day does
+// count (see below), capped at what was actually paid for the bill.
 async function cashForDay(branchId, start, end) {
   const [till] = await pool.query(
     `SELECT COALESCE(SUM(COALESCE(s.paid_amount, s.net_total)), 0) AS v
@@ -1068,7 +1088,63 @@ async function cashForDay(branchId, start, end) {
      WHERE sp.branch_id = ? AND sp.is_deleted = 0 AND s.voided_at IS NULL AND sp.created_at >= ? AND sp.created_at < ?`,
     [branchId, start, end]
   );
-  const ret = await returnsForRange(branchId, start, end);
+  // Refunds are cash out of the drawer, so a return can hand back at most
+  // what the customer actually paid for that bill: a return on an unpaid
+  // (or partly paid) credit bill only cancels debt. The day's returns are
+  // grouped by bill and each bill's refund is capped at its paid total
+  // (paid at the till — NULL paid_amount counts as paid in full — plus
+  // later payments, capped at the bill's net).
+  const [dayRets] = await pool.query(
+    `SELECT sr.reference_id AS sale_id,
+            COALESCE(SUM(sr.quantity_change * si.unit_price * (CASE WHEN sv.total_amount > 0 THEN sv.net_total / sv.total_amount ELSE 0 END)), 0) AS value
+     FROM stock_transactions sr
+     JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
+     JOIN sales sv ON sv.id = sr.reference_id AND sv.voided_at IS NULL
+     WHERE sr.branch_id = ? AND sr.type = 'sale_return' AND sr.created_at >= ? AND sr.created_at < ?
+     GROUP BY sr.reference_id`,
+    [branchId, start, end]
+  );
+  // A void hands the bill's paid money back on the void day. The void's
+  // sale_return rows are excluded above with the voided bill, so they are
+  // counted here instead: the cash-out is what was actually paid, capped
+  // at the bill's net — a voided unpaid bill hands back nothing — less
+  // anything already refunded for that bill before the void day, so one
+  // bill can never hand back more than was paid for it in total.
+  const [voidBills] = await pool.query(
+    `SELECT s.id AS sale_id,
+            COALESCE((SELECT SUM(sr.quantity_change * si.unit_price * (CASE WHEN s.total_amount > 0 THEN s.net_total / s.total_amount ELSE 0 END))
+                      FROM stock_transactions sr
+                      JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
+                      WHERE sr.type = 'sale_return' AND sr.reference_id = s.id AND sr.created_at < ?), 0) AS prior_returned
+     FROM sales s
+     WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at >= ? AND s.voided_at < ?`,
+    [start, branchId, start, end]
+  );
+  const refundSaleIds = [...new Set([...dayRets.map((r) => r.sale_id), ...voidBills.map((r) => r.sale_id)])];
+  const paidBySale = new Map();
+  if (refundSaleIds.length > 0) {
+    const [paidRows] = await pool.query(
+      `SELECT s.id AS sale_id, s.net_total AS net_total,
+              COALESCE(s.paid_amount, s.net_total) AS paid_at_sale,
+              COALESCE((SELECT SUM(amount) FROM sale_payments WHERE sale_id = s.id AND is_deleted = 0), 0) AS later_paid
+       FROM sales s WHERE s.id IN (${refundSaleIds.map(() => '?').join(',')})`,
+      refundSaleIds
+    );
+    for (const r of paidRows) paidBySale.set(String(r.sale_id), r);
+  }
+  // What one bill can hand back, at most: paid at the till plus later
+  // payments, never more than the bill's net.
+  const paidCap = (row) => Math.min(Number(row.net_total), round2(Number(row.paid_at_sale) + Number(row.later_paid)));
+  let refunds = 0;
+  for (const r of dayRets) {
+    const paid = paidBySale.get(String(r.sale_id));
+    refunds += Math.min(Number(r.value), paid ? paidCap(paid) : 0);
+  }
+  for (const v of voidBills) {
+    const paid = paidBySale.get(String(v.sale_id));
+    if (!paid) continue;
+    refunds += Math.max(0, round2(paidCap(paid) - Number(v.prior_returned)));
+  }
   // Waiting purchases are not in the books yet — their paid amounts
   // count only once the Main Branch accepts them.
   const [sup1] = await pool.query(
@@ -1086,7 +1162,6 @@ async function cashForDay(branchId, start, end) {
   const round = (n) => Math.round(n * 100) / 100;
   const tillCash = Number(till[0].v);
   const customerPayments = Number(cust[0].v);
-  const refunds = ret.value;
   const supplierPaid = Number(sup1[0].v) + Number(sup2[0].v);
   return {
     till: round(tillCash),
@@ -1225,6 +1300,9 @@ router.post('/day-close', authRequired, requireRole('admin', 'pharmacist'), asyn
   const date = String(body.date || '');
   if (!isValidDateString(date)) {
     return res.status(400).json({ status: 'error', message: 'date must be YYYY-MM-DD' });
+  }
+  if (date > todayStr()) {
+    return res.status(400).json({ status: 'error', message: 'Cannot close a future date' });
   }
   const counted = Number(body.counted_cash);
   if (!Number.isFinite(counted) || counted < 0) {

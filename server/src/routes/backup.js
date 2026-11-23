@@ -1,12 +1,11 @@
 // Backup & restore.
-// Download: every logged-in user may download a backup (read-only,
-// harmless) — streams a mysqldump of the whole database to the browser,
-// and the user picks where to save it in the browser's Save dialog.
-// Restore: admin only — accepts a .sql dump as the request body and
-// replays it, replacing ALL current data; the interface asks first.
-// Automatic backup: when enabled (the default), the server writes one
-// full dump per day into a folder on this computer, and prunes older
-// files, keeping the configured number. No user action needed.
+// Download: admin only — a dump holds the whole database (all branches,
+// users' password hashes, cost/profit data), so it is not for cashiers.
+// Restore: Main Branch admin only — accepts a .sql dump as the request
+// body and replays it, replacing ALL current data; the interface asks first.
+// Automatic backup: Main Branch admin only — when enabled (the default),
+// the server writes one full dump per day into a folder on this computer,
+// and prunes older files, keeping the configured number. No user action needed.
 // The DB password reaches mysqldump through the MYSQL_PWD environment
 // variable, so it never appears in the process arguments or any log.
 const express = require('express');
@@ -16,12 +15,13 @@ const { spawn } = require('child_process');
 const mysql = require('mysql2/promise');
 
 const pool = require('../db');
-const { authRequired, requireRole } = require('../middleware/auth');
+const { authRequired, requireRole, requireMainAdmin } = require('../middleware/auth');
 const { auditLog } = require('../audit');
 
 const router = express.Router();
-// Every logged-in user may DOWNLOAD a backup; only an admin may RESTORE
-// one (it rewrites the whole database) or change automatic-backup settings.
+// Only an admin may DOWNLOAD a backup; only the Main Branch admin may
+// RESTORE one (it rewrites the whole database) or change automatic-backup
+// settings. A child-branch admin gets nothing here.
 router.use(authRequired);
 
 function dbConfig() {
@@ -60,7 +60,7 @@ function localDay(d) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-router.get('/download', (req, res) => {
+router.get('/download', requireRole('admin'), (req, res) => {
   const cfg = dbConfig();
   const filename = `pharmacy_db-${stamp(new Date())}.sql`;
 
@@ -102,7 +102,7 @@ router.get('/download', (req, res) => {
   });
 });
 
-router.post('/restore', requireRole('admin'), express.text({ type: '*/*', limit: '100mb' }), async (req, res) => {
+router.post('/restore', requireMainAdmin, express.text({ type: '*/*', limit: '100mb' }), async (req, res) => {
   const sql = typeof req.body === 'string' ? req.body : '';
   if (!sql.trim()) {
     return res.status(400).json({ status: 'error', message: 'No backup file content received' });
@@ -307,8 +307,8 @@ function startAutoBackup() {
   setInterval(autoBackupTick, 30 * 60 * 1000);
 }
 
-// GET /api/backup/auto/config — admin only.
-router.get('/auto/config', requireRole('admin'), async (req, res) => {
+// GET /api/backup/auto/config — Main Branch admin only.
+router.get('/auto/config', requireMainAdmin, async (req, res) => {
   try {
     const cfg = await getAutoConfig();
     return res.json({ status: 'ok', config: cfg, settingsTableMissing });
@@ -317,8 +317,8 @@ router.get('/auto/config', requireRole('admin'), async (req, res) => {
   }
 });
 
-// PUT /api/backup/auto/config — admin only. Body: { enabled, folder, keep }
-router.put('/auto/config', requireRole('admin'), async (req, res) => {
+// PUT /api/backup/auto/config — Main Branch admin only. Body: { enabled, folder, keep }
+router.put('/auto/config', requireMainAdmin, async (req, res) => {
   const { enabled, folder, keep } = req.body || {};
   const folderStr = String(folder || '').trim();
   const keepNum = Number(keep);
@@ -339,9 +339,9 @@ router.put('/auto/config', requireRole('admin'), async (req, res) => {
   }
 });
 
-// POST /api/backup/auto/run — admin only. Runs a backup right now, even if
+// POST /api/backup/auto/run — Main Branch admin only. Runs a backup right now, even if
 // one already ran today.
-router.post('/auto/run', requireRole('admin'), async (req, res) => {
+router.post('/auto/run', requireMainAdmin, async (req, res) => {
   if (autoRunning) {
     return res.status(409).json({ status: 'error', message: 'A backup is already running' });
   }
@@ -365,8 +365,8 @@ router.post('/auto/run', requireRole('admin'), async (req, res) => {
   }
 });
 
-// GET /api/backup/auto/files — admin only. Lists the automatic backups on disk.
-router.get('/auto/files', requireRole('admin'), async (req, res) => {
+// GET /api/backup/auto/files — Main Branch admin only. Lists the automatic backups on disk.
+router.get('/auto/files', requireMainAdmin, async (req, res) => {
   try {
     const cfg = await getAutoConfig();
     let names = [];
@@ -392,10 +392,10 @@ router.get('/auto/files', requireRole('admin'), async (req, res) => {
   }
 });
 
-// GET /api/backup/auto/files/:name — admin only. Downloads one automatic backup.
+// GET /api/backup/auto/files/:name — Main Branch admin only. Downloads one automatic backup.
 // The name must match the automatic-backup pattern exactly, and the resolved
 // path must stay inside the configured folder (no path traversal).
-router.get('/auto/files/:name', requireRole('admin'), async (req, res) => {
+router.get('/auto/files/:name', requireMainAdmin, async (req, res) => {
   const name = req.params.name;
   if (!AUTO_FILE_RE.test(name)) {
     return res.status(400).json({ status: 'error', message: 'Not an automatic backup file' });

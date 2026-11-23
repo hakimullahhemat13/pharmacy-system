@@ -71,6 +71,16 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
     // purchase line all use the same cents value.
     it.purchase_price = price;
   }
+  // One line per medicine + batch + expiry: two lines for the same batch
+  // would create two purchase_items pointing at one batch row.
+  const seenLines = new Set();
+  for (const it of items) {
+    const lineKey = `${String(it.medicine_id)}|${String(it.batch_no).trim()}|${it.expiry_date}`;
+    if (seenLines.has(lineKey)) {
+      return res.status(400).json({ status: 'error', message: 'The same medicine, batch and expiry appears twice in this purchase — add its quantity once' });
+    }
+    seenLines.add(lineKey);
+  }
 
   const branchId = req.user.branch_id;
   const userId = req.user.sub;
@@ -167,7 +177,7 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
       // untouched) — the stock lands when the purchase is accepted.
       let batchId;
       const [batch] = await conn.query(
-        'SELECT id, quantity_on_hand, purchase_price FROM medicine_batches WHERE branch_id = ? AND medicine_id = ? AND batch_no = ? AND expiry_date = ? AND is_deleted = 0 LIMIT 1',
+        'SELECT id, quantity_on_hand, purchase_price FROM medicine_batches WHERE branch_id = ? AND medicine_id = ? AND batch_no = ? AND expiry_date = ? AND is_deleted = 0 LIMIT 1 FOR UPDATE',
         [branchId, medicineId, batchNo, it.expiry_date]
       );
       if (batch.length > 0) {
@@ -372,7 +382,7 @@ router.post('/:id/return', authRequired, requireRole('admin', 'pharmacist'), asy
          FROM purchase_items pi
          JOIN medicine_batches b ON b.id = pi.batch_id
          JOIN medicines m ON m.id = pi.medicine_id
-         WHERE pi.id = ? AND pi.purchase_id = ? LIMIT 1`,
+         WHERE pi.id = ? AND pi.purchase_id = ? LIMIT 1 FOR UPDATE`,
         [String(it.purchase_item_id || ''), req.params.id]
       );
       if (rows.length === 0) {
@@ -406,6 +416,10 @@ router.post('/:id/return', authRequired, requireRole('admin', 'pharmacist'), asy
     }
     returnedTotal = round2(returnedTotal);
     await conn.commit();
+    // A return changes the return day's figures — a reviewed day returns
+    // to "pending" so the boss sees the new numbers (same hook as PUT
+    // and DELETE, awaited for the same reason).
+    await resetDayReview(pool, branchId, returnToday).catch((err) => console.error('resetDayReview failed:', err.message));
     auditLog(req, 'purchase.returned', 'purchases', req.params.id, {
       summary: `Return to supplier on ${head[0].invoice_no}: ${returnedTotal} AFN`,
       invoice_no: head[0].invoice_no, returned_total: returnedTotal,
@@ -458,6 +472,16 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
       return res.status(400).json({ status: 'error', message: `${label}: purchase_price must be a number, 0 or more` });
     }
     it.purchase_price = price;
+  }
+  // One line per medicine + batch + expiry: two lines for the same batch
+  // would create two purchase_items pointing at one batch row.
+  const seenLines = new Set();
+  for (const it of items) {
+    const lineKey = `${String(it.medicine_id)}|${String(it.batch_no).trim()}|${it.expiry_date}`;
+    if (seenLines.has(lineKey)) {
+      return res.status(400).json({ status: 'error', message: 'The same medicine, batch and expiry appears twice in this purchase — add its quantity once' });
+    }
+    seenLines.add(lineKey);
   }
 
   const branchId = req.user.branch_id;
@@ -575,7 +599,9 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
           [branchId, medicineId, batchNo, expiry]
         );
         if (batch.length > 0) {
-          await conn.query('UPDATE medicine_batches SET purchase_price = ? WHERE id = ?', [price, batch[0].id]);
+          // Never touch the price of an existing batch here: a pending
+          // purchase can share it with approved stock, and the price
+          // lands only when the purchase is accepted.
           return batch[0].id;
         }
         const batchId = uuidv4();
@@ -613,7 +639,8 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
           throw badRequest('An item does not belong to this purchase');
         }
         if (old && old.medicine_id === medId && String(old.batch_no) === batchNo && String(old.expiry_date) === String(it.expiry_date)) {
-          await conn.query('UPDATE medicine_batches SET purchase_price = ? WHERE id = ?', [price, old.batch_id]);
+          // Same batch, still pending: the line is corrected but the
+          // batch price is left alone — approved stock may share it.
           await conn.query('UPDATE purchase_items SET quantity = ?, purchase_price = ? WHERE id = ?', [qty, price, old.id]);
         } else {
           if (old && Number(old.returned_qty) > 0) {
@@ -696,7 +723,7 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
     // Take stock out of the batch a row originally filled. Refuses when
     // part of that stock has already been sold (on_hand is what remains).
     const takeOut = async (old, qty) => {
-      const [b] = await conn.query('SELECT quantity_on_hand FROM medicine_batches WHERE id = ? LIMIT 1', [old.batch_id]);
+      const [b] = await conn.query('SELECT quantity_on_hand FROM medicine_batches WHERE id = ? LIMIT 1 FOR UPDATE', [old.batch_id]);
       const onHand = Number(b[0].quantity_on_hand);
       if (onHand < qty) {
         throw badRequest(
@@ -710,15 +737,22 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
     // Put stock into a batch (created or topped up, exactly like a new purchase).
     const putIn = async (medicineId, batchNo, expiry, qty, price) => {
       const [batch] = await conn.query(
-        'SELECT id FROM medicine_batches WHERE branch_id = ? AND medicine_id = ? AND batch_no = ? AND expiry_date = ? AND is_deleted = 0 LIMIT 1',
+        'SELECT id, quantity_on_hand, purchase_price FROM medicine_batches WHERE branch_id = ? AND medicine_id = ? AND batch_no = ? AND expiry_date = ? AND is_deleted = 0 LIMIT 1 FOR UPDATE',
         [branchId, medicineId, batchNo, expiry]
       );
       let batchId;
       if (batch.length > 0) {
         batchId = batch[0].id;
+        // Blend the new lot in at a weighted average, so the units
+        // already on hand keep their cost (same as POST / approval accept).
+        const oldQty = Number(batch[0].quantity_on_hand);
+        const oldPrice = Number(batch[0].purchase_price);
+        const blended = oldQty + qty > 0
+          ? round2((oldQty * oldPrice + qty * price) / (oldQty + qty))
+          : price;
         await conn.query(
           'UPDATE medicine_batches SET quantity_on_hand = quantity_on_hand + ?, purchase_price = ? WHERE id = ?',
-          [qty, price, batchId]
+          [qty, blended, batchId]
         );
       } else {
         batchId = uuidv4();
@@ -778,14 +812,24 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
         }
         const delta = qty - Number(old.quantity);
         if (delta > 0) {
-          await conn.query('UPDATE medicine_batches SET quantity_on_hand = quantity_on_hand + ? WHERE id = ?', [delta, old.batch_id]);
+          // Blend the added units in at a weighted average, so the units
+          // already on hand keep their cost (same as POST / approval
+          // accept). Read before the top-up: on_hand still holds the
+          // stock the new lot is joining.
+          const [b] = await conn.query('SELECT quantity_on_hand, purchase_price FROM medicine_batches WHERE id = ? LIMIT 1 FOR UPDATE', [old.batch_id]);
+          const oldQty = Number(b[0].quantity_on_hand);
+          const oldPrice = Number(b[0].purchase_price);
+          const blended = oldQty + delta > 0
+            ? round2((oldQty * oldPrice + delta * price) / (oldQty + delta))
+            : price;
+          await conn.query('UPDATE medicine_batches SET quantity_on_hand = quantity_on_hand + ?, purchase_price = ? WHERE id = ?', [delta, blended, old.batch_id]);
           await ledger(medId, old.batch_id, 'purchase', delta);
         } else if (delta < 0) {
           await takeOut(old, -delta);
         }
-        if (price !== Number(old.purchase_price)) {
-          await conn.query('UPDATE medicine_batches SET purchase_price = ? WHERE id = ?', [price, old.batch_id]);
-        }
+        // No price update when nothing is added: taking units out (or
+        // changing only the line price) must not reprice the units
+        // still on hand.
         await conn.query('UPDATE purchase_items SET quantity = ?, purchase_price = ? WHERE id = ?', [qty, price, old.id]);
       } else {
         // New row, or the row moved to another medicine/batch: out of the
@@ -901,24 +945,26 @@ router.delete('/:id', authRequired, requireRole('admin', 'pharmacist'), async (r
          SELECT purchase_item_id, SUM(quantity) AS returned_qty
          FROM purchase_returns WHERE is_deleted = 0 GROUP BY purchase_item_id
        ) pr ON pr.purchase_item_id = pi.id
-       WHERE pi.purchase_id = ?`,
+       WHERE pi.purchase_id = ? FOR UPDATE`,
       [req.params.id]
     );
     for (const it of items) {
       // Only the part that was never sent back to the supplier is still
       // in stock to reverse — units already returned left long ago.
       const reversal = Number(it.quantity) - Number(it.returned_qty);
-      if (Number(it.quantity_on_hand) < reversal) {
+      if (reversal <= 0) continue;
+      // Re-read the batch inside the loop: two lines can share one
+      // batch, so the second line's check must see the first line's
+      // decrement — otherwise both pass and the batch goes negative.
+      const [b] = await conn.query('SELECT quantity_on_hand FROM medicine_batches WHERE id = ? LIMIT 1 FOR UPDATE', [it.batch_id]);
+      const onHand = Number(b[0].quantity_on_hand);
+      if (onHand < reversal) {
         await conn.rollback();
         return res.status(400).json({
           status: 'error',
-          message: `Cannot delete this purchase: ${reversal - Number(it.quantity_on_hand)} units of ${it.medicine_name} from it were already sold`,
+          message: `Cannot delete this purchase: ${reversal - onHand} units of ${it.medicine_name} from it were already sold`,
         });
       }
-    }
-    for (const it of items) {
-      const reversal = Number(it.quantity) - Number(it.returned_qty);
-      if (reversal <= 0) continue;
       await conn.query('UPDATE medicine_batches SET quantity_on_hand = quantity_on_hand - ? WHERE id = ?', [reversal, it.batch_id]);
       await conn.query(
         "INSERT INTO stock_transactions (id, branch_id, medicine_id, batch_id, type, quantity_change, reference_id, created_by) VALUES (?, ?, ?, ?, 'adjustment', ?, ?, ?)",

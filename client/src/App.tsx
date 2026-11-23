@@ -871,10 +871,24 @@ function Dashboard({
       try {
         const wDays = workWeekDays();
         const [range, sv, recent, centralRes] = await Promise.all([
-          api.get(`/reports/range?from=${wDays[0]}&to=${wDays[wDays.length - 1]}`).catch(() => null),
-          api.get('/reports/stock-value').catch(() => null),
-          api.get('/sales').catch(() => null),
-          role === 'admin' ? api.get('/reports/central').catch(() => null) : Promise.resolve(null),
+          api.get(`/reports/range?from=${wDays[0]}&to=${wDays[wDays.length - 1]}`).catch((err) => {
+            if (alive) setError(err instanceof Error ? err.message : 'Error');
+            return null;
+          }),
+          api.get('/reports/stock-value').catch((err) => {
+            if (alive) setError(err instanceof Error ? err.message : 'Error');
+            return null;
+          }),
+          api.get('/sales').catch((err) => {
+            if (alive) setError(err instanceof Error ? err.message : 'Error');
+            return null;
+          }),
+          role === 'admin'
+            ? api.get('/reports/central').catch((err) => {
+                if (alive) setError(err instanceof Error ? err.message : 'Error');
+                return null;
+              })
+            : Promise.resolve(null),
         ]);
         if (!alive) return;
         if (range && Array.isArray(range.days)) {
@@ -1431,7 +1445,10 @@ function ExpiryPage({ lang }: { lang: Lang }) {
     api
       .get('/stock/write-offs')
       .then((data) => setWriteOffs(data.writeOffs as WriteOffRow[]))
-      .catch(() => setWriteOffs([]));
+      .catch((err) => {
+        setWriteOffs([]);
+        setError(err instanceof Error ? err.message : 'Error');
+      });
   };
 
   useEffect(() => {
@@ -1475,7 +1492,11 @@ function ExpiryPage({ lang }: { lang: Lang }) {
   const submitWriteOff = async () => {
     if (!woBatch) return;
     const qty = Number(woQty);
-    if (!Number.isInteger(qty) || qty <= 0 || qty > woBatch.quantity_on_hand) {
+    if (!Number.isInteger(qty) || qty <= 0) {
+      setWoMsg(t(lang, 'writeOffQtyInvalid'));
+      return;
+    }
+    if (qty > woBatch.quantity_on_hand) {
       setWoMsg(t(lang, 'writeOffTooMuch'));
       return;
     }
@@ -1838,7 +1859,7 @@ function ExpiryPage({ lang }: { lang: Lang }) {
               </tfoot>
             </table>
             <div className="print-footer">
-              {t(lang, 'generatedOn')}: {todayStr()} {new Date().toTimeString().slice(0, 5)}
+              {t(lang, 'generatedOn')}: {kabulNowStr()}
             </div>
             <div className="print-signatures">
               <div className="print-sign">{t(lang, 'signPrepared')}</div>
@@ -2469,15 +2490,15 @@ function SalesPage({ lang, role, onAddMedicine }: { lang: Lang; role: string; on
     api
       .get('/customers')
       .then((data) => setCustomers(data.customers as Customer[]))
-      .catch(() => undefined);
+      .catch((err) => setError(err instanceof Error ? err.message : 'Error'));
     api
       .get('/settings/branch')
       .then((data) => setBranch(data.branch as BranchInfo))
-      .catch(() => undefined);
+      .catch((err) => setError(err instanceof Error ? err.message : 'Error'));
   }, []);
 
   useEffect(() => {
-    loadRecent().catch(() => undefined);
+    loadRecent().catch((err) => setError(err instanceof Error ? err.message : 'Error'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [billQuery, dateFrom, dateTo]);
 
@@ -2520,6 +2541,16 @@ function SalesPage({ lang, role, onAddMedicine }: { lang: Lang; role: string; on
   const unknownBarcode = canManage && q !== '' && results.length === 0 && /^\d{8,}$/.test(scannedCode);
 
   const addToBill = (med: StockRow) => {
+    // Same filter as the search results: pending/rejected medicines are
+    // not sellable yet, and an out-of-stock row is not addable.
+    if (med.approval_status === 'pending' || med.approval_status === 'rejected') {
+      setError(t(lang, 'needsApproval'));
+      return;
+    }
+    if (Number(med.total_quantity) <= 0) {
+      setError(t(lang, 'outOfStock'));
+      return;
+    }
     setMsg('');
     setBill((b) => {
       const existing = b.find((i) => i.medicine_id === med.medicine_id);
@@ -2548,6 +2579,16 @@ function SalesPage({ lang, role, onAddMedicine }: { lang: Lang; role: string; on
     if (!code) return;
     const exact = stock.find((r) => r.barcode === code);
     if (exact) {
+      // A scanned code must pass the same checks as a clicked row:
+      // pending/rejected and out-of-stock medicines are not addable.
+      if (exact.approval_status === 'pending' || exact.approval_status === 'rejected') {
+        setError(t(lang, 'needsApproval'));
+        return;
+      }
+      if (Number(exact.total_quantity) <= 0) {
+        setError(t(lang, 'outOfStock'));
+        return;
+      }
       addToBill(exact);
       setQuery('');
     } else if (results.length === 1) {
@@ -2585,6 +2626,18 @@ function SalesPage({ lang, role, onAddMedicine }: { lang: Lang; role: string; on
     setMsg('');
     if (bill.length === 0) {
       setError(t(lang, 'billEmpty'));
+      return;
+    }
+    if (discountNum < 0) {
+      setError(`${t(lang, 'discount')} < 0`);
+      return;
+    }
+    if (discountNum > subtotal) {
+      setError(`${t(lang, 'discount')} > ${fmt(subtotal)} ${t(lang, 'currency')}`);
+      return;
+    }
+    if (paidNum < 0) {
+      setError(`${t(lang, 'paidAmount')} < 0`);
       return;
     }
     if (paidNum > net) {
@@ -2665,10 +2718,17 @@ function SalesPage({ lang, role, onAddMedicine }: { lang: Lang; role: string; on
     }
   };
 
+  // A discounted bill refunds the discount-net amount: the server's
+  // saleMoney() scales refunds by net_total/total_amount.
+  const refundFactor = detail
+    ? Number(detail.total_amount) === 0
+      ? 0
+      : Number(detail.net_total) / Number(detail.total_amount)
+    : 0;
   const refundPreview = detail
     ? detail.items.reduce((sum, it) => {
         const rq = Number(retQtys[it.item_id]) || 0;
-        return sum + rq * Number(it.unit_price);
+        return sum + rq * Number(it.unit_price) * refundFactor;
       }, 0)
     : 0;
 
@@ -2690,14 +2750,19 @@ function SalesPage({ lang, role, onAddMedicine }: { lang: Lang; role: string; on
     }
     setRetBusy(true);
     try {
-      const data = await api.post(`/sales/${detail.id}/return`, { items });
-      setRetMsg(
-        `${t(lang, 'returnDone')} — ${fmt(Number(data.refund_total))} ${t(lang, 'currency')}`
-      );
+      const prevRefunded = Number(detail.refunded_total || 0);
+      await api.post(`/sales/${detail.id}/return`, { items });
       setRetQtys({});
       const fresh = await api.get(`/sales/${detail.id}`);
       setDetail(fresh.sale as SaleDetail);
-      await Promise.all([loadStock(), loadRecent()]);
+      // The refund for this return is the change in the refetched
+      // bill's (discount-net) refunded total, not the gross response.
+      const refunded = Math.max(
+        0,
+        Number((fresh.sale as SaleDetail).refunded_total || 0) - prevRefunded
+      );
+      setRetMsg(`${t(lang, 'returnDone')} — ${fmt(refunded)} ${t(lang, 'currency')}`);
+      await Promise.all([loadStock(), loadRecent(), loadToday()]);
     } catch (err) {
       setRetError(err instanceof Error ? err.message : 'Error');
     }
@@ -2737,14 +2802,19 @@ function SalesPage({ lang, role, onAddMedicine }: { lang: Lang; role: string; on
     setRetMsg('');
     setRetBusy(true);
     try {
-      const data = await api.post(`/sales/${detail.id}/void`, {});
-      setRetMsg(
-        `${t(lang, 'voidedFull')} — ${t(lang, 'refundTotal')}: ${fmt(Number(data.refund_total))} ${t(lang, 'currency')}`
-      );
+      const prevRefunded = Number(detail.refunded_total || 0);
+      await api.post(`/sales/${detail.id}/void`, {});
       setVoidArm(false);
       const fresh = await api.get(`/sales/${detail.id}`);
       setDetail(fresh.sale as SaleDetail);
-      await Promise.all([loadStock(), loadRecent()]);
+      const refunded = Math.max(
+        0,
+        Number((fresh.sale as SaleDetail).refunded_total || 0) - prevRefunded
+      );
+      setRetMsg(
+        `${t(lang, 'voidedFull')} — ${t(lang, 'refundTotal')}: ${fmt(refunded)} ${t(lang, 'currency')}`
+      );
+      await Promise.all([loadStock(), loadRecent(), loadToday()]);
     } catch (err) {
       setRetError(err instanceof Error ? err.message : 'Error');
     }
@@ -3131,7 +3201,7 @@ function SalesPage({ lang, role, onAddMedicine }: { lang: Lang; role: string; on
                         />
                       </td>
                     )}
-                    {canManage && <td>{fmt(rq * Number(it.unit_price))}</td>}
+                    {canManage && <td>{fmt(rq * Number(it.unit_price) * refundFactor)}</td>}
                   </tr>
                 );
               })}
@@ -3888,8 +3958,8 @@ function PurchasesPage({ lang }: { lang: Lang }) {
       .get('/medicines')
       .then((data) => setMeds(data.medicines as MedOption[]))
       .catch((err) => setError(err instanceof Error ? err.message : 'Error'));
-    loadSuppliers().catch(() => undefined);
-    loadPurchases().catch(() => undefined);
+    loadSuppliers().catch((err) => setError(err instanceof Error ? err.message : 'Error'));
+    loadPurchases().catch((err) => setError(err instanceof Error ? err.message : 'Error'));
   }, []);
 
   const resetForm = () => {
@@ -4114,6 +4184,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
         setRows([{ medicine_id: '', batch_no: '', expiry_date: '', quantity: '1', purchase_price: '' }]);
         setInvoiceNo('');
         setPaid('');
+        setSupplierId('');
       }
       await loadPurchases();
     } catch (err) {
@@ -4566,10 +4637,35 @@ function PurchasesPage({ lang }: { lang: Lang }) {
   );
 }
 
+// The server runs on Asia/Kabul time, so "today" here is the Kabul date
+// too — a browser in another timezone (e.g. America/Los_Angeles) would
+// otherwise show the wrong day.
+function kabulToday(): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kabul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+}
+
+// Kabul date + 24h time, e.g. "2026-11-23 14:05".
+function kabulNowStr(): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kabul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date());
+  const get = (type: string) => parts.find((pt) => pt.type === type)?.value || '';
+  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`;
+}
+
 function todayStr(): string {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return kabulToday();
 }
 
 // Simple CSS bar chart for the reports: revenue (grey) and profit
@@ -4635,7 +4731,7 @@ function BarChart({
 
 // The most recent Saturday (start of the Afghan work week) as YYYY-MM-DD.
 function weekStartStr(): string {
-  const d = new Date();
+  const d = new Date(`${kabulToday()}T00:00:00`);
   const diff = (d.getDay() + 1) % 7; // Sat→0, Sun→1, Mon→2, … Fri→6
   d.setDate(d.getDate() - diff);
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -4871,7 +4967,9 @@ function DayClosePanel({ lang, date, role }: { lang: Lang; date: string; role: s
                     <td>{t(lang, 'dayCloseClosedBy')}</td>
                     <td style={{ textAlign: 'end' }}>
                       {info.close.closed_by_name || '—'} ·{' '}
-                      {new Date(info.close.closed_at).toLocaleString()}
+                      {new Date(info.close.closed_at).toLocaleString(undefined, {
+                        timeZone: 'Asia/Kabul',
+                      })}
                     </td>
                   </tr>
                   <tr>
@@ -5332,6 +5430,15 @@ function ReportsPage({
     (async () => {
       try {
         setError('');
+        setSummary(null);
+        setPrevSummary(null);
+        setPrevLabel('');
+        setDays([]);
+        setDaySales([]);
+        setMedRows([]);
+        setPurchRows([]);
+        setMonths([]);
+        setStockData(null);
         if (tab === 'stock') {
           const data = await api.get(q('/reports/stock-value'));
           if (!alive) return;
@@ -6327,7 +6434,7 @@ function ReportsPage({
               </>
             )}
             <div className="print-footer">
-              {t(lang, 'generatedOn')}: {todayStr()} {new Date().toTimeString().slice(0, 5)}
+              {t(lang, 'generatedOn')}: {kabulNowStr()}
             </div>
             <div className="print-signatures">
               <div className="print-sign">{t(lang, 'signPrepared')}</div>
@@ -6419,7 +6526,7 @@ function ReportsPage({
               </tbody>
             </table>
             <div className="print-footer">
-              {t(lang, 'generatedOn')}: {todayStr()} {new Date().toTimeString().slice(0, 5)}
+              {t(lang, 'generatedOn')}: {kabulNowStr()}
             </div>
             <div className="print-signatures">
               <div className="print-sign">{t(lang, 'signPrepared')}</div>
@@ -7772,9 +7879,11 @@ function SettingsPage({
   const chooseLang = async (l: Lang) => {
     setLangError('');
     setLangMsg('');
-    setLang(l);
     try {
       await api.put('/settings/language', { language: l });
+      // Apply only after the server saved it, so a failed PUT cannot
+      // leave the UI in a language the next login reverts.
+      setLang(l);
       setLangMsg(t(l, 'languageSaved'));
     } catch (err) {
       setLangError(err instanceof Error ? err.message : 'Error');

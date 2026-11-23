@@ -1,21 +1,39 @@
-// Auth middleware — verifies the JWT sent as: Authorization: Bearer <token>
+// Auth middleware — verifies the JWT sent as: Authorization: Bearer <token>,
+// then re-checks the user row: a deactivated or deleted user loses access
+// at once, even though the token itself has no expiry (owner's choice —
+// the session stays valid until logout, so a password change alone does
+// not log anyone out; deactivation/deletion is the kill switch).
 const jwt = require('jsonwebtoken');
 
 const pool = require('../db');
 const { getMainBranchId } = require('../mainBranch');
 
-function authRequired(req, res, next) {
+async function authRequired(req, res, next) {
   const header = req.headers.authorization || '';
   const [scheme, token] = header.split(' ');
   if (scheme !== 'Bearer' || !token) {
     return res.status(401).json({ status: 'error', message: 'Login required' });
   }
+  let decoded;
   try {
-    req.user = jwt.verify(token, process.env.JWT_SECRET);
-    return next();
+    decoded = jwt.verify(token, process.env.JWT_SECRET);
   } catch (err) {
     return res.status(401).json({ status: 'error', message: 'Session expired or invalid token' });
   }
+  try {
+    const [rows] = await pool.query(
+      'SELECT id, is_active, is_deleted FROM users WHERE id = ? LIMIT 1',
+      [decoded.sub]
+    );
+    const user = rows[0];
+    if (!user || !user.is_active || user.is_deleted) {
+      return res.status(401).json({ status: 'error', message: 'Session expired or invalid token' });
+    }
+  } catch (err) {
+    return res.status(500).json({ status: 'error', message: err.code || err.message });
+  }
+  req.user = decoded;
+  return next();
 }
 
 // Use after authRequired, e.g. requireRole('admin')
