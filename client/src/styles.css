@@ -356,6 +356,25 @@ th { color: #64748b; font-weight: 600; font-size: 13px; }
     color: #000;
     background: #fff;
   }
+  /* Sales bill like the SENAN sample (2026-11-23, his choice): boxed
+     INVOICE title row, two-column meta, Qty / Bonus / Product / Price /
+     Dis% / Amount table with dashed row lines, item-count footer, then
+     Net Total / Cash Received / Old Balance / Net Balance and a Remarks
+     line. Still 80mm (small printer): Bonus and Dis% are always 0 —
+     our sales have no bonus or per-item discount — and Old Balance
+     comes from GET /sales/:id, so Net Balance is old balance + this
+     bill's remaining due. */
+  #receipt-print .rcpt-title-row { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin: 6px 0 4px; }
+  #receipt-print .rcpt-invoice-box { border: 1.5px solid #000; padding: 1px 10px; font-weight: 700; letter-spacing: 1px; }
+  #receipt-print .rcpt-meta { display: flex; justify-content: space-between; gap: 8px; border-top: 2px solid #000; border-bottom: 2px solid #000; padding: 4px 0; }
+  #receipt-print .rcpt-table { width: 100%; border-collapse: collapse; margin-top: 4px; font-size: 11px; }
+  #receipt-print .rcpt-table th { border-bottom: 1.5px solid #000; padding: 3px 1px; font-size: 11px; text-align: start; }
+  #receipt-print .rcpt-table th.num, #receipt-print .rcpt-table td.num { text-align: end; }
+  #receipt-print .rcpt-table td { padding: 3px 1px; border-bottom: 1px dashed #666; vertical-align: top; }
+  #receipt-print .rcpt-table tfoot td { border-top: 1.5px solid #000; border-bottom: 1.5px solid #000; font-weight: 700; }
+  #receipt-print .rcpt-totals { margin-top: 6px; }
+  #receipt-print .rcpt-row { display: flex; justify-content: space-between; }
+  #receipt-print .rcpt-net { font-weight: 700; font-size: 14px; }
 }
 /* Printable report sheet (A4): same portal pattern as the receipt.
    Hidden on screen; when printing, #root is already removed by the
@@ -1253,3 +1272,31 @@ input, select, textarea, .search-input { min-height: 36px; border-radius: 9px; }
 .bill-items::-webkit-scrollbar-track, .pos-bill::-webkit-scrollbar-track { background: var(--mc-border); border-radius: 8px; }
 .bill-items::-webkit-scrollbar-thumb, .pos-bill::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 8px; border: 2px solid var(--mc-border); }
 .bill-items::-webkit-scrollbar-thumb:hover, .pos-bill::-webkit-scrollbar-thumb:hover { background: var(--mc-primary); }
+
+/* ================================================================
+   RTL menu scrollbar (2026-11-23, his choice): in Pashto the MENU
+   scrollbar must sit on the RIGHT edge of the sidebar, while the
+   Dashboard (page) scrollbar stays on the LEFT — the browser's RTL
+   default (html carries the language direction, see App.tsx).
+   The trick: the sidebar box itself stays LTR (so its scrollbar
+   stays right) while everything inside it stays RTL.
+   ================================================================ */
+[dir="rtl"] .sidebar * { direction: rtl; }
+[dir="rtl"] .sidebar { direction: ltr; }
+
+/* ================================================================
+   Desktop main-column scrollbar on the LEFT (2026-11-23): the
+   viewport scrollbar stays on the right even with html dir="rtl"
+   (verified live: console shows 'rtl', yet both scrollbars sit on
+   the right), so the main column becomes its own scroll container.
+   Its direction is RTL (inherited from html), so its scrollbar sits
+   on the LEFT edge; the sidebar keeps direction:ltr, so its
+   scrollbar stays on the RIGHT. The viewport no longer scrolls, so
+   there is no third scrollbar. Desktop only (min-width: 721px) —
+   phones keep viewport scrolling, and printing is untouched
+   (#root is hidden when printing).
+   ================================================================ */
+@media (min-width: 721px) {
+  .app { height: 100vh; }
+  .main { height: 100vh; overflow-y: auto; }
+}

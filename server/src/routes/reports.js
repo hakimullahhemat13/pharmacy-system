@@ -13,6 +13,7 @@ const { authRequired, requireRole, requireMainAdmin } = require('../middleware/a
 const { auditLog } = require('../audit');
 const { todayStr, isDayClosed, isMissingDayCloseTable } = require('../dayClose');
 const { getMainBranchId } = require('../mainBranch');
+const { round2 } = require('../money');
 
 const router = express.Router();
 
@@ -38,7 +39,7 @@ function rangeFor(fromQ, toQ) {
   const to = String(toQ || '');
   if (!isValidDateString(from) || !isValidDateString(to) || from > to) return null;
   const spanDays = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000;
-  if (spanDays > 366) return null;
+  if (spanDays > 365) return null;
   const endDt = new Date(`${to}T00:00:00Z`);
   endDt.setUTCDate(endDt.getUTCDate() + 1);
   const end = `${endDt.getUTCFullYear()}-${pad(endDt.getUTCMonth() + 1)}-${pad(endDt.getUTCDate())}`;
@@ -55,7 +56,7 @@ function rangeFor(fromQ, toQ) {
 async function returnsForRange(branchId, start, end, sellerId = null) {
   const [rows] = await pool.query(
     `SELECT COALESCE(SUM(sr.quantity_change), 0) AS qty,
-            COALESCE(SUM(sr.quantity_change * si.unit_price), 0) AS value,
+            COALESCE(SUM(sr.quantity_change * si.unit_price * (CASE WHEN sv.total_amount > 0 THEN sv.net_total / sv.total_amount ELSE 0 END)), 0) AS value,
             COALESCE(SUM(sr.quantity_change * si.cost_price), 0) AS cost
      FROM stock_transactions sr
      JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
@@ -84,16 +85,16 @@ async function summaryForRange(branchId, start, end, sellerId = null) {
     sellerId ? [branchId, start, end, sellerId] : [branchId, start, end]
   );
   const ret = await returnsForRange(branchId, start, end, sellerId);
-  const revenue = Number(salesRows[0].revenue) - ret.value;
-  const cost = Number(itemRows[0].cost_total) - ret.cost;
+  const revenue = round2(Number(salesRows[0].revenue) - ret.value);
+  const cost = round2(Number(itemRows[0].cost_total) - ret.cost);
   return {
     sales_count: Number(salesRows[0].sales_count),
     items_sold: Number(itemRows[0].items_sold) - ret.qty,
     revenue,
-    discount_total: Number(salesRows[0].discount_total),
+    discount_total: round2(Number(salesRows[0].discount_total)),
     cost_total: cost,
-    profit: revenue - cost,
-    returns_total: ret.value,
+    profit: round2(revenue - cost),
+    returns_total: round2(ret.value),
     returned_items: ret.qty,
   };
 }
@@ -105,7 +106,7 @@ async function medicinesForRange(branchId, start, end) {
   const [rows] = await pool.query(
     `SELECT m.id AS id, m.name AS name,
             COALESCE(SUM(si.quantity), 0) AS qty,
-            COALESCE(SUM(si.quantity * si.unit_price), 0) AS revenue,
+            COALESCE(SUM(si.quantity * si.unit_price * (CASE WHEN s.total_amount > 0 THEN s.net_total / s.total_amount ELSE 0 END)), 0) AS revenue,
             COALESCE(SUM(si.quantity * si.cost_price), 0) AS cost
      FROM sale_items si
      JOIN sales s ON s.id = si.sale_id
@@ -117,7 +118,7 @@ async function medicinesForRange(branchId, start, end) {
   const [rets] = await pool.query(
     `SELECT si.medicine_id AS mid,
             COALESCE(SUM(sr.quantity_change), 0) AS qty,
-            COALESCE(SUM(sr.quantity_change * si.unit_price), 0) AS value,
+            COALESCE(SUM(sr.quantity_change * si.unit_price * (CASE WHEN sv.total_amount > 0 THEN sv.net_total / sv.total_amount ELSE 0 END)), 0) AS value,
             COALESCE(SUM(sr.quantity_change * si.cost_price), 0) AS cost
      FROM stock_transactions sr
      JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
@@ -133,10 +134,10 @@ async function medicinesForRange(branchId, start, end) {
   for (const r of rows) {
     const ret = retByMed.get(String(r.id)) || { qty: 0, value: 0, cost: 0 };
     const quantity = Number(r.qty) - ret.qty;
-    const revenue = Number(r.revenue) - ret.value;
-    const cost = Number(r.cost) - ret.cost;
+    const revenue = round2(Number(r.revenue) - ret.value);
+    const cost = round2(Number(r.cost) - ret.cost);
     if (quantity === 0 && revenue === 0) continue;
-    out.push({ id: r.id, name: r.name, quantity, revenue, cost_total: cost, profit: revenue - cost });
+    out.push({ id: r.id, name: r.name, quantity, revenue, cost_total: cost, profit: round2(revenue - cost) });
   }
   out.sort((a, b) => b.profit - a.profit || b.quantity - a.quantity);
   return out.slice(0, 100);
@@ -164,22 +165,22 @@ async function stockValue(branchId) {
     [branchId]
   );
   const medicines = rows.map((r) => {
-    const saleValue = Number(r.qty_sellable) * Number(r.sale_price);
+    const saleValue = round2(Number(r.qty_sellable) * Number(r.sale_price));
     return {
       id: r.id,
       name: r.name,
       quantity: Number(r.qty_all),
-      cost_total: Number(r.cost_all),
+      cost_total: round2(Number(r.cost_all)),
       sale_value: saleValue,
-      expected_profit: saleValue - Number(r.cost_sellable),
+      expected_profit: round2(saleValue - Number(r.cost_sellable)),
     };
   });
   const totals = {
-    cost_total: medicines.reduce((a, m) => a + m.cost_total, 0),
-    sale_value: medicines.reduce((a, m) => a + m.sale_value, 0),
-    expected_profit: medicines.reduce((a, m) => a + m.expected_profit, 0),
-    cost_expiring: rows.reduce((a, r) => a + Number(r.cost_expiring), 0),
-    cost_expired: rows.reduce((a, r) => a + Number(r.cost_expired), 0),
+    cost_total: round2(medicines.reduce((a, m) => a + m.cost_total, 0)),
+    sale_value: round2(medicines.reduce((a, m) => a + m.sale_value, 0)),
+    expected_profit: round2(medicines.reduce((a, m) => a + m.expected_profit, 0)),
+    cost_expiring: round2(rows.reduce((a, r) => a + Number(r.cost_expiring), 0)),
+    cost_expired: round2(rows.reduce((a, r) => a + Number(r.cost_expired), 0)),
   };
   return { totals, medicines };
 }
@@ -226,16 +227,16 @@ router.get('/daily', authRequired, async (req, res) => {
       `SELECT s.id, s.invoice_no, s.sale_date, s.total_amount, s.discount, s.net_total,
               c.name AS customer_name,
               u.full_name AS seller_name,
-              (SELECT COALESCE(SUM(sr.quantity_change * si.unit_price), 0)
+              (SELECT COALESCE(SUM(sr.quantity_change * si.unit_price * (CASE WHEN s.total_amount > 0 THEN s.net_total / s.total_amount ELSE 0 END)), 0)
                  FROM stock_transactions sr
                  JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
-                WHERE sr.branch_id = s.branch_id AND sr.type = 'sale_return' AND sr.reference_id = s.id) AS refunded_total
+                WHERE sr.branch_id = s.branch_id AND sr.type = 'sale_return' AND sr.reference_id = s.id AND sr.created_at >= ? AND sr.created_at < ?) AS refunded_total
        FROM sales s
        LEFT JOIN customers c ON c.id = s.customer_id
        LEFT JOIN users u ON u.id = s.created_by
        WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at IS NULL AND s.sale_date >= ? AND s.sale_date < ?${sellerId ? ' AND s.created_by = ?' : ''}
        ORDER BY s.sale_date ASC`,
-      sellerId ? [branchId, date, end, sellerId] : [branchId, date, end]
+      sellerId ? [date, end, branchId, date, end, sellerId] : [date, end, branchId, date, end]
     );
     return res.json({ status: 'ok', date, summary, sales });
   } catch (err) {
@@ -426,18 +427,29 @@ router.get('/monthly', authRequired, requireRole('admin', 'pharmacist'), async (
   }
 });
 
-// GET /api/reports/weekly?date=YYYY-MM-DD — the 6 working days starting
-// at `date` (Saturday–Thursday; Friday is the weekly holiday in
-// Afghanistan, so it belongs to no week). The client defaults the date
-// to the most recent Saturday, but any start day can be picked.
+// GET /api/reports/weekly?date=YYYY-MM-DD — the 7 days starting at
+// `date` (Saturday–Friday). The week still starts on Saturday, but
+// Friday is now included: the pharmacy is sometimes open on Friday and
+// sells, so a Friday's sales belong to its week. The client defaults
+// the date to the most recent Saturday, but any start day can be picked.
 router.get('/weekly', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
   const date = req.query.date === undefined ? fmtDate(new Date()) : String(req.query.date);
   if (!isValidDateString(date)) {
     return res.status(400).json({ status: 'error', message: 'date must be YYYY-MM-DD' });
   }
+  // The week starts on Saturday — any other start day is refused.
+  const startDt = new Date(`${date}T00:00:00Z`);
+  if (startDt.getUTCDay() !== 6) {
+    return res.status(400).json({ status: 'error', message: 'Weekly report starts on Saturday' });
+  }
   const endDt = new Date(`${date}T00:00:00Z`);
-  endDt.setUTCDate(endDt.getUTCDate() + 6);
+  endDt.setUTCDate(endDt.getUTCDate() + 7);
   const end = `${endDt.getUTCFullYear()}-${pad(endDt.getUTCMonth() + 1)}-${pad(endDt.getUTCDate())}`;
+  // The response names the week's last day (Friday, start+6); the
+  // queries use the exclusive bound (next Saturday, start+7) above.
+  const endInclusiveDt = new Date(`${date}T00:00:00Z`);
+  endInclusiveDt.setUTCDate(endInclusiveDt.getUTCDate() + 6);
+  const endInclusive = `${endInclusiveDt.getUTCFullYear()}-${pad(endInclusiveDt.getUTCMonth() + 1)}-${pad(endInclusiveDt.getUTCDate())}`;
   try {
     const resolved = await resolveReportBranch(req);
     if (resolved.error) {
@@ -446,7 +458,7 @@ router.get('/weekly', authRequired, requireRole('admin', 'pharmacist'), async (r
     const branchId = resolved.branchId;
     const summary = await summaryForRange(branchId, date, end);
     const byDay = await dayBreakdown(branchId, date, end);
-    return res.json({ status: 'ok', start: date, end, summary, days: byDay });
+    return res.json({ status: 'ok', start: date, end: endInclusive, summary, days: byDay });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
   }
@@ -553,8 +565,12 @@ function periodRange(period, query) {
   if (period === 'daily' || period === 'weekly') {
     const date = query.date === undefined ? fmtDate(new Date()) : String(query.date);
     if (!isValidDateString(date)) return null;
+    // The week starts on Saturday. Friday is included in the week
+    // (the pharmacy is sometimes open and sells on Friday), so the
+    // exclusive end is the next Saturday, start+7.
+    if (period === 'weekly' && new Date(`${date}T00:00:00Z`).getUTCDay() !== 6) return null;
     const endDt = new Date(`${date}T00:00:00Z`);
-    endDt.setUTCDate(endDt.getUTCDate() + (period === 'weekly' ? 6 : 1));
+    endDt.setUTCDate(endDt.getUTCDate() + (period === 'weekly' ? 7 : 1));
     return { start: date, end: `${endDt.getUTCFullYear()}-${pad(endDt.getUTCMonth() + 1)}-${pad(endDt.getUTCDate())}` };
   }
   if (period === 'monthly') {
@@ -623,6 +639,17 @@ async function purchasesForRange(branchId, start, end) {
     const row = bySupplier.get(key(r.sid)) || { id: r.sid || null, name: '—', bills: 0, bought: 0, returned: 0, paid: 0 };
     row.paid += Number(r.paid);
     bySupplier.set(key(r.sid), row);
+  }
+  // A supplier paid for an old bill (or sent goods back) in this period
+  // but bought nothing: their name comes from the suppliers table, not '—'.
+  const missing = [...bySupplier.values()].filter((r) => r.name === '—' && r.id);
+  if (missing.length > 0) {
+    const [names] = await pool.query(
+      `SELECT id, name FROM suppliers WHERE branch_id = ? AND id IN (${missing.map(() => '?').join(',')})`,
+      [branchId, ...missing.map((r) => r.id)]
+    );
+    const nameById = new Map(names.map((n) => [String(n.id), n.name]));
+    for (const r of missing) r.name = nameById.get(String(r.id)) || '—';
   }
   const out = [...bySupplier.values()].map((r) => ({ ...r, net: r.bought - r.returned }));
   out.sort((a, b) => b.bought - a.bought);
@@ -884,18 +911,25 @@ router.get('/export', authRequired, requireRole('admin', 'pharmacist'), async (r
     if (period === 'daily') {
       const [sales] = await pool.query(
         `SELECT s.invoice_no, s.sale_date, s.total_amount, s.discount, s.net_total,
-                c.name AS customer_name
+                c.name AS customer_name,
+                COALESCE((
+                  SELECT SUM(sr.quantity_change * si.unit_price * (CASE WHEN s2.total_amount > 0 THEN s2.net_total / s2.total_amount ELSE 0 END))
+                  FROM stock_transactions sr
+                  JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
+                  JOIN sales s2 ON s2.id = sr.reference_id
+                  WHERE sr.type = 'sale_return' AND sr.reference_id = s.id AND sr.created_at >= ? AND sr.created_at < ?
+                ), 0) AS refunded_total
          FROM sales s
          LEFT JOIN customers c ON c.id = s.customer_id
          WHERE s.branch_id = ? AND s.is_deleted = 0 AND s.voided_at IS NULL AND s.sale_date >= ? AND s.sale_date < ?
          ORDER BY s.sale_date ASC`,
-        [branchId, start, end]
+        [start, end, branchId, start, end]
       );
       const sh = wb.addWorksheet('Bills');
       sh.columns = [
-        { width: 16 }, { width: 20 }, { width: 22 }, { width: 14 }, { width: 14 }, { width: 14 },
+        { width: 16 }, { width: 20 }, { width: 22 }, { width: 14 }, { width: 14 }, { width: 14 }, { width: 14 }, { width: 16 },
       ];
-      sh.addRow(['Invoice', 'Date', 'Customer', 'Total (AFN)', 'Discount (AFN)', 'Net (AFN)']);
+      sh.addRow(['Invoice', 'Date', 'Customer', 'Total (AFN)', 'Discount (AFN)', 'Net (AFN)', 'Refunded (AFN)', 'Net after returns (AFN)']);
       for (const s of sales) {
         sh.addRow([
           s.invoice_no,
@@ -904,10 +938,12 @@ router.get('/export', authRequired, requireRole('admin', 'pharmacist'), async (r
           Number(s.total_amount),
           Number(s.discount),
           Number(s.net_total),
+          Number(s.refunded_total),
+          Number(s.net_total) - Number(s.refunded_total),
         ]);
       }
       sh.getColumn(2).numFmt = 'yyyy-mm-dd hh:mm';
-      for (const col of [4, 5, 6]) sh.getColumn(col).numFmt = '#,##0.00';
+      for (const col of [4, 5, 6, 7, 8]) sh.getColumn(col).numFmt = '#,##0.00';
       styleHeader(sh);
     } else if (period === 'monthly' || period === 'weekly' || period === 'range') {
       const byDay = await dayBreakdown(branchId, start, end);
@@ -1081,11 +1117,17 @@ async function stockCheckForDay(branchId, start, end) {
     [branchId, start, end]
   );
   const ret = await returnsForRange(branchId, start, end);
+  // The ledger must count exactly what `sold` and `returnsForRange`
+  // count: a voided bill is not a sale, so neither its `sale` rows nor
+  // its `sale_return` rows belong here — otherwise a bill voided on a
+  // later day falsely fails this day's check (and its own sale day's).
   const [led] = await pool.query(
-    `SELECT COALESCE(SUM(CASE WHEN type = 'sale' THEN -quantity_change ELSE 0 END), 0) AS out_qty,
-            COALESCE(SUM(CASE WHEN type = 'sale_return' THEN quantity_change ELSE 0 END), 0) AS back_qty
-     FROM stock_transactions
-     WHERE branch_id = ? AND created_at >= ? AND created_at < ?`,
+    `SELECT COALESCE(SUM(CASE WHEN st.type = 'sale' THEN -st.quantity_change ELSE 0 END), 0) AS out_qty,
+            COALESCE(SUM(CASE WHEN st.type = 'sale_return' THEN st.quantity_change ELSE 0 END), 0) AS back_qty
+     FROM stock_transactions st
+     LEFT JOIN sales sv ON sv.id = st.reference_id AND st.type IN ('sale', 'sale_return')
+     WHERE st.branch_id = ? AND st.created_at >= ? AND st.created_at < ?
+       AND (sv.id IS NULL OR sv.voided_at IS NULL)`,
     [branchId, start, end]
   );
   const soldQty = Number(sold[0].q);

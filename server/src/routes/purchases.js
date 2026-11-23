@@ -10,6 +10,7 @@ const { authRequired, requireRole } = require('../middleware/auth');
 const { auditLog } = require('../audit');
 const { isDayClosed, todayStr, dayOf, dayClosedMessage } = require('../dayClose');
 const { getMainBranchId, resetDayReview } = require('../mainBranch');
+const { round2 } = require('../money');
 
 const router = express.Router();
 
@@ -62,10 +63,13 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
     if (!Number.isInteger(qty) || qty <= 0) {
       return res.status(400).json({ status: 'error', message: `${label}: quantity must be a whole number above 0` });
     }
-    const price = it.purchase_price === undefined || it.purchase_price === null ? 0 : Number(it.purchase_price);
+    const price = it.purchase_price === undefined || it.purchase_price === null ? 0 : round2(it.purchase_price);
     if (!Number.isFinite(price) || price < 0) {
       return res.status(400).json({ status: 'error', message: `${label}: purchase_price must be a number, 0 or more` });
     }
+    // Store the rounded price back, so the total, the batch cost and the
+    // purchase line all use the same cents value.
+    it.purchase_price = price;
   }
 
   const branchId = req.user.branch_id;
@@ -73,8 +77,8 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
   const supplierId = body.supplier_id ? String(body.supplier_id) : null;
   const invoiceNo = body.invoice_no ? String(body.invoice_no).trim() : null;
   const notes = body.notes ? String(body.notes).trim() : null;
-  const totalAmount = items.reduce((sum, it) => sum + Number(it.quantity) * Number(it.purchase_price || 0), 0);
-  const paidAmount = body.paid_amount === undefined || body.paid_amount === null ? totalAmount : Number(body.paid_amount);
+  const totalAmount = round2(items.reduce((sum, it) => sum + Number(it.quantity) * Number(it.purchase_price || 0), 0));
+  const paidAmount = body.paid_amount === undefined || body.paid_amount === null ? totalAmount : round2(body.paid_amount);
   if (!Number.isFinite(paidAmount) || paidAmount < 0) {
     return res.status(400).json({ status: 'error', message: 'paid_amount must be a number, 0 or more' });
   }
@@ -89,9 +93,10 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
   }
 
   // Duplicate-invoice guard: the same invoice number twice for one supplier
-  // almost always means one delivery recorded twice. The client may confirm
-  // and resend with allow_duplicate to save it anyway.
-  if (supplierId && invoiceNo && !body.allow_duplicate) {
+  // almost always means one delivery recorded twice. The database now
+  // enforces it with a unique index too (migration-duplicate-invoice.sql),
+  // so a race between two saves cannot slip a duplicate past this check.
+  if (supplierId && invoiceNo) {
     const [dup] = await pool.query(
       'SELECT id FROM purchases WHERE branch_id = ? AND supplier_id = ? AND invoice_no = ? AND is_deleted = 0 LIMIT 1',
       [branchId, supplierId, invoiceNo]
@@ -162,15 +167,22 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
       // untouched) — the stock lands when the purchase is accepted.
       let batchId;
       const [batch] = await conn.query(
-        'SELECT id FROM medicine_batches WHERE branch_id = ? AND medicine_id = ? AND batch_no = ? AND expiry_date = ? AND is_deleted = 0 LIMIT 1',
+        'SELECT id, quantity_on_hand, purchase_price FROM medicine_batches WHERE branch_id = ? AND medicine_id = ? AND batch_no = ? AND expiry_date = ? AND is_deleted = 0 LIMIT 1',
         [branchId, medicineId, batchNo, it.expiry_date]
       );
       if (batch.length > 0) {
         batchId = batch[0].id;
         if (approvalStatus === 'approved') {
+          // Blend the new lot in at a weighted average, so the units
+          // already on hand keep their cost.
+          const oldQty = Number(batch[0].quantity_on_hand);
+          const oldPrice = Number(batch[0].purchase_price);
+          const blended = oldQty + qty > 0
+            ? Math.round(((oldQty * oldPrice + qty * price) / (oldQty + qty)) * 100) / 100
+            : price;
           await conn.query(
             'UPDATE medicine_batches SET quantity_on_hand = quantity_on_hand + ?, purchase_price = ? WHERE id = ?',
-            [qty, price, batchId]
+            [qty, blended, batchId]
           );
         }
       } else {
@@ -212,6 +224,14 @@ router.post('/', authRequired, requireRole('admin', 'pharmacist'), async (req, r
     });
   } catch (err) {
     try { await conn.rollback(); } catch (_) { /* already rolled back */ }
+    // The unique index (migration-duplicate-invoice.sql) is the last line
+    // of defence: a race that slipped past the pre-check lands here.
+    if (err && (err.code === 'ER_DUP_ENTRY' || err.errno === 1062)) {
+      return res.status(409).json({
+        status: 'error',
+        message: `DUPLICATE_INVOICE: invoice ${invoiceNo} is already recorded for this supplier`,
+      });
+    }
     return res.status(500).json({ status: 'error', message: err.code || err.message });
   } finally {
     conn.release();
@@ -289,10 +309,10 @@ router.get('/:id', authRequired, async (req, res) => {
        WHERE pi.purchase_id = ?`,
       [req.params.id]
     );
-    const returnedTotal = items.reduce(
+    const returnedTotal = round2(items.reduce(
       (sum, it) => sum + Number(it.returned_quantity) * Number(it.purchase_price),
       0
-    );
+    ));
     return res.json({ status: 'ok', purchase: { ...head[0], returned_total: returnedTotal, items } });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });
@@ -384,6 +404,7 @@ router.post('/:id/return', authRequired, requireRole('admin', 'pharmacist'), asy
       );
       returnedTotal += qty * Number(item.purchase_price);
     }
+    returnedTotal = round2(returnedTotal);
     await conn.commit();
     auditLog(req, 'purchase.returned', 'purchases', req.params.id, {
       summary: `Return to supplier on ${head[0].invoice_no}: ${returnedTotal} AFN`,
@@ -432,10 +453,11 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
     if (!Number.isInteger(qty) || qty <= 0) {
       return res.status(400).json({ status: 'error', message: `${label}: quantity must be a whole number above 0` });
     }
-    const price = it.purchase_price === undefined || it.purchase_price === null ? 0 : Number(it.purchase_price);
+    const price = it.purchase_price === undefined || it.purchase_price === null ? 0 : round2(it.purchase_price);
     if (!Number.isFinite(price) || price < 0) {
       return res.status(400).json({ status: 'error', message: `${label}: purchase_price must be a number, 0 or more` });
     }
+    it.purchase_price = price;
   }
 
   const branchId = req.user.branch_id;
@@ -486,7 +508,7 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
       }
     }
 
-    const supplierId = body.supplier_id ? String(body.supplier_id) : null;
+    const supplierId = body.supplier_id ? String(body.supplier_id) : purchase.supplier_id;
     if (supplierId) {
       const [sup] = await conn.query(
         'SELECT id FROM suppliers WHERE id = ? AND branch_id = ? AND is_deleted = 0 LIMIT 1',
@@ -497,11 +519,11 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
         return res.status(400).json({ status: 'error', message: 'Supplier not found in this branch' });
       }
     }
-    const invoiceNo = body.invoice_no ? String(body.invoice_no).trim() : null;
+    const invoiceNo = body.invoice_no ? String(body.invoice_no).trim() : purchase.invoice_no;
     const notes = body.notes ? String(body.notes).trim() : purchase.notes;
-    const newTotal = items.reduce((sum, it) => sum + Number(it.quantity) * Number(it.purchase_price || 0), 0);
+    const newTotal = round2(items.reduce((sum, it) => sum + Number(it.quantity) * Number(it.purchase_price || 0), 0));
     const paidAmount =
-      body.paid_amount === undefined || body.paid_amount === null ? Number(purchase.paid_amount) : Number(body.paid_amount);
+      body.paid_amount === undefined || body.paid_amount === null ? Number(purchase.paid_amount) : round2(body.paid_amount);
     if (!Number.isFinite(paidAmount) || paidAmount < 0) {
       await conn.rollback();
       return res.status(400).json({ status: 'error', message: 'paid_amount must be a number, 0 or more' });
@@ -801,7 +823,7 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
     // "pending" so the boss sees the new numbers (same hook as sales,
     // awaited for the same reason). Waiting/rejected purchases never
     // reach this path, and their figures were never part of a review.
-    await resetDayReview(pool, branchId, dayOf(purchase.purchase_date)).catch(() => {});
+    await resetDayReview(pool, branchId, dayOf(purchase.purchase_date)).catch((err) => console.error('resetDayReview failed:', err.message));
     auditLog(req, 'purchase.updated', 'purchases', purchase.id, {
       summary: `Purchase ${invoiceNo} edited: total ${newTotal} AFN, paid ${paidAmount} AFN`,
       invoice_no: invoiceNo, total_amount: newTotal, paid_amount: paidAmount,
@@ -812,6 +834,14 @@ router.put('/:id', authRequired, requireRole('admin', 'pharmacist'), async (req,
     });
   } catch (err) {
     try { await conn.rollback(); } catch (_) { /* already rolled back */ }
+    // Editing an invoice number onto one that already exists for this
+    // supplier is refused by the unique index (migration-duplicate-invoice.sql).
+    if (err && (err.code === 'ER_DUP_ENTRY' || err.errno === 1062)) {
+      return res.status(409).json({
+        status: 'error',
+        message: `DUPLICATE_INVOICE: invoice ${invoiceNo} is already recorded for this supplier`,
+      });
+    }
     return res.status(err.statusCode || 500).json({ status: 'error', message: err.statusCode ? err.message : err.code || err.message });
   } finally {
     conn.release();
@@ -861,28 +891,38 @@ router.delete('/:id', authRequired, requireRole('admin', 'pharmacist'), async (r
     }
 
     const [items] = await conn.query(
-      `SELECT pi.medicine_id, pi.batch_id, pi.quantity, b.quantity_on_hand,
+      `SELECT pi.id, pi.medicine_id, pi.batch_id, pi.quantity, b.quantity_on_hand,
+              COALESCE(pr.returned_qty, 0) AS returned_qty,
               m.name AS medicine_name
        FROM purchase_items pi
        JOIN medicine_batches b ON b.id = pi.batch_id
        JOIN medicines m ON m.id = pi.medicine_id
+       LEFT JOIN (
+         SELECT purchase_item_id, SUM(quantity) AS returned_qty
+         FROM purchase_returns WHERE is_deleted = 0 GROUP BY purchase_item_id
+       ) pr ON pr.purchase_item_id = pi.id
        WHERE pi.purchase_id = ?`,
       [req.params.id]
     );
     for (const it of items) {
-      if (Number(it.quantity_on_hand) < Number(it.quantity)) {
+      // Only the part that was never sent back to the supplier is still
+      // in stock to reverse — units already returned left long ago.
+      const reversal = Number(it.quantity) - Number(it.returned_qty);
+      if (Number(it.quantity_on_hand) < reversal) {
         await conn.rollback();
         return res.status(400).json({
           status: 'error',
-          message: `Cannot delete this purchase: ${Number(it.quantity) - Number(it.quantity_on_hand)} units of ${it.medicine_name} from it were already sold`,
+          message: `Cannot delete this purchase: ${reversal - Number(it.quantity_on_hand)} units of ${it.medicine_name} from it were already sold`,
         });
       }
     }
     for (const it of items) {
-      await conn.query('UPDATE medicine_batches SET quantity_on_hand = quantity_on_hand - ? WHERE id = ?', [it.quantity, it.batch_id]);
+      const reversal = Number(it.quantity) - Number(it.returned_qty);
+      if (reversal <= 0) continue;
+      await conn.query('UPDATE medicine_batches SET quantity_on_hand = quantity_on_hand - ? WHERE id = ?', [reversal, it.batch_id]);
       await conn.query(
         "INSERT INTO stock_transactions (id, branch_id, medicine_id, batch_id, type, quantity_change, reference_id, created_by) VALUES (?, ?, ?, ?, 'adjustment', ?, ?, ?)",
-        [uuidv4(), branchId, it.medicine_id, it.batch_id, -Number(it.quantity), req.params.id, req.user.sub]
+        [uuidv4(), branchId, it.medicine_id, it.batch_id, -reversal, req.params.id, req.user.sub]
       );
     }
     await conn.query('UPDATE purchases SET is_deleted = 1 WHERE id = ?', [req.params.id]);
@@ -890,7 +930,7 @@ router.delete('/:id', authRequired, requireRole('admin', 'pharmacist'), async (r
     // The purchase day's figures changed — a reviewed day returns to
     // "pending" so the boss sees the new numbers (same hook as sales,
     // awaited for the same reason).
-    await resetDayReview(pool, branchId, deletePurchaseDay).catch(() => {});
+    await resetDayReview(pool, branchId, deletePurchaseDay).catch((err) => console.error('resetDayReview failed:', err.message));
     auditLog(req, 'purchase.deleted', 'purchases', req.params.id, {
       summary: `Purchase ${head[0].invoice_no} deleted`,
       invoice_no: head[0].invoice_no,

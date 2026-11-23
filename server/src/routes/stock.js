@@ -203,7 +203,7 @@ router.post('/batches/:batchId/write-off', authRequired, requireRole('admin', 'p
   try {
     await conn.beginTransaction();
     const [batches] = await conn.query(
-      `SELECT b.id, b.medicine_id, b.batch_no, b.expiry_date, b.quantity_on_hand,
+      `SELECT b.id, b.medicine_id, b.batch_no, b.expiry_date, b.quantity_on_hand, b.purchase_price,
               m.name AS medicine_name
        FROM medicine_batches b
        JOIN medicines m ON m.id = b.medicine_id
@@ -237,15 +237,18 @@ router.post('/batches/:batchId/write-off', authRequired, requireRole('admin', 'p
       [uuidv4(), branchId, batch.medicine_id, batchId, -qty, batchId, reason, userId]
     );
     await conn.commit();
+    // The loss in money: what those units cost (their batch cost price).
+    const amount = Math.round(qty * Number(batch.purchase_price) * 100) / 100;
     auditLog(req, 'stock.write_off', 'medicine_batches', batchId, {
-      summary: `Wrote off ${qty} of ${batch.medicine_name} (batch ${batch.batch_no}): ${reason}`,
-      medicine_name: batch.medicine_name, batch_no: batch.batch_no, quantity: qty, reason,
+      summary: `Wrote off ${qty} of ${batch.medicine_name} (batch ${batch.batch_no}): ${reason} — ${amount} AFN`,
+      medicine_name: batch.medicine_name, batch_no: batch.batch_no, quantity: qty, amount, reason,
     });
     return res.json({
       status: 'ok',
       medicine_name: batch.medicine_name,
       batch_no: batch.batch_no,
       quantity: qty,
+      amount,
       remaining: Number(batch.quantity_on_hand) - qty,
     });
   } catch (err) {
@@ -262,6 +265,7 @@ router.get('/write-offs', authRequired, async (req, res) => {
     const [rows] = await pool.query(
       `SELECT st.created_at, st.quantity_change, st.reason,
               m.name AS medicine_name, b.batch_no, b.expiry_date,
+              ROUND(ABS(st.quantity_change) * b.purchase_price, 2) AS amount,
               u.full_name AS written_by
        FROM stock_transactions st
        JOIN medicines m ON m.id = st.medicine_id

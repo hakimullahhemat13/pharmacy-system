@@ -70,9 +70,10 @@ router.get('/', authRequired, async (req, res) => {
            FROM sales s
            LEFT JOIN (
              SELECT st.reference_id AS sale_id,
-                    SUM(st.quantity_change * i.unit_price) AS refunded_total
+                    SUM(st.quantity_change * i.unit_price * (CASE WHEN sv.total_amount > 0 THEN sv.net_total / sv.total_amount ELSE 0 END)) AS refunded_total
              FROM stock_transactions st
              JOIN sale_items i ON i.sale_id = st.reference_id AND i.batch_id = st.batch_id
+             JOIN sales sv ON sv.id = st.reference_id
              WHERE st.type = 'sale_return'
              GROUP BY st.reference_id
            ) rt ON rt.sale_id = s.id
@@ -114,9 +115,10 @@ router.get('/:id/history', authRequired, async (req, res) => {
        LEFT JOIN sale_items si ON si.sale_id = s.id
        LEFT JOIN (
          SELECT st.reference_id AS sale_id,
-                SUM(st.quantity_change * i.unit_price) AS refunded_total
+                SUM(st.quantity_change * i.unit_price * (CASE WHEN sv.total_amount > 0 THEN sv.net_total / sv.total_amount ELSE 0 END)) AS refunded_total
          FROM stock_transactions st
          JOIN sale_items i ON i.sale_id = st.reference_id AND i.batch_id = st.batch_id
+         JOIN sales sv ON sv.id = st.reference_id
          WHERE st.type = 'sale_return'
          GROUP BY st.reference_id
        ) rt ON rt.sale_id = s.id
@@ -131,26 +133,35 @@ router.get('/:id/history', authRequired, async (req, res) => {
       [req.params.id, req.user.branch_id]
     );
     // Same money math as the sales list: a NULL paid_amount means the bill
-    // was paid in full at the till; voided bills owe nothing.
+    // was paid in full at the till; a voided bill keeps no money (paid 0,
+    // refunded = what was paid, due 0).
     const sales = rows.map((r) => {
       const net = Number(r.net_total);
       const refunded = Math.round(Number(r.refunded_total) * 100) / 100;
       const paidAtSale = r.paid_amount === null ? net : Number(r.paid_amount);
       const paidTotal = Math.round((paidAtSale + Number(r.payments_sum)) * 100) / 100;
+      if (r.voided_at) {
+        return { ...r, refunded_total: paidTotal, paid_total: 0, due_amount: 0, voided: 1 };
+      }
       return {
         ...r,
         refunded_total: refunded,
         paid_total: paidTotal,
-        due_amount: r.voided_at
-          ? 0
-          : Math.max(0, Math.round((net - refunded - paidTotal) * 100) / 100),
-        voided: r.voided_at ? 1 : 0,
+        due_amount: Math.max(0, Math.round((net - refunded - paidTotal) * 100) / 100),
+        voided: 0,
       };
     });
-    const totals = sales.reduce(
-      (acc, s) => ({ bills: acc.bills + 1, total_spent: acc.total_spent + Number(s.net_total || 0) }),
-      { bills: 0, total_spent: 0 }
-    );
+    // Totals count only bills that still stand: a voided bill spent
+    // nothing, and a returned part is not spent either.
+    const totals = sales
+      .filter((s) => !s.voided_at)
+      .reduce(
+        (acc, s) => ({
+          bills: acc.bills + 1,
+          total_spent: acc.total_spent + (Number(s.net_total || 0) - Number(s.refunded_total || 0)),
+        }),
+        { bills: 0, total_spent: 0 }
+      );
     return res.json({ status: 'ok', customer: cust[0], totals, sales });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.code || err.message });

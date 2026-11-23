@@ -12,6 +12,7 @@ const { authRequired, requireRole } = require('../middleware/auth');
 const { auditLog } = require('../audit');
 const { isDayClosed, todayStr, dayOf, dayClosedMessage } = require('../dayClose');
 const { resetDayReview } = require('../mainBranch');
+const { round2 } = require('../money');
 
 const router = express.Router();
 
@@ -40,7 +41,17 @@ router.post('/', authRequired, async (req, res) => {
       }
     }
   }
-  const discount = body.discount === undefined || body.discount === null ? 0 : Number(body.discount);
+  // One line per medicine: the same medicine twice would double-count
+  // a later return (the refund joins on the batch, not the line).
+  const seenMedicines = new Set();
+  for (const it of items) {
+    const mid = String(it.medicine_id);
+    if (seenMedicines.has(mid)) {
+      return res.status(400).json({ status: 'error', message: 'The same medicine appears twice in this sale — add its quantity once' });
+    }
+    seenMedicines.add(mid);
+  }
+  const discount = body.discount === undefined || body.discount === null ? 0 : round2(body.discount);
   if (!Number.isFinite(discount) || discount < 0) {
     return res.status(400).json({ status: 'error', message: 'discount must be a number, 0 or more' });
   }
@@ -49,7 +60,7 @@ router.post('/', authRequired, async (req, res) => {
   // Missing means "paid in full"; less than the total means the rest is owed.
   let paidAmount = null;
   if (body.paid_amount !== undefined && body.paid_amount !== null && body.paid_amount !== '') {
-    paidAmount = Number(body.paid_amount);
+    paidAmount = round2(body.paid_amount);
     if (!Number.isFinite(paidAmount) || paidAmount < 0) {
       return res.status(400).json({ status: 'error', message: 'paid_amount must be a number, 0 or more' });
     }
@@ -148,11 +159,14 @@ router.post('/', authRequired, async (req, res) => {
       }
     }
 
+    // Round to cents before the checks and the insert, so the stored
+    // total always equals the sum of the stored lines.
+    totalAmount = round2(totalAmount);
     if (discount > totalAmount) {
       await conn.rollback();
       return res.status(400).json({ status: 'error', message: 'Discount cannot be more than the sale total' });
     }
-    const netTotal = totalAmount - discount;
+    const netTotal = round2(totalAmount - discount);
 
     if (paidAmount === null) paidAmount = netTotal;
     if (paidAmount > netTotal) {
@@ -190,7 +204,7 @@ router.post('/', authRequired, async (req, res) => {
     // Awaited, not fire-and-forget: the day must already be pending
     // again when this response returns, or a reader checking right
     // after the sale still sees the old accepted review.
-    await resetDayReview(pool, branchId, today).catch(() => {});
+    await resetDayReview(pool, branchId, today).catch((err) => console.error('resetDayReview failed:', err.message));
     auditLog(req, 'sale.created', 'sales', saleId, {
       summary: `Sale ${invoiceNo}: ${netTotal} AFN net, ${paidAmount} AFN paid`,
       invoice_no: invoiceNo, net_total: netTotal, paid_amount: paidAmount,
@@ -212,12 +226,18 @@ router.post('/', authRequired, async (req, res) => {
 // owed. A NULL paid_amount (sales recorded before credit tracking existed)
 // counts as paid in full at the till.
 async function saleMoney(db, sale) {
+  // A return refunds what the customer actually paid for the item: the
+  // bill discount is shared pro-rata, so a returned item refunds
+  // qty x unit_price x (net_total / total_amount) — never the gross price.
+  // (Discount 0 leaves the factor at 1, so the old behaviour is unchanged.)
+  const totalAmount = Number(sale.total_amount) || 0;
+  const factor = totalAmount > 0 ? Number(sale.net_total) / totalAmount : 0;
   const [rt] = await db.query(
-    `SELECT COALESCE(SUM(st.quantity_change * i.unit_price), 0) AS refunded
+    `SELECT COALESCE(SUM(st.quantity_change * i.unit_price * ?), 0) AS refunded
      FROM stock_transactions st
      JOIN sale_items i ON i.sale_id = st.reference_id AND i.batch_id = st.batch_id
      WHERE st.type = 'sale_return' AND st.reference_id = ?`,
-    [sale.id]
+    [factor, sale.id]
   );
   const [pay] = await db.query(
     'SELECT COALESCE(SUM(amount), 0) AS paid FROM sale_payments WHERE sale_id = ? AND is_deleted = 0',
@@ -227,6 +247,12 @@ async function saleMoney(db, sale) {
   const refunded = Math.round(Number(rt[0].refunded) * 100) / 100;
   const paidAtSale = sale.paid_amount === null || sale.paid_amount === undefined ? net : Number(sale.paid_amount);
   const paidTotal = Math.round((paidAtSale + Number(pay[0].paid)) * 100) / 100;
+  // A voided bill keeps no money: what was paid went straight back, so
+  // the bill shows paid 0, refunded = what was paid, and due 0 — never
+  // a paid total alongside a refund larger than the bill.
+  if (sale.voided_at) {
+    return { refunded_total: paidTotal, paid_total: 0, due_amount: 0 };
+  }
   const due = Math.max(0, Math.round((net - refunded - paidTotal) * 100) / 100);
   return { refunded_total: refunded, paid_total: paidTotal, due_amount: due };
 }
@@ -279,9 +305,10 @@ router.get('/', authRequired, async (req, res) => {
        LEFT JOIN (
          SELECT st.reference_id AS sale_id,
                 SUM(st.quantity_change) AS items_returned,
-                SUM(st.quantity_change * i.unit_price) AS refunded_total
+                SUM(st.quantity_change * i.unit_price * (CASE WHEN sv.total_amount > 0 THEN sv.net_total / sv.total_amount ELSE 0 END)) AS refunded_total
          FROM stock_transactions st
          JOIN sale_items i ON i.sale_id = st.reference_id AND i.batch_id = st.batch_id
+         JOIN sales sv ON sv.id = st.reference_id
          WHERE st.type = 'sale_return'
          GROUP BY st.reference_id
        ) rt ON rt.sale_id = s.id
@@ -298,6 +325,18 @@ router.get('/', authRequired, async (req, res) => {
       const refunded = Math.round(Number(r.refunded_total) * 100) / 100;
       const paidAtSale = r.paid_amount === null ? net : Number(r.paid_amount);
       const paidTotal = Math.round((paidAtSale + Number(r.payments_sum)) * 100) / 100;
+      // A voided bill keeps no money: paid 0, refunded = what was paid.
+      if (r.voided_at) {
+        return {
+          ...r,
+          items_sold: Number(r.items_sold),
+          items_returned: Number(r.items_returned),
+          refunded_total: paidTotal,
+          paid_total: 0,
+          due_amount: 0,
+          voided: 1,
+        };
+      }
       return {
         ...r,
         items_sold: Number(r.items_sold),
@@ -319,8 +358,8 @@ router.get('/:id', authRequired, async (req, res) => {
   try {
     const [head] = await pool.query(
       `SELECT s.id, s.invoice_no, s.sale_date, s.total_amount, s.discount, s.net_total,
-              s.paid_amount, s.voided_at, s.created_by,
-              c.name AS customer_name,
+              s.paid_amount, s.voided_at, s.created_by, s.customer_id,
+              c.name AS customer_name, c.phone AS customer_phone,
               u.full_name AS seller_name
        FROM sales s
        LEFT JOIN customers c ON c.id = s.customer_id
@@ -359,6 +398,43 @@ router.get('/:id', authRequired, async (req, res) => {
       [req.params.id]
     );
     const money = await saleMoney(pool, head[0]);
+    // Old balance for the invoice footer: what this customer still owed on
+    // their EARLIER bills — only bills created before this one
+    // (sale_date < this bill's sale_date, never this bill itself), so a
+    // reprint never drifts when other bills change. Same due formula as
+    // the customers list, so the two always agree.
+    let oldBalance = 0;
+    if (head[0].customer_id) {
+      const [dueRows] = await pool.query(
+        `SELECT COALESCE(SUM(due), 0) AS due_total FROM (
+           SELECT GREATEST(
+             s.net_total
+             - COALESCE(rt.refunded_total, 0)
+             - (CASE WHEN s.paid_amount IS NULL THEN s.net_total ELSE s.paid_amount END
+                + COALESCE(pay.paid_sum, 0)),
+             0
+           ) AS due
+           FROM sales s
+           LEFT JOIN (
+             SELECT st.reference_id AS sale_id,
+                    SUM(st.quantity_change * i.unit_price * (CASE WHEN sv.total_amount > 0 THEN sv.net_total / sv.total_amount ELSE 0 END)) AS refunded_total
+             FROM stock_transactions st
+             JOIN sale_items i ON i.sale_id = st.reference_id AND i.batch_id = st.batch_id
+             JOIN sales sv ON sv.id = st.reference_id
+             WHERE st.type = 'sale_return'
+             GROUP BY st.reference_id
+           ) rt ON rt.sale_id = s.id
+           LEFT JOIN (
+             SELECT sale_id, SUM(amount) AS paid_sum
+             FROM sale_payments WHERE is_deleted = 0 GROUP BY sale_id
+           ) pay ON pay.sale_id = s.id
+           WHERE s.is_deleted = 0 AND s.customer_id = ? AND s.id <> ? AND s.sale_date < ?
+         ) per_sale`,
+        [head[0].customer_id, head[0].id, head[0].sale_date]
+      );
+      const dueTotal = Math.round(Number(dueRows[0].due_total) * 100) / 100;
+      oldBalance = Math.max(0, Math.round((dueTotal - money.due_amount) * 100) / 100);
+    }
     return res.json({
       status: 'ok',
       sale: {
@@ -366,6 +442,7 @@ router.get('/:id', authRequired, async (req, res) => {
         items: itemsWithReturns,
         payments: payments.map((p) => ({ ...p, amount: Number(p.amount) })),
         ...money,
+        old_balance: oldBalance,
       },
     });
   } catch (err) {
@@ -479,8 +556,8 @@ router.post('/:id/return', authRequired, requireRole('admin', 'pharmacist'), asy
     }
 
     await conn.commit();
-    await resetDayReview(pool, branchId, returnDay).catch(() => {});
-    await resetDayReview(pool, branchId, saleDay).catch(() => {});
+    await resetDayReview(pool, branchId, returnDay).catch((err) => console.error('resetDayReview failed:', err.message));
+    await resetDayReview(pool, branchId, saleDay).catch((err) => console.error('resetDayReview failed:', err.message));
     auditLog(req, 'sale.returned', 'sales', saleId, {
       summary: `Return on ${sale[0].invoice_no}: ${refundTotal} AFN refunded`,
       invoice_no: sale[0].invoice_no, refund_total: refundTotal,
@@ -503,7 +580,7 @@ router.post('/:id/return', authRequired, requireRole('admin', 'pharmacist'), asy
 // (por) bill. Body: { amount }. One transaction; a payment can never
 // exceed what is still owed on the bill.
 router.post('/:id/payment', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
-  const amount = Number((req.body || {}).amount);
+  const amount = round2(Number((req.body || {}).amount));
   if (!Number.isFinite(amount) || amount <= 0) {
     return res.status(400).json({ status: 'error', message: 'amount must be a number above 0' });
   }
@@ -626,8 +703,8 @@ router.post('/:id/void', authRequired, requireRole('admin', 'pharmacist'), async
 
     await conn.query('UPDATE sales SET voided_at = NOW() WHERE id = ?', [saleId]);
     await conn.commit();
-    await resetDayReview(pool, branchId, voidDay).catch(() => {});
-    await resetDayReview(pool, branchId, voidSaleDay).catch(() => {});
+    await resetDayReview(pool, branchId, voidDay).catch((err) => console.error('resetDayReview failed:', err.message));
+    await resetDayReview(pool, branchId, voidSaleDay).catch((err) => console.error('resetDayReview failed:', err.message));
     auditLog(req, 'sale.voided', 'sales', saleId, {
       summary: `Bill ${sale[0].invoice_no} voided`,
       invoice_no: sale[0].invoice_no,

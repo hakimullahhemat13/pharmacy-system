@@ -13,6 +13,8 @@ const { authRequired, requireRole } = require('../middleware/auth');
 const { isDayClosed, todayStr, dayClosedMessage } = require('../dayClose');
 const { auditLog } = require('../audit');
 
+const { round2 } = require('../money');
+
 const router = express.Router();
 
 // Hakimullah's rule: a mobile number, when given, is exactly 10 digits —
@@ -60,12 +62,15 @@ async function supplierMoney(db, branchId, supplierId) {
      WHERE pu.branch_id = ? AND pu.supplier_id = ? AND pr.is_deleted = 0 AND pu.is_deleted = 0`,
     [branchId, supplierId]
   );
-  const purchasesTotal = Number(p[0].purchases_total) - Number(ret[0].returns_total);
-  const paidTotal = Number(p[0].paid_at_purchase) + Number(pay[0].payments_total);
+  const purchasesTotal = Math.round((Number(p[0].purchases_total) - Number(ret[0].returns_total)) * 100) / 100;
+  const paidTotal = Math.round((Number(p[0].paid_at_purchase) + Number(pay[0].payments_total)) * 100) / 100;
+  // Signed: a negative due is real — the supplier owes the pharmacy
+  // (overpaid, or goods sent back). Never clamp it to zero, or that
+  // credit is erased and can never be recovered.
   return {
     purchases_total: purchasesTotal,
     paid_total: paidTotal,
-    due_total: Math.max(0, purchasesTotal - paidTotal),
+    due_total: Math.round((purchasesTotal - paidTotal) * 100) / 100,
   };
 }
 
@@ -148,7 +153,7 @@ router.get('/', authRequired, async (req, res) => {
     );
     const suppliers = rows.map((r) => ({
       ...r,
-      due_total: Math.max(0, Number(r.purchases_total) - Number(r.paid_total)),
+      due_total: Math.round((Number(r.purchases_total) - Number(r.paid_total)) * 100) / 100,
     }));
     return res.json({ status: 'ok', suppliers });
   } catch (err) {
@@ -177,7 +182,7 @@ router.get('/:id', authRequired, async (req, res) => {
          SELECT purchase_id, SUM(quantity * unit_price) AS returned_total
          FROM purchase_returns WHERE is_deleted = 0 GROUP BY purchase_id
        ) r ON r.purchase_id = pu.id
-       WHERE pu.branch_id = ? AND pu.supplier_id = ? AND pu.is_deleted = 0
+       WHERE pu.branch_id = ? AND pu.supplier_id = ? AND pu.is_deleted = 0 AND pu.approval_status = 'approved'
        ORDER BY pu.purchase_date DESC, pu.created_at DESC`,
       [branchId, req.params.id]
     );
@@ -255,10 +260,13 @@ router.delete('/:id', authRequired, requireRole('admin', 'pharmacist'), async (r
       return res.status(404).json({ status: 'error', message: 'Supplier not found' });
     }
     const money = await supplierMoney(pool, req.user.branch_id, req.params.id);
-    if (money.due_total > 0) {
+    if (money.due_total !== 0) {
       return res.status(400).json({
         status: 'error',
-        message: `Cannot delete ${rows[0].name}: ${money.due_total} AFN still due. Record the payment first.`,
+        message:
+          money.due_total > 0
+            ? `Cannot delete ${rows[0].name}: ${money.due_total} AFN still due. Record the payment first.`
+            : `Cannot delete ${rows[0].name}: the supplier still owes you ${Math.abs(money.due_total)} AFN.`,
       });
     }
     await pool.query('UPDATE suppliers SET is_deleted = 1 WHERE id = ? AND branch_id = ?', [
@@ -279,7 +287,7 @@ router.delete('/:id', authRequired, requireRole('admin', 'pharmacist'), async (r
 // Records a later payment toward what the pharmacy owes this supplier.
 // Never more than the current due.
 router.post('/:id/payment', authRequired, requireRole('admin', 'pharmacist'), async (req, res) => {
-  const amount = Number((req.body || {}).amount);
+  const amount = round2(Number((req.body || {}).amount));
   if (!Number.isFinite(amount) || amount <= 0) {
     return res.status(400).json({ status: 'error', message: 'Payment amount must be more than zero' });
   }
@@ -303,6 +311,16 @@ router.post('/:id/payment', authRequired, requireRole('admin', 'pharmacist'), as
       return res.status(404).json({ status: 'error', message: 'Supplier not found' });
     }
     const money = await supplierMoney(conn, branchId, req.params.id);
+    if (money.due_total <= 0) {
+      await conn.rollback();
+      return res.status(400).json({
+        status: 'error',
+        message:
+          money.due_total < 0
+            ? `This supplier owes you ${Math.abs(money.due_total)} AFN — no payment is due.`
+            : 'Nothing is due to this supplier.',
+      });
+    }
     if (amount > money.due_total) {
       await conn.rollback();
       return res.status(400).json({
@@ -323,7 +341,7 @@ router.post('/:id/payment', authRequired, requireRole('admin', 'pharmacist'), as
     return res.status(201).json({
       status: 'ok',
       payment: { id, supplier_id: req.params.id, amount },
-      due_total: money.due_total - amount,
+      due_total: round2(money.due_total - amount),
     });
   } catch (err) {
     try { await conn.rollback(); } catch (_) { /* already rolled back */ }

@@ -1,4 +1,9 @@
 // Pharmacy Management System — Backend entry point
+// The pharmacy is in Afghanistan: force the server's timezone to
+// Asia/Kabul (UTC+4:30, no DST) so every date/time the server produces
+// — sale times, "today", Day Close dates, backups — matches the
+// pharmacy's clock, even if the computer's own timezone is set wrong.
+process.env.TZ = 'Asia/Kabul';
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();

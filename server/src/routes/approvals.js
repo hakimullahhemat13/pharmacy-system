@@ -22,7 +22,7 @@ const pool = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
 const { auditLog } = require('../audit');
 const { getMainBranchId, resetDayReview } = require('../mainBranch');
-const { dayOf } = require('../dayClose');
+const { dayOf, isDayClosed, dayClosedMessage } = require('../dayClose');
 
 const router = express.Router();
 
@@ -99,7 +99,7 @@ async function daySummary(branchId, date) {
   );
   const [retRows] = await pool.query(
     `SELECT COALESCE(SUM(sr.quantity_change), 0) AS qty,
-            COALESCE(SUM(sr.quantity_change * si.unit_price), 0) AS value,
+            COALESCE(SUM(sr.quantity_change * si.unit_price * (CASE WHEN sv.total_amount > 0 THEN sv.net_total / sv.total_amount ELSE 0 END)), 0) AS value,
             COALESCE(SUM(sr.quantity_change * si.cost_price), 0) AS cost
      FROM stock_transactions sr
      JOIN sale_items si ON si.sale_id = sr.reference_id AND si.batch_id = sr.batch_id
@@ -125,6 +125,18 @@ async function daySummary(branchId, date) {
        AND p.purchase_date >= ? AND p.purchase_date < ?`,
     [branchId, date, end]
   );
+  // Goods sent back to a supplier on this day (valued on the return day,
+  // the same convention as the reports): shown as their own line, so the
+  // day's purchases and the reports always reconcile.
+  const [purchRetRows] = await pool.query(
+    `SELECT COALESCE(SUM(pr.quantity), 0) AS qty,
+            COALESCE(SUM(pr.quantity * pr.unit_price), 0) AS value
+     FROM purchase_returns pr
+     JOIN purchases p ON p.id = pr.purchase_id
+     WHERE p.branch_id = ? AND pr.is_deleted = 0 AND p.is_deleted = 0 AND p.approval_status = 'approved'
+       AND pr.created_at >= ? AND pr.created_at < ?`,
+    [branchId, date, end]
+  );
   const revenue = Number(salesRows[0].revenue) - Number(retRows[0].value);
   const cost = Number(itemRows[0].cost_total) - Number(retRows[0].cost);
   return {
@@ -138,6 +150,8 @@ async function daySummary(branchId, date) {
     purchase_bills: Number(purchRows[0].bills),
     items_bought: Number(purchItemRows[0].items),
     purchase_cost: Number(purchRows[0].cost),
+    purchase_returns_total: Number(purchRetRows[0].value),
+    purchase_returned_items: Number(purchRetRows[0].qty),
   };
 }
 
@@ -166,6 +180,10 @@ async function activityDays({ branchId = null, excludeMainId = null, limit = nul
        SELECT branch_id, DATE(purchase_date) AS day FROM purchases
        WHERE is_deleted = 0 AND approval_status = 'approved'
        GROUP BY branch_id, DATE(purchase_date)
+       UNION
+       SELECT branch_id, DATE(created_at) AS day FROM stock_transactions
+       WHERE type IN ('sale_return', 'purchase_return')
+       GROUP BY branch_id, DATE(created_at)
      ) d
      JOIN branches b ON b.id = d.branch_id
      LEFT JOIN branch_day_reviews r ON r.branch_id = d.branch_id AND r.review_date = d.day
@@ -409,8 +427,10 @@ router.post('/purchases/:id/accept', authRequired, requireMainAdmin, async (req,
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
+    // FOR UPDATE locks this purchase row for the transaction, so two
+    // concurrent accepts cannot both land the same stock.
     const [head] = await conn.query(
-      'SELECT id, branch_id, invoice_no, purchase_date FROM purchases WHERE id = ? AND is_deleted = 0 AND approval_status = ? LIMIT 1',
+      'SELECT id, branch_id, invoice_no, purchase_date FROM purchases WHERE id = ? AND is_deleted = 0 AND approval_status = ? LIMIT 1 FOR UPDATE',
       [req.params.id, 'pending']
     );
     if (!head[0]) {
@@ -418,6 +438,13 @@ router.post('/purchases/:id/accept', authRequired, requireMainAdmin, async (req,
       return res.status(400).json({ status: 'error', message: 'This purchase is not waiting for approval' });
     }
     const purchase = head[0];
+    // An accepted purchase lands stock and money on its purchase day —
+    // a closed day takes no new money.
+    const purchaseDay = dayOf(purchase.purchase_date);
+    if (await isDayClosed(conn, purchase.branch_id, purchaseDay)) {
+      await conn.rollback();
+      return res.status(400).json({ status: 'error', message: dayClosedMessage(purchaseDay) });
+    }
     const [items] = await conn.query(
       `SELECT pi.medicine_id, pi.batch_id, pi.quantity, pi.purchase_price,
               m.name AS medicine_name, m.approval_status AS medicine_status,
@@ -444,9 +471,22 @@ router.post('/purchases/:id/accept', authRequired, requireMainAdmin, async (req,
       }
     }
     for (const it of items) {
+      // The batch keeps one cost price: blend the new lot in at a
+      // weighted average, so the units already on hand keep their cost.
+      const [batchRows] = await conn.query(
+        'SELECT quantity_on_hand, purchase_price FROM medicine_batches WHERE id = ? LIMIT 1 FOR UPDATE',
+        [it.batch_id]
+      );
+      const oldQty = batchRows[0] ? Number(batchRows[0].quantity_on_hand) : 0;
+      const oldPrice = batchRows[0] ? Number(batchRows[0].purchase_price) : 0;
+      const newQty = Number(it.quantity);
+      const newPrice = Number(it.purchase_price);
+      const blended = oldQty + newQty > 0
+        ? Math.round(((oldQty * oldPrice + newQty * newPrice) / (oldQty + newQty)) * 100) / 100
+        : newPrice;
       await conn.query(
         'UPDATE medicine_batches SET quantity_on_hand = quantity_on_hand + ?, purchase_price = ? WHERE id = ?',
-        [Number(it.quantity), Number(it.purchase_price), it.batch_id]
+        [newQty, blended, it.batch_id]
       );
       await conn.query(
         "INSERT INTO stock_transactions (id, branch_id, medicine_id, batch_id, type, quantity_change, reference_id, created_by) VALUES (?, ?, ?, ?, 'purchase', ?, ?, ?)",
@@ -460,7 +500,7 @@ router.post('/purchases/:id/accept', authRequired, requireMainAdmin, async (req,
     await conn.commit();
     // Awaited: the day must already be pending again when this
     // response returns (see the same hook in sales.js).
-    await resetDayReview(pool, purchase.branch_id, dayOf(purchase.purchase_date)).catch(() => {});
+    await resetDayReview(pool, purchase.branch_id, dayOf(purchase.purchase_date)).catch((err) => console.error('resetDayReview failed:', err.message));
     auditLog(req, 'purchase.approved', 'purchases', req.params.id, {
       summary: `Purchase approved: ${purchase.invoice_no || purchase.id}`,
       invoice_no: purchase.invoice_no,

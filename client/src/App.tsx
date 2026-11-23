@@ -82,6 +82,8 @@ interface SaleDetail {
   paid_amount: number | string | null;
   voided_at: string | null;
   customer_name: string | null;
+  customer_phone?: string | null;
+  old_balance?: number;
   seller_name?: string | null;
   items: SaleItemDetail[];
   payments?: SalePayment[];
@@ -336,7 +338,7 @@ const LANG_KEY = 'pharmacy_lang';
 
 function loadUser(): User | null {
   try {
-    const raw = localStorage.getItem(USER_KEY);
+    const raw = sessionStorage.getItem(USER_KEY);
     return raw ? (JSON.parse(raw) as User) : null;
   } catch {
     return null;
@@ -350,6 +352,18 @@ function loadLang(): Lang {
 
 function fmt(n: number): string {
   return Number(n).toLocaleString('en-US');
+}
+
+// 24-hour "HH:MM" → 12-hour "H:MM AM/PM", like the SENAN sample bill.
+// The value comes from the server (the pharmacy computer in Afghanistan),
+// so it is already Afghanistan local time — this only changes the shape.
+function time12(hhmm: string): string {
+  const [hStr, mStr] = hhmm.split(':');
+  const h = Number(hStr);
+  if (!Number.isFinite(h) || mStr === undefined) return hhmm;
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${mStr} ${ampm}`;
 }
 
 // The WhatsApp daily summary text, shared by the Reports button and the
@@ -475,12 +489,15 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.lang = lang;
+    // html carries the language direction: in Pashto the page scrollbar
+    // stays on the LEFT (his choice) — only the menu scrollbar is forced
+    // to the right (see styles.css).
     document.documentElement.dir = dirFor(lang);
   }, [lang]);
 
   const logout = () => {
     setToken(null);
-    localStorage.removeItem(USER_KEY);
+    sessionStorage.removeItem(USER_KEY);
     setUser(null);
   };
 
@@ -491,7 +508,7 @@ export default function App() {
         setLang={setLang}
         onLogin={(u, token) => {
           setToken(token);
-          localStorage.setItem(USER_KEY, JSON.stringify(u));
+          sessionStorage.setItem(USER_KEY, JSON.stringify(u));
           if (u.language === 'en' || u.language === 'fa' || u.language === 'ps') {
             setLang(u.language as Lang);
           }
@@ -766,8 +783,8 @@ function Login({
 }
 
 // Full weekday names for the dashboard week chart (index 0 = Sunday,
-// matching Date.getDay()). Friday (جمعه) stays in the list so any date
-// can be named, but the work week itself never shows it.
+// matching Date.getDay()). Friday (جمعه) is in the list because the
+// week now includes it when the pharmacy opens and sells on Friday.
 const WEEKDAY_NAMES: Record<Lang, string[]> = {
   ps: ['یکشنبه', 'دوشنبه', 'سه شنبه', 'چهارشنبه', 'پنج شنبه', 'جمعه', 'شنبه'],
   fa: ['یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنجشنبه', 'جمعه', 'شنبه'],
@@ -781,14 +798,14 @@ function daysAgoStr(n: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-// The current Afghan work week as YYYY-MM-DD days: Saturday through
-// today, never past Thursday (Friday is the weekly holiday). On Friday
-// this returns the six days that just ended.
+// The current week as YYYY-MM-DD days: Saturday through today,
+// never past Friday. On Friday this returns the seven days of the
+// current week (Saturday–Friday).
 function workWeekDays(): string[] {
   const start = new Date(`${weekStartStr()}T00:00:00`);
   const today = new Date(`${todayStr()}T00:00:00`);
   const last = new Date(start);
-  last.setDate(last.getDate() + 5);
+  last.setDate(last.getDate() + 6);
   const end = today < last ? today : last;
   const pad = (n: number) => String(n).padStart(2, '0');
   const days: string[] = [];
@@ -3207,87 +3224,131 @@ function SalesPage({ lang, role, onAddMedicine }: { lang: Lang; role: string; on
       {receipt &&
         createPortal(
           <div id="receipt-print">
-          <div style={{ textAlign: 'center', marginBottom: 6 }}>
-            <div style={{ fontSize: 16, fontWeight: 700 }}>{branch?.name || 'Pharmacy'}</div>
-            {branch?.address && <div>{branch.address}</div>}
-            {branch?.phone && <div>{branch.phone}</div>}
-          </div>
-          <div style={{ borderTop: '1px dashed #000', paddingTop: 4 }}>
-            <div>
-              {t(lang, 'invoice')}: {receipt.invoice_no}
+            {/* Header: pharmacy name / branch address / phone (from branch details). */}
+            <div style={{ textAlign: 'center', marginBottom: 4 }}>
+              <div style={{ fontSize: 16, fontWeight: 700 }}>{t(lang, 'appName')}</div>
+              {branch?.address && <div>{branch.address}</div>}
+              {branch?.phone && <div>{branch.phone}</div>}
             </div>
-            <div>
-              {String(receipt.sale_date).slice(0, 10)} {String(receipt.sale_date).slice(11, 16)}
-            </div>
-            <div>
-              {t(lang, 'customer')}: {receipt.customer_name || t(lang, 'walkIn')}
-            </div>
-            {receipt.seller_name && (
-              <div>
-                {t(lang, 'seller')}: {receipt.seller_name}
-              </div>
-            )}
-          </div>
-          <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 6 }}>
-            <tbody>
-              {receipt.items.map((it) => (
-                <tr key={it.item_id}>
-                  <td style={{ padding: '2px 0' }}>
-                    {it.medicine_name}
-                    <br />
-                    <span>
-                      {fmt(it.quantity)} × {fmt(Number(it.unit_price))}
-                    </span>
-                  </td>
-                  <td style={{ textAlign: 'right', verticalAlign: 'top', padding: '2px 0' }}>
-                    {fmt(it.quantity * Number(it.unit_price))}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <div style={{ borderTop: '1px dashed #000', marginTop: 6, paddingTop: 4 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span>{t(lang, 'subtotal')}</span>
-              <span>{fmt(Number(receipt.total_amount))}</span>
-            </div>
-            {Number(receipt.discount) > 0 && (
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span>{t(lang, 'discount')}</span>
-                <span>−{fmt(Number(receipt.discount))}</span>
-              </div>
-            )}
-            <div
-              style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: 14 }}
-            >
-              <span>{t(lang, 'netTotal')}</span>
+            {/* SENAN-style title row (2026-11-23, his choice): time | boxed
+                INVOICE | User (the seller who made the sale). Time is
+                12-hour AM/PM, like the SENAN sample. */}
+            <div className="rcpt-title-row">
+              <span>{time12(String(receipt.sale_date).slice(11, 16))}</span>
+              <span className="rcpt-invoice-box">{t(lang, 'invoice')}</span>
               <span>
-                {fmt(Number(receipt.net_total))} {t(lang, 'currency')}
+                {t(lang, 'receiptUser')}: {receipt.seller_name || '—'}
               </span>
             </div>
-            {Number(receipt.refunded_total || 0) > 0 && (
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span>{t(lang, 'returnedFull')}</span>
-                <span>−{fmt(Number(receipt.refunded_total || 0))}</span>
+            {/* SENAN-style two-column meta: Customer / Phone / Branch |
+                Invoice No. / Date. */}
+            <div className="rcpt-meta">
+              <div>
+                <div>
+                  {t(lang, 'customer')}: {receipt.customer_name || t(lang, 'walkIn')}
+                </div>
+                {receipt.customer_phone && (
+                  <div>
+                    {t(lang, 'phone')}: {receipt.customer_phone}
+                  </div>
+                )}
+                <div>
+                  {t(lang, 'branch')}: {branch?.name || '—'}
+                </div>
               </div>
-            )}
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span>{t(lang, 'paidTotal')}</span>
-              <span>{fmt(Number(receipt.paid_total || 0))}</span>
+              <div>
+                <div>
+                  {t(lang, 'invoiceNo')}: {receipt.invoice_no}
+                </div>
+                <div>
+                  {t(lang, 'date')}: {String(receipt.sale_date).slice(0, 10)}
+                </div>
+              </div>
             </div>
-            {Number(receipt.due_amount || 0) > 0 && (
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700 }}>
-                <span>{t(lang, 'dueAmount')}</span>
-                <span>{fmt(Number(receipt.due_amount || 0))}</span>
+            <table className="rcpt-table">
+              <thead>
+                <tr>
+                  <th className="num">{t(lang, 'qtyCol')}</th>
+                  <th className="num">{t(lang, 'bonus')}</th>
+                  <th>{t(lang, 'productCol')}</th>
+                  <th className="num">{t(lang, 'priceCol')}</th>
+                  <th className="num">{t(lang, 'disPercent')}</th>
+                  <th className="num">{t(lang, 'amountCol')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {receipt.items.map((it) => (
+                  <tr key={it.item_id}>
+                    <td className="num">{fmt(it.quantity)}</td>
+                    <td className="num">0</td>
+                    <td>{it.medicine_name}</td>
+                    <td className="num">{fmt(Number(it.unit_price))}</td>
+                    <td className="num">0.00</td>
+                    <td className="num">{fmt(it.quantity * Number(it.unit_price))}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colSpan={3}>
+                    {t(lang, 'noOfItems')}: {receipt.items.length}
+                  </td>
+                  <td></td>
+                  <td className="num">0.00</td>
+                  <td className="num">
+                    {fmt(Number(receipt.total_amount))}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+            <div className="rcpt-totals">
+              <div className="rcpt-row">
+                <span>{t(lang, 'subtotal')}</span>
+                <span>{fmt(Number(receipt.total_amount))}</span>
               </div>
-            )}
-            {receipt.voided_at && (
-              <div style={{ textAlign: 'center', fontWeight: 700, marginTop: 4 }}>
-                🚫 {t(lang, 'voidedFull')}
+              {Number(receipt.discount) > 0 && (
+                <div className="rcpt-row">
+                  <span>{t(lang, 'discount')}</span>
+                  <span>−{fmt(Number(receipt.discount))}</span>
+                </div>
+              )}
+              <div className="rcpt-row rcpt-net">
+                <span>{t(lang, 'netTotal')}</span>
+                <span>
+                  {fmt(Number(receipt.net_total))} {t(lang, 'currency')}
+                </span>
               </div>
-            )}
-          </div>
-          <div style={{ textAlign: 'center', marginTop: 8 }}>{t(lang, 'thankYou')}</div>
+              {Number(receipt.refunded_total || 0) > 0 && (
+                <div className="rcpt-row">
+                  <span>{t(lang, 'returnedFull')}</span>
+                  <span>−{fmt(Number(receipt.refunded_total || 0))}</span>
+                </div>
+              )}
+              <div className="rcpt-row">
+                <span>{t(lang, 'cashReceived')}</span>
+                <span>
+                  {Number(receipt.paid_total || 0) > 0 ? fmt(Number(receipt.paid_total)) : ''}
+                </span>
+              </div>
+              {Number(receipt.old_balance || 0) > 0 && (
+                <div className="rcpt-row">
+                  <span>{t(lang, 'oldBalance')}</span>
+                  <span>{fmt(Number(receipt.old_balance))}</span>
+                </div>
+              )}
+              <div className="rcpt-row rcpt-net">
+                <span>{t(lang, 'netBalance')}</span>
+                <span>
+                  {fmt(Number(receipt.old_balance || 0) + Number(receipt.due_amount || 0))}
+                </span>
+              </div>
+              {receipt.voided_at && (
+                <div style={{ textAlign: 'center', fontWeight: 700, marginTop: 4 }}>
+                  🚫 {t(lang, 'voidedFull')}
+                </div>
+              )}
+            </div>
+            <div style={{ marginTop: 8 }}>{t(lang, 'remarks')}: </div>
           </div>,
           document.body
         )}
@@ -3570,6 +3631,10 @@ function SuppliersPage({ lang }: { lang: Lang }) {
                       <span className="badge warning">
                         {t(lang, 'due')}: {fmt(Number(s.due_total))}
                       </span>
+                    ) : Number(s.due_total) < 0 ? (
+                      <span className="badge ok">
+                        {t(lang, 'credit')}: {fmt(Math.abs(Number(s.due_total)))}
+                      </span>
                     ) : (
                       '—'
                     )}
@@ -3637,11 +3702,13 @@ function SuppliersPage({ lang }: { lang: Lang }) {
               </span>
             </div>
             <div className="detail-stat">
-              <span className="detail-stat-label">{t(lang, 'due')}</span>
+              <span className="detail-stat-label">
+                {Number(detail.due_total) < 0 ? t(lang, 'credit') : t(lang, 'due')}
+              </span>
               <span
                 className={`detail-stat-value ${Number(detail.due_total) > 0 ? 'qty-low' : ''}`}
               >
-                {fmt(Number(detail.due_total))} {t(lang, 'currency')}
+                {fmt(Math.abs(Number(detail.due_total)))} {t(lang, 'currency')}
               </span>
             </div>
           </div>
@@ -3798,7 +3865,6 @@ function PurchasesPage({ lang }: { lang: Lang }) {
   const [retError, setRetError] = useState('');
   const [retMsg, setRetMsg] = useState('');
   const [retBusy, setRetBusy] = useState(false);
-  const [dupWarn, setDupWarn] = useState(false);
   const [supFormOpen, setSupFormOpen] = useState(false);
   // The boss's reason, shown while a rejected purchase is being fixed.
   const [editNote, setEditNote] = useState('');
@@ -3832,7 +3898,6 @@ function PurchasesPage({ lang }: { lang: Lang }) {
     setPaid('');
     setSupplierId('');
     setEditingId('');
-    setDupWarn(false);
     setEditNote('');
   };
 
@@ -4013,7 +4078,6 @@ function PurchasesPage({ lang }: { lang: Lang }) {
       const payload = {
         supplier_id: supplierId || undefined,
         invoice_no: invoiceNo.trim() || undefined,
-        allow_duplicate: dupWarn || undefined,
         paid_amount: paid === '' ? undefined : Number(paid),
         items: rows
           .filter((r) => r.medicine_id)
@@ -4054,11 +4118,7 @@ function PurchasesPage({ lang }: { lang: Lang }) {
       await loadPurchases();
     } catch (err) {
       const m = err instanceof Error ? err.message : 'Error';
-      if (m.startsWith('DUPLICATE_INVOICE')) {
-        setDupWarn(true);
-      } else {
-        setError(m);
-      }
+      setError(m);
     }
     setBusy(false);
   };
@@ -4124,7 +4184,6 @@ function PurchasesPage({ lang }: { lang: Lang }) {
                 value={supplierId}
                 onChange={(e) => {
                   setSupplierId(e.target.value);
-                  setDupWarn(false);
                 }}
               >
                 <option value="">—</option>
@@ -4141,7 +4200,6 @@ function PurchasesPage({ lang }: { lang: Lang }) {
                 value={invoiceNo}
                 onChange={(e) => {
                   setInvoiceNo(e.target.value);
-                  setDupWarn(false);
                 }}
               />
             </div>
@@ -4270,21 +4328,14 @@ function PurchasesPage({ lang }: { lang: Lang }) {
               ))}
             </div>
           )}
-          {dupWarn && (
-            <div className="error-box">
-              ⚠️ {t(lang, 'duplicateInvoiceWarn')}: {invoiceNo}
-            </div>
-          )}
           {error && <div className="error-box">{error}</div>}
           {msg && <div className="success-box">{msg}</div>}
           <button className="btn-save" type="submit" disabled={busy} style={{ width: '100%' }}>
             {busy
               ? t(lang, 'loading')
-              : dupWarn
-                ? `⚠️ ${t(lang, 'saveAnyway')}`
-                : editingId
-                  ? t(lang, 'saveChanges')
-                  : t(lang, 'completePurchase')}
+              : editingId
+                ? t(lang, 'saveChanges')
+                : t(lang, 'completePurchase')}
           </button>
           {editingId && (
             <button
@@ -5352,11 +5403,12 @@ function ReportsPage({
     { key: 'stock', label: t(lang, 'stockValue') },
   ];
 
-  // The Afghan work week is 6 days: Saturday–Thursday, Friday off.
+  // The week is 7 days: Saturday–Friday. Friday is included because
+  // the pharmacy is sometimes open and sells on Friday.
   const weekEnd = (() => {
     const d = new Date(`${weekStart}T00:00:00`);
     if (Number.isNaN(d.getTime())) return weekStart;
-    d.setDate(d.getDate() + 5);
+    d.setDate(d.getDate() + 6);
     const p = (n: number) => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   })();
@@ -5711,6 +5763,21 @@ function ReportsPage({
                 );
               })}
             </tbody>
+            <tfoot>
+              <tr style={{ fontWeight: 700 }}>
+                <td colSpan={3}>{t(lang, 'lineTotal')}</td>
+                <td>{fmt(daySales.reduce((sum, s) => sum + Number(s.net_total), 0))}</td>
+                <td>{fmt(daySales.reduce((sum, s) => sum + Number(s.refunded_total || 0), 0))}</td>
+                <td>
+                  {fmt(
+                    daySales.reduce(
+                      (sum, s) => sum + Number(s.net_total) - Number(s.refunded_total || 0),
+                      0
+                    )
+                  )}
+                </td>
+              </tr>
+            </tfoot>
           </table>
           </div>
         </div>
@@ -5795,6 +5862,15 @@ function ReportsPage({
                 </tr>
               ))}
             </tbody>
+            <tfoot>
+              <tr style={{ fontWeight: 700 }}>
+                <td>{t(lang, 'lineTotal')}</td>
+                <td>{fmt(days.reduce((sum, d) => sum + Number(d.sales_count), 0))}</td>
+                <td>{fmt(days.reduce((sum, d) => sum + Number(d.revenue), 0))}</td>
+                <td>{fmt(days.reduce((sum, d) => sum + Number(d.cost_total), 0))}</td>
+                <td>{fmt(days.reduce((sum, d) => sum + Number(d.profit), 0))}</td>
+              </tr>
+            </tfoot>
           </table>
           </div>
         </div>
@@ -5837,6 +5913,15 @@ function ReportsPage({
                 </tr>
               ))}
             </tbody>
+            <tfoot>
+              <tr style={{ fontWeight: 700 }}>
+                <td>{t(lang, 'lineTotal')}</td>
+                <td>{fmt(months.reduce((sum, m) => sum + Number(m.sales_count), 0))}</td>
+                <td>{fmt(months.reduce((sum, m) => sum + Number(m.revenue), 0))}</td>
+                <td>{fmt(months.reduce((sum, m) => sum + Number(m.cost_total), 0))}</td>
+                <td>{fmt(months.reduce((sum, m) => sum + Number(m.profit), 0))}</td>
+              </tr>
+            </tfoot>
           </table>
           </div>
         </div>
@@ -5869,6 +5954,15 @@ function ReportsPage({
                 </tr>
               ))}
             </tbody>
+            <tfoot>
+              <tr style={{ fontWeight: 700 }}>
+                <td>{t(lang, 'lineTotal')}</td>
+                <td>{fmt(medRows.reduce((sum, m) => sum + Number(m.quantity), 0))}</td>
+                <td>{fmt(medRows.reduce((sum, m) => sum + Number(m.revenue), 0))}</td>
+                <td>{fmt(medRows.reduce((sum, m) => sum + Number(m.cost_total), 0))}</td>
+                <td>{fmt(medRows.reduce((sum, m) => sum + Number(m.profit), 0))}</td>
+              </tr>
+            </tfoot>
           </table>
           </div>
         </div>
@@ -5904,6 +5998,16 @@ function ReportsPage({
                 </tr>
               ))}
             </tbody>
+            <tfoot>
+              <tr style={{ fontWeight: 700 }}>
+                <td>{t(lang, 'lineTotal')}</td>
+                <td>{fmt(purchRows.reduce((sum, r) => sum + Number(r.bills), 0))}</td>
+                <td>{fmt(purchRows.reduce((sum, r) => sum + Number(r.bought), 0))}</td>
+                <td>{fmt(purchRows.reduce((sum, r) => sum + Number(r.returned), 0))}</td>
+                <td>{fmt(purchRows.reduce((sum, r) => sum + Number(r.net), 0))}</td>
+                <td>{fmt(purchRows.reduce((sum, r) => sum + Number(r.paid), 0))}</td>
+              </tr>
+            </tfoot>
           </table>
           </div>
         </div>
@@ -6104,6 +6208,15 @@ function ReportsPage({
                     </tr>
                   ))}
                 </tbody>
+                <tfoot>
+                  <tr>
+                    <td>{t(lang, 'lineTotal')}</td>
+                    <td>{fmt(days.reduce((sum, d) => sum + Number(d.sales_count), 0))}</td>
+                    <td>{fmt(days.reduce((sum, d) => sum + Number(d.revenue), 0))}</td>
+                    <td>{fmt(days.reduce((sum, d) => sum + Number(d.cost_total), 0))}</td>
+                    <td>{fmt(days.reduce((sum, d) => sum + Number(d.profit), 0))}</td>
+                  </tr>
+                </tfoot>
               </table>
             )}
             {tab === 'yearly' && (
@@ -6130,6 +6243,15 @@ function ReportsPage({
                     </tr>
                   ))}
                 </tbody>
+                <tfoot>
+                  <tr>
+                    <td>{t(lang, 'lineTotal')}</td>
+                    <td>{fmt(months.reduce((sum, m) => sum + Number(m.sales_count), 0))}</td>
+                    <td>{fmt(months.reduce((sum, m) => sum + Number(m.revenue), 0))}</td>
+                    <td>{fmt(months.reduce((sum, m) => sum + Number(m.cost_total), 0))}</td>
+                    <td>{fmt(months.reduce((sum, m) => sum + Number(m.profit), 0))}</td>
+                  </tr>
+                </tfoot>
               </table>
             )}
             {medRows.length > 0 && (
