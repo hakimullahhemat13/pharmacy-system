@@ -160,6 +160,7 @@ CREATE TABLE purchases (
   PRIMARY KEY (id),
   KEY idx_purchases_branch_date (branch_id, purchase_date),
   KEY idx_purchases_supplier (supplier_id),
+  UNIQUE KEY uq_purchase_invoice (branch_id, supplier_id, invoice_no),
   CONSTRAINT fk_purchases_branch FOREIGN KEY (branch_id) REFERENCES branches (id),
   CONSTRAINT fk_purchases_supplier FOREIGN KEY (supplier_id) REFERENCES suppliers (id),
   CONSTRAINT fk_purchases_user FOREIGN KEY (created_by) REFERENCES users (id)
